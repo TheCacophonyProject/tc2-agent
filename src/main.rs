@@ -147,7 +147,7 @@ impl SocketStream {
     }
 }
 
-fn get_stream(PROD_MODE: bool) -> io::Result<SocketStream> {
+fn get_stream() -> io::Result<SocketStream> {
     if PROD_MODE {
         UnixStream::connect("/var/run/lepton-frames").map(|stream| {
             //stream.set_write_timeout(Some(Duration::from_millis(1500))).unwrap();
@@ -229,7 +229,7 @@ fn main() {
             let mut prev_time_on_msec = 0u32;
 
             loop {
-                match get_stream(PROD_MODE) {
+                match get_stream() {
                     Ok(mut stream) => {
                         reconnects += 1;
                         if reconnects == 10 {

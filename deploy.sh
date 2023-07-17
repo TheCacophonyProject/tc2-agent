@@ -9,8 +9,8 @@ set -o xtrace
 #readonly TARGET_HOST=pi@pi4
 readonly TARGET_HOST=pi@cp-rpi
 #readonly TARGET_HOST=pi@p2
-readonly TARGET_PATH=/home/pi/pi-frame-debug
-readonly SOURCE_PATH=./target/armv7-unknown-linux-musleabihf/release/pi-frame-debug
+readonly TARGET_PATH=/home/pi/tc2-agent
+readonly SOURCE_PATH=./target/armv7-unknown-linux-musleabihf/release/tc2-agent
 readonly TARGET_ARCH=armv7-unknown-linux-musleabihf
 
 cargo build --release --target=${TARGET_ARCH}
