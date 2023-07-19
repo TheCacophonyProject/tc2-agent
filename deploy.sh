@@ -16,4 +16,7 @@ readonly TARGET_ARCH=armv7-unknown-linux-musleabihf
 cargo build --release --target=${TARGET_ARCH}
 rsync ${SOURCE_PATH} ${TARGET_HOST}:${TARGET_PATH}
 # Run on raspberry pi with realtime priority
+
+# NOTE: To start in wifi frame serve mode with a custom spi speed:
+# ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH} --use-wifi --spi-speed 10
 ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH}

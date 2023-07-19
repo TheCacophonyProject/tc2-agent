@@ -11,6 +11,7 @@ use rppal::spi::BitOrder;
 use byteorder::{LittleEndian, ByteOrder, BigEndian};
 use thread_priority::*;
 use thread_priority::ThreadBuilderExt;
+use argh::FromArgs;
 
 const SEGMENT_LENGTH: usize = 9760;
 const CHUNK_LENGTH: usize = SEGMENT_LENGTH / 4;
@@ -70,7 +71,7 @@ fn read_telemetry(frame: &Frame) -> Telemetry {
     let time_at_last_ffc = LittleEndian::read_u32(&buf[60..64]);
     let msec_since_last_ffc = msec_on - time_at_last_ffc;
     let status_bits = LittleEndian::read_u32(&buf[6..10]);
-    let ffc_state = ((status_bits & 0b00000000000000000000000000110000) >> 4);
+    let ffc_state = (status_bits & 0b00000000000000000000000000110000) >> 4;
     let ffc_in_progress = ffc_state == 0b10;
     Telemetry {
         frame_num,
@@ -89,9 +90,9 @@ fn send_frame(stream: &mut SocketStream) -> (Option<Telemetry>, bool) {
         let pixels = unsafe { u8_as_u16_slice(&fb[640..]) };
         let pos = pixels.iter().position(|&px| px == 0);
         let mut found_bad_pixels = false;
-        if let Some(pos) = pos {
-            let y = pos / 160;
-            let x = pos - (y * 160);
+        if let Some(_pos) = pos {
+            // let y = pos / 160;
+            // let x = pos - (y * 160);
             // println!("Zero px found at ({}, {}) not sending", x, y);
             found_bad_pixels = true;
         }
@@ -147,16 +148,16 @@ impl SocketStream {
     }
 }
 
-fn get_stream() -> io::Result<SocketStream> {
-    if PROD_MODE {
-        UnixStream::connect("/var/run/lepton-frames").map(|stream| {
+fn get_stream(use_wifi: &bool, address: &str) -> io::Result<SocketStream> {
+    if !*use_wifi {
+        UnixStream::connect(address).map(|stream| {
             //stream.set_write_timeout(Some(Duration::from_millis(1500))).unwrap();
             //stream.set_nonblocking(true).unwrap();
             SocketStream { unix: Some(stream), tcp: None }
         })
 
     } else {
-        TcpStream::connect("192.168.178.68:34254").map(|stream| {
+        TcpStream::connect(address).map(|stream| {
            //stream.set_nonblocking(true).unwrap();
            stream.set_nodelay(true).unwrap();
            stream.set_write_timeout(Some(Duration::from_millis(1500))).unwrap();
@@ -165,13 +166,27 @@ fn get_stream() -> io::Result<SocketStream> {
     }
 }
 
-// Set `true` if running on development hardware, which has a few pin differences from
-// the initial dev board.
-const P2: bool = true;
-// Set `false` to build using live frame debug over wifi mode.
-const PROD_MODE: bool = true;
+fn default_spi_speed() -> u32 {
+    12
+}
+
+#[derive(FromArgs)]
+/// Agent for `tc2-firmware` to output thermal camera frames to either a local unix domain socket,
+/// or a remote viewer application via wifi.
+struct ModeConfig {
+    /// output frames over wifi to `tc2-frames` desktop application
+    #[argh(switch)]
+    use_wifi: bool,
+
+    /// raspberry pi SPI speed in Mhz, defaults to 12
+    #[argh(option, default = "default_spi_speed()")]
+    spi_speed: u32
+}
 
 fn main() {
+    print!("\n=====\nStarting thermal camera 2 agent, run with --help to see options.\n\n");
+    let config: ModeConfig = argh::from_env();
+
     // We want real-time priority for all the work we do.
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
@@ -181,42 +196,74 @@ fn main() {
         let mut raw_read_buffer = [0u8; 1024 * 1024];
 
         //let spi_speed = 30_000_000; // rPi4 can handle this in PIO mode
-        let spi_speed = 12_000_000; // rPi3 can handle this (@600Mhz), may need to back it off a little to have some slack.
+        let spi_speed = config.spi_speed * 1_000_000; // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
+        println!("Initialising SPI at {}Mhz", config.spi_speed);
         let mut spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode2).unwrap();
         spi.set_bits_per_word(8).unwrap();
         spi.set_bit_order(BitOrder::MsbFirst).unwrap();
         spi.set_ss_polarity(Polarity::ActiveLow).unwrap();
-        let address = if PROD_MODE {
-            "/var/run/lepton-frames"
-        } else {
-            "192.168.178.68:34254" // If in frame debug mode, use the local IP address of your dev machine.
-        };
-        let gpio = Gpio::new().unwrap();
 
+        let address = {
+            // Find the socket address
+            let address = if config.use_wifi {
+                // Scan for servers on port 34254.
+                use mdns_sd::{ServiceDaemon, ServiceEvent};
+                // Create a daemon
+                let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 
-        let pin_num = if P2 { 7 } else { 14 };
-        // Signal pin, was 7 in production t2c hardware
-        let mut pin = gpio.get(pin_num).unwrap().into_input_pulldown();
-
-        let mut run_pin = if P2 {
-            let mut run_pin = gpio.get(23).unwrap().into_output();
-            if !run_pin.is_set_high() {
-                run_pin.set_high();
+                // Browse for a service type.
+                let service_type = "_mdns-tc2-frames._udp.local.";
+                let receiver = mdns.browse(service_type).expect("Failed to browse");
+                let mut address = None;
+                println!("Trying to resolve tc2-frames service, please ensure t2c-frames app is running on the same network");
+                'service_finder: loop {
+                    while let Ok(event) = receiver.recv() {
+                        match event {
+                            ServiceEvent::ServiceResolved(info) => {
+                                for add in info.get_addresses().iter() {
+                                    address = Some(add.to_string());
+                                    println!("Resolved a tc2-frames service at: {:?}", add);
+                                    break 'service_finder;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                address
+            } else {
+                Some("/var/run/lepton-frames".to_string())
+            };
+            if let Some(address) = &address {
+                println!("Got address {}", address);
             }
-            use chrono::Local;
-            let date = Local::now();
-            println!("Resetting rp2040 on startup, {}", date.format("%Y-%m-%d][%H:%M:%S"));
-            run_pin.set_low();
-            sleep(Duration::from_millis(10));
+            if config.use_wifi && address.is_none() {
+                panic!("t2c-frames service not found on local network");
+            }
+            let address = if config.use_wifi {
+                format!("{}:34254", address.unwrap())
+            } else {
+                address.unwrap()
+            };
+            address
+        };
+
+        let gpio = Gpio::new().unwrap();
+        let mut pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_input_pulldown();
+        let mut run_pin = gpio.get(23).unwrap().into_output();
+        if !run_pin.is_set_high() {
             run_pin.set_high();
-            Some(run_pin)
-        } else { None };
+            sleep(Duration::from_millis(1000));
+        }
+        use chrono::Local;
+        let date = Local::now();
+        println!("Resetting rp2040 on startup, {}", date.format("%Y-%m-%d][%H:%M:%S"));
+        run_pin.set_low();
+        sleep(Duration::from_millis(1000));
+        run_pin.set_high();
 
-        // TODO: Log mean time between reconnects.  Is it just that we should perhaps do an FFC?
-        // TODO: Scan for anything on the local network with port 34254 open.
-
-        pin.clear_interrupt().unwrap();
-        pin.set_interrupt(Trigger::RisingEdge).unwrap();
+        pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
+        pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
         let (tx, rx) = channel();
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
             // Spawn a thread which can output the frames, converted to rgb grayscale
@@ -229,29 +276,14 @@ fn main() {
             let mut prev_time_on_msec = 0u32;
 
             loop {
-                match get_stream() {
+                match get_stream(&config.use_wifi, &address) {
                     Ok(mut stream) => {
-                        reconnects += 1;
-                        if reconnects == 10 {
-                            use chrono::Local;
-                            let date = Local::now();
-                            println!("Resetting (attempt #{reconnects}), {}", date.format("%Y-%m-%d][%H:%M:%S"));
-                            reconnects = 0;
-                            prev_frame_num = None;
-                            if let Some(run_pin) = &mut run_pin {
-                                run_pin.set_low();
-                                sleep(Duration::from_millis(10));
-                                run_pin.set_high();
-                            }
-                        } else {
-                            println!("Connected to tc2 (attempt #{reconnects})");
-                        }
+                        println!("Connected to {}, waiting for frames from rp2040", if config.use_wifi { &"tc2-frames server"} else { &"thermal-recorder unix socket"});
                         let mut sent_header = false;
                         let mut ms_elapsed = 0;
                         'send_loop: loop {
                             if let Ok(radiometry_enabled) = rx.recv_timeout(Duration::from_millis(1)) {
-
-                                if PROD_MODE && !sent_header {
+                                if !config.use_wifi && !sent_header {
                                     // Send the header info here:
                                     let header: &[u8] =
                                         if radiometry_enabled {
@@ -286,7 +318,7 @@ fn main() {
                                     println!("socket send took {}s", e);
                                 }
                                 if !sent {
-                                    println!("Send to frame socket failed");
+                                    println!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
                                     let _ = stream.shutdown().is_ok();
                                     ms_elapsed = 0;
                                     break 'send_loop;
@@ -307,24 +339,43 @@ fn main() {
                                 }
                                 ms_elapsed = 0;
                             } else {
+                                const NUM_ATTEMPTS_BEFORE_RESET: usize = 10;
                                 ms_elapsed += 1;
                                 if ms_elapsed > 5000 {
                                     ms_elapsed = 0;
-                                    let _ = stream.shutdown().is_ok();
-                                    //println!("Breaking send loop");
-                                    break 'send_loop;
+                                    reconnects += 1;
+                                    if reconnects == NUM_ATTEMPTS_BEFORE_RESET {
+                                        use chrono::Local;
+                                        let date = Local::now();
+                                        println!("Resetting rp2040 at {}", date.format("%Y-%m-%d][%H:%M:%S"));
+                                        reconnects = 0;
+                                        prev_frame_num = None;
+                                        {
+                                            if !run_pin.is_set_high() {
+                                                run_pin.set_high();
+                                                sleep(Duration::from_millis(1000));
+                                            }
+
+                                            run_pin.set_low();
+                                            sleep(Duration::from_millis(1000));
+                                            run_pin.set_high();
+                                        }
+                                    } else {
+                                        println!("-- #{reconnects} waiting for frames from rp2040 (resetting rp2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_RESET - reconnects);
+                                    }
                                 }
                             }
                         }
                     }
-                    Err(e) => println!("Frame socket not found: {}", e.to_string())
+                    Err(e) => println!("{} not found: {}", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"}, e.to_string())
                 }
                 // Wait 1 second between attempts to connect to the frame socket
                 sleep(Duration::from_millis(1000));
             }
         });
 
-        println!("Begin frame loop");
+        println!("Waiting to acquire frames from rp2040");
+        let mut got_first_frame = false;
         'frame: loop {
             let mut got_frame = false;
             let mut radiometry_enabled = false;
@@ -345,8 +396,15 @@ fn main() {
                         let transfer_header = BigEndian::read_u32(&size) as usize;
                         let transfer_type = transfer_header >> 28;
                         let num_bytes = transfer_header & 0x0fff_ffff;
-                        let max_size: usize = raw_read_buffer.len();//1 << 28;
+                        let max_size: usize = raw_read_buffer.len();
+                        if !got_first_frame {
+                            println!("-- SPI got transfer type {}", transfer_type);
+                        }
+
                         if num_bytes >= 4 && num_bytes < max_size {
+                            if !got_first_frame {
+                                println!("-- SPI read {} bytes from rp2040", num_bytes);
+                            }
                             let chunk = &mut raw_read_buffer[0..num_bytes];
                             match spi.read(chunk) {
                                 Ok(_) => {
@@ -361,8 +419,12 @@ fn main() {
                                             let mut frame = [0u8; FRAME_LENGTH];
                                             // NOTE: We need to swizzle the pixel bytes.
                                             BigEndian::write_u32_into(unsafe { &u8_slice_to_u32(&chunk) }, &mut frame);
-                                            let mut back = FRAME_BUFFER.get_back().lock().unwrap();
+                                            let back = FRAME_BUFFER.get_back().lock().unwrap();
                                             back.replace(Some(frame));
+                                            if !got_first_frame {
+                                                got_first_frame = true;
+                                                println!("Got first frame from rp2040");
+                                            }
                                             got_frame = true;
                                         }
                                         _ => println!("Unhandled transfer type, {:#x}", transfer_type)
@@ -384,6 +446,8 @@ fn main() {
                         FRAME_BUFFER.swap();
                         got_frame = false;
                         let _ = tx.send(radiometry_enabled);
+                    } else {
+                        got_first_frame = false;
                     }
                 } else {
                     // println!("No ping from rp2040");
