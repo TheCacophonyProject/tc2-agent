@@ -198,7 +198,8 @@ fn main() {
         let mut raw_read_buffer = [0u8; 1024 * 1024];
 
         //let spi_speed = 30_000_000; // rPi4 can handle this in PIO mode
-        let spi_speed = config.spi_speed * 1_000_000; // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
+        //let spi_speed = config.spi_speed * 1_000_000; // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
+        let spi_speed = 8_000_000;
         println!("Initialising SPI at {}Mhz", config.spi_speed);
         let mut spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode2).unwrap();
         spi.set_bits_per_word(8).unwrap();
