@@ -294,12 +294,17 @@ fn main() {
                             if let Ok(radiometry_enabled) = rx.recv_timeout(Duration::from_millis(rec_timeout_ms)) { // Increasing to 100 seams to make hte connect more reliably. Was there a reason for it being 1?
                                 if !config.use_wifi && !sent_header {
                                     // Send the header info here:
+
+                                    // Temp fix to read all modules as 3.5. // TODO Change this back when the module is read properly.
+                                    let header: &[u8] = b"ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: lepton3.5\nBrand: flir\nFPS: 9\nFirmware: 1.0\nCameraSerial: f00bar\n\n";
+                                    /*
                                     let header: &[u8] =
                                         if radiometry_enabled {
                                             b"ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: lepton3.5\nBrand: flir\nFPS: 9\nFirmware: 1.0\nCameraSerial: f00bar\n\n"
                                         } else {
                                             b"ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: lepton3\nBrand: flir\nFPS: 9\nFirmware: 1.0\nCameraSerial: f00bar\n\n"
                                         };
+                                    */
                                     if let Err(_) = stream.write_all(header) {
                                         println!("Failed sending header info");
                                     }
