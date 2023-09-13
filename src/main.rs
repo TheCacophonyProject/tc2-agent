@@ -71,7 +71,7 @@ fn read_telemetry(frame: &Frame) -> Telemetry {
     let time_at_last_ffc = LittleEndian::read_u32(&buf[60..64]);
     let msec_since_last_ffc = msec_on - time_at_last_ffc;
     let status_bits = LittleEndian::read_u32(&buf[6..10]);
-    let ffc_state = (status_bits & 0b00000000000000000000000000110000) >> 4;
+    let ffc_state = (status_bits >> 4) & 0b11;
     let ffc_in_progress = ffc_state == 0b10;
     Telemetry {
         frame_num,
