@@ -12,6 +12,8 @@ use byteorder::{LittleEndian, ByteOrder, BigEndian};
 use thread_priority::*;
 use thread_priority::ThreadBuilderExt;
 use argh::FromArgs;
+use std::process::Command;
+use std::fs;
 
 const SEGMENT_LENGTH: usize = 9760;
 const CHUNK_LENGTH: usize = SEGMENT_LENGTH / 4;
@@ -248,6 +250,11 @@ fn main() {
             address
         };
 
+        // For some reason when running periph.io host.ini function, needed to use the I2C in the attiny-controller,
+        // it 'holds/exports' some of the GPIO pins, so we manually 'release/unexport' them with the following.
+        let gpio_number = "7";
+        let _ = fs::write("/sys/class/gpio/unexport", gpio_number);
+
         let gpio = Gpio::new().unwrap();
         let mut pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_input_pulldown();
         let mut run_pin = gpio.get(23).unwrap().into_output();
@@ -282,7 +289,8 @@ fn main() {
                         let mut sent_header = false;
                         let mut ms_elapsed = 0;
                         'send_loop: loop {
-                            if let Ok(radiometry_enabled) = rx.recv_timeout(Duration::from_millis(1)) {
+                            let rec_timeout_ms = 10;
+                            if let Ok(radiometry_enabled) = rx.recv_timeout(Duration::from_millis(rec_timeout_ms)) { // Increasing to 100 seams to make hte connect more reliably. Was there a reason for it being 1?
                                 if !config.use_wifi && !sent_header {
                                     // Send the header info here:
                                     let header: &[u8] =
@@ -340,7 +348,7 @@ fn main() {
                                 ms_elapsed = 0;
                             } else {
                                 const NUM_ATTEMPTS_BEFORE_RESET: usize = 10;
-                                ms_elapsed += 1;
+                                ms_elapsed += rec_timeout_ms;
                                 if ms_elapsed > 5000 {
                                     ms_elapsed = 0;
                                     reconnects += 1;

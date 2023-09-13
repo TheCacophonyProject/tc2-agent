@@ -5,18 +5,52 @@ set -o nounset
 set -o pipefail
 set -o xtrace
 
-# Set the name of your development raspberry pi here
-readonly TARGET_HOST=pi@pi4
-#readonly TARGET_HOST=pi@cp-rpi
-#readonly TARGET_HOST=pi@p2
+if [[ $# -lt 1 ]]; then
+  echo "please provide target host. Usage \`deploy.sh target_host [--deb, --wifi]\`"
+  exit 1
+fi
+
+TARGET_HOST=$1
 readonly TARGET_PATH=/home/pi/tc2-agent
 readonly SOURCE_PATH=./target/armv7-unknown-linux-musleabihf/release/tc2-agent
+readonly DEB_SOURCE_DIR=./target/armv7-unknown-linux-musleabihf/debian/
 readonly TARGET_ARCH=armv7-unknown-linux-musleabihf
+#readonly TARGET_ARCH=aarch64-unknown-linux-gnu # TODO Get it wrking with this target arch
+
+DEB_OPTION=false
+WIFI_OPTION=false
+
+# Iterate over the arguments, starting from index 2
+for i in "${@:2}"; do
+  case $i in
+    --deb)
+      DEB_OPTION=true
+      ;;
+    --wifi)
+      WIFI_OPTION=true
+      ;;
+    *)
+      echo "Unknown option: $i"
+      exit 1
+      ;;
+  esac
+done
 
 cargo build --release --target=${TARGET_ARCH}
-rsync ${SOURCE_PATH} ${TARGET_HOST}:${TARGET_PATH}
-# Run on raspberry pi with realtime priority
 
-# NOTE: To start in wifi frame serve mode with a custom spi speed:
-# ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH} --use-wifi --spi-speed 10
-ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH} --use-wifi
+if [ "$DEB_OPTION" = true ]; then
+  cargo deb --target=${TARGET_ARCH}
+  deb=$(cd ${DEB_SOURCE_DIR} && ls *.deb)
+  echo $deb
+  scp ${DEB_SOURCE_DIR}${deb} ${TARGET_HOST}:
+  ssh -t ${TARGET_HOST} sudo dpkg -i ${deb}
+
+else
+  scp ${SOURCE_PATH} ${TARGET_HOST}:${TARGET_PATH}
+  if [ "$WIFI_OPTION" = true ]; then
+    # NOTE: To start in wifi frame serve mode with a custom spi speed:
+    ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH} --use-wifi --spi-speed 10
+  else
+    ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH}
+  fi
+fi

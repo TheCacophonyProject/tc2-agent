@@ -1,7 +1,10 @@
 [package]
 name = "tc2-agent"
-version = "0.1.0"
+version = "0.1.0-snapshot"
 edition = "2021"
+description = "Program to read lepton frames from the RP2040"
+license = "GPL v3.0"
+authors = ["Cacophony Developers <coredev@cacophony.org.nz>"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -24,3 +27,13 @@ mdns-sd = "0.7.3"
 
 # rPi3
 rustflags = "-C target-cpu=cortex-a53"
+
+[package.metadata.deb]
+name = "tc2-agent"
+maintainer = "Cacophony Developers <coredev@cacophony.org.nz>"
+depends = ""
+assets = [
+  ["target/release/tc2-agent", "/usr/bin/", "755"], # Binary asset
+  ["_releases/tc2-agent.service", "/etc/systemd/system/tc2-agent.service", "664"],
+]
+maintainer-scripts = "_releases/scripts"
