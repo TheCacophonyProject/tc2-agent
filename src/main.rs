@@ -12,8 +12,12 @@ use byteorder::{LittleEndian, ByteOrder, BigEndian};
 use thread_priority::*;
 use thread_priority::ThreadBuilderExt;
 use argh::FromArgs;
-use std::process::Command;
 use std::fs;
+
+use log::{info, warn, error};
+use simplelog::*;
+use chrono::{Datelike, Timelike};
+use crc::{Crc, CRC_16_XMODEM};
 
 const SEGMENT_LENGTH: usize = 9760;
 const CHUNK_LENGTH: usize = SEGMENT_LENGTH / 4;
@@ -113,6 +117,13 @@ fn send_frame(stream: &mut SocketStream) -> (Option<Telemetry>, bool) {
     }
 }
 
+fn save_file_to_disk(bytes: Vec<u8>) {
+    thread::spawn(move || {
+        let now = chrono::Local::now();
+        fs::write(format!("{}.cptv", now.format("%Y-%m-%d--%H-%M-%S")), &bytes).unwrap();
+    });
+}
+
 struct SocketStream {
     unix: Option<UnixStream>,
     tcp: Option<TcpStream>
@@ -169,7 +180,7 @@ fn get_stream(use_wifi: &bool, address: &str) -> io::Result<SocketStream> {
 }
 
 fn default_spi_speed() -> u32 {
-    12
+    1
 }
 
 #[derive(FromArgs)]
@@ -185,8 +196,168 @@ struct ModeConfig {
     spi_speed: u32
 }
 
+const CAMERA_CONNECT_INFO: u8 = 0x1;
+
+const CAMERA_RAW_FRAME_TRANSFER: u8 = 0x2;
+
+const CAMERA_BEGIN_FILE_TRANSFER: u8 = 0x3;
+
+const CAMERA_RESUME_FILE_TRANSFER: u8 = 0x4;
+
+const CAMERA_END_FILE_TRANSFER: u8 = 0x5;
+
+const CAMERA_BEGIN_AND_END_FILE_TRANSFER: u8 = 0x6;
+
+fn get_socket_address(config: &ModeConfig) -> String {
+    let address = {
+        // Find the socket address
+        let address = if config.use_wifi {
+            // Scan for servers on port 34254.
+            use mdns_sd::{ServiceDaemon, ServiceEvent};
+            // Create a daemon
+            let mdns = ServiceDaemon::new().expect("Failed to create daemon");
+
+            // Browse for a service type.
+            let service_type = "_mdns-tc2-frames._udp.local.";
+            let receiver = mdns.browse(service_type).expect("Failed to browse");
+            let mut address = None;
+            info!("Trying to resolve tc2-frames service, please ensure t2c-frames app is running on the same network");
+            'service_finder: loop {
+                while let Ok(event) = receiver.recv() {
+                    match event {
+                        ServiceEvent::ServiceResolved(info) => {
+                            for add in info.get_addresses().iter() {
+                                address = Some(add.to_string());
+                                info!("Resolved a tc2-frames service at: {:?}", add);
+                                break 'service_finder;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            address
+        } else {
+            Some("/var/run/lepton-frames".to_string())
+        };
+        if let Some(address) = &address {
+            info!("Got address {}", address);
+        }
+        if config.use_wifi && address.is_none() {
+            panic!("t2c-frames service not found on local network");
+        }
+        let address = if config.use_wifi {
+            format!("{}:34254", address.unwrap())
+        } else {
+            address.unwrap()
+        };
+        address
+    };
+    address
+}
+
+fn align_sync(spi: &mut Spi) {
+    let mut byte_out = [255u8; 1];
+    let mut byte_in = [0u8; 1];
+    //let mut i = 0;
+    //let mut match_count = 0;
+    // The idea is to both terminate the loop on the same transaction.
+    loop {
+        spi.transfer(&mut byte_in, &byte_out).unwrap();
+        if byte_in[0] == 1 {
+            byte_out[0] = 2;
+            spi.transfer(&mut byte_in, &byte_out).unwrap();
+            break;
+        } else {
+            byte_out[0] = 255;
+        }
+        // We transfer a byte, and get the same byte back 4 times, which means we're aligned.
+
+        //println!("Byte in {}, byte out {}, i {}", byte_in[0], byte_in[0] << 1, i);
+        // if byte_in[0] == (i + 1) {
+        //     match_count += 1;
+        //     i += 1;
+        //     if match_count == 4 {
+        //         break;
+        //     }
+        // } else {
+        //     // Try to align i.
+        //     i = 0;
+        //     match_count = 0;
+        // }
+        // if let Some(index) = pattern.iter().position(|x|*x == byte_in[0]) {
+        //     //i = (index + 1) % 4;
+        //     if reply_pattern[i] == byte_in[0] * 2 {
+        //         //println!("Got {}, set index {}", byte_in[0], (index + 1) % 4);
+        //         if i == reply_pattern.len() - 1 {
+        //             break;
+        //         }
+        //     } else {
+        //         i = (index + 1) % 4;
+        //         println!("Got {}, setting next index {}", byte_in[0], i);
+        //     }
+        // }
+    }
+    //println!("Here");
+
+    // 'outer: loop {
+    //     while spi.transfer(&mut byte_in, &reply_pattern[i..i + 1]).is_ok() && byte_in[0] == pattern[i] {
+    //         i += 1;
+    //         if i == pattern.len() {
+    //             break 'outer;
+    //         }
+    //     }
+    // }
+
+    //println!("Aligned");
+    // loop {
+    //     spi.read(&mut byte).unwrap();
+    //     if byte[0] == 1 {
+    //         spi.read(&mut byte).unwrap();
+    //         if byte[0] == 2 {
+    //             spi.read(&mut byte).unwrap();
+    //             if byte[0] == 3 {
+    //                 spi.read(&mut byte).unwrap();
+    //                 if byte[0] == 4 {
+    //                     break;
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+}
+
+fn read_into_buffer(buf: &mut [u8], spi: &mut Spi) {
+    let mut i = 0;
+    let mut b = [0u8; 1];
+    loop {
+        let read = spi.read(&mut b);
+        if let Ok(size) = read {
+            buf[i] = b[0];
+            i += 1;
+            if i == buf.len() {
+                break;
+            }
+        }
+    }
+}
+
+fn write_buffer(buf: &[u8], spi: &mut Spi) {
+    let mut i = 0;
+    loop {
+        if let Ok(_) = spi.write(&buf[i..i + 1]) {
+            i += 1;
+            if i == buf.len() {
+                break;
+            }
+        }
+    }
+}
+
 fn main() {
-    print!("\n=====\nStarting thermal camera 2 agent, run with --help to see options.\n\n");
+    let log_config = ConfigBuilder::default().set_time_level(LevelFilter::Off).build();
+    TermLogger::init(LevelFilter::Info, log_config, TerminalMode::Mixed, ColorChoice::Auto).unwrap();
+    println!("\n=========\nStarting thermal camera 2 agent, run with --help to see options.\n");
     let config: ModeConfig = argh::from_env();
 
     // We want real-time priority for all the work we do.
@@ -199,56 +370,13 @@ fn main() {
 
         //let spi_speed = 30_000_000; // rPi4 can handle this in PIO mode
         let spi_speed = config.spi_speed * 1_000_000; // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
-        println!("Initialising SPI at {}Mhz", config.spi_speed);
-        let mut spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode2).unwrap();
+        info!("Initialising SPI at {}Mhz", config.spi_speed);
+        let mut spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3).unwrap();
         spi.set_bits_per_word(8).unwrap();
         spi.set_bit_order(BitOrder::MsbFirst).unwrap();
         spi.set_ss_polarity(Polarity::ActiveLow).unwrap();
 
-        let address = {
-            // Find the socket address
-            let address = if config.use_wifi {
-                // Scan for servers on port 34254.
-                use mdns_sd::{ServiceDaemon, ServiceEvent};
-                // Create a daemon
-                let mdns = ServiceDaemon::new().expect("Failed to create daemon");
-
-                // Browse for a service type.
-                let service_type = "_mdns-tc2-frames._udp.local.";
-                let receiver = mdns.browse(service_type).expect("Failed to browse");
-                let mut address = None;
-                println!("Trying to resolve tc2-frames service, please ensure t2c-frames app is running on the same network");
-                'service_finder: loop {
-                    while let Ok(event) = receiver.recv() {
-                        match event {
-                            ServiceEvent::ServiceResolved(info) => {
-                                for add in info.get_addresses().iter() {
-                                    address = Some(add.to_string());
-                                    println!("Resolved a tc2-frames service at: {:?}", add);
-                                    break 'service_finder;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                address
-            } else {
-                Some("/var/run/lepton-frames".to_string())
-            };
-            if let Some(address) = &address {
-                println!("Got address {}", address);
-            }
-            if config.use_wifi && address.is_none() {
-                panic!("t2c-frames service not found on local network");
-            }
-            let address = if config.use_wifi {
-                format!("{}:34254", address.unwrap())
-            } else {
-                address.unwrap()
-            };
-            address
-        };
+        let address = get_socket_address(&config);
 
         // For some reason when running periph.io host.ini function, needed to use the I2C in the attiny-controller,
         // it 'holds/exports' some of the GPIO pins, so we manually 'release/unexport' them with the following.
@@ -262,22 +390,25 @@ fn main() {
             run_pin.set_high();
             sleep(Duration::from_millis(1000));
         }
-        use chrono::Local;
-        let date = Local::now();
-        println!("Resetting rp2040 on startup, {}", date.format("%Y-%m-%d][%H:%M:%S"));
-        run_pin.set_low();
-        sleep(Duration::from_millis(1000));
-        run_pin.set_high();
+        let debug_mode = true;
+        if !debug_mode {
+            let date = chrono::Local::now();
+            println!("Resetting rp2040 on startup, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+            run_pin.set_low();
+            sleep(Duration::from_millis(1000));
+            run_pin.set_high();
+        }
 
         pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
         let (tx, rx) = channel();
+
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
             // Spawn a thread which can output the frames, converted to rgb grayscale
             // This is printed out from within the spawned thread.
             assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
-            println!("Connecting to socket {}", address);
+            info!("Connecting to frame socket {}", address);
             let mut reconnects = 0;
             let mut prev_frame_num = None;
             let mut prev_time_on_msec = 0u32;
@@ -285,7 +416,7 @@ fn main() {
             loop {
                 match get_stream(&config.use_wifi, &address) {
                     Ok(mut stream) => {
-                        println!("Connected to {}, waiting for frames from rp2040", if config.use_wifi { &"tc2-frames server"} else { &"thermal-recorder unix socket"});
+                        info!("Connected to {}, waiting for frames from rp2040", if config.use_wifi { &"tc2-frames server"} else { &"thermal-recorder unix socket"});
                         let mut sent_header = false;
                         let mut ms_elapsed = 0;
                         'send_loop: loop {
@@ -300,13 +431,13 @@ fn main() {
                                             b"ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: lepton3\nBrand: flir\nFPS: 9\nFirmware: 1.0\nCameraSerial: f00bar\n\n"
                                         };
                                     if let Err(_) = stream.write_all(header) {
-                                        println!("Failed sending header info");
+                                        warn!("Failed sending header info");
                                     }
                                     // println!("Sent header");
 
                                     // Clear existing
                                     if let Err(_) = stream.write_all(b"clear") {
-                                        println!("Failed clearing buffer");
+                                        warn!("Failed clearing buffer");
                                     }
                                     let _ = stream.flush();
                                     // println!("Clear buffer");
@@ -314,7 +445,7 @@ fn main() {
                                 }
 
                                 if reconnects > 0 {
-                                    println!("Got frame connection");
+                                    info!("Got frame connection");
                                     reconnects = 0;
                                     prev_frame_num = None;
                                     reconnects = 0;
@@ -323,10 +454,10 @@ fn main() {
                                 let (telemetry, sent) = send_frame(&mut stream);
                                 let e = s.elapsed().as_secs_f32();
                                 if e > 0.1 {
-                                    println!("socket send took {}s", e);
+                                    info!("socket send took {}s", e);
                                 }
                                 if !sent {
-                                    println!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
+                                    warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
                                     let _ = stream.shutdown().is_ok();
                                     ms_elapsed = 0;
                                     break 'send_loop;
@@ -346,16 +477,15 @@ fn main() {
                                     }
                                 }
                                 ms_elapsed = 0;
-                            } else {
+                            } else if !debug_mode {
                                 const NUM_ATTEMPTS_BEFORE_RESET: usize = 10;
                                 ms_elapsed += rec_timeout_ms;
                                 if ms_elapsed > 5000 {
                                     ms_elapsed = 0;
                                     reconnects += 1;
                                     if reconnects == NUM_ATTEMPTS_BEFORE_RESET {
-                                        use chrono::Local;
-                                        let date = Local::now();
-                                        println!("Resetting rp2040 at {}", date.format("%Y-%m-%d][%H:%M:%S"));
+                                        let date = chrono::Local::now();
+                                        warn!("Resetting rp2040 at {}", date.format("%Y-%m-%d--%H:%M:%S"));
                                         reconnects = 0;
                                         prev_frame_num = None;
                                         {
@@ -369,98 +499,165 @@ fn main() {
                                             run_pin.set_high();
                                         }
                                     } else {
-                                        println!("-- #{reconnects} waiting for frames from rp2040 (resetting rp2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_RESET - reconnects);
+                                        info!("-- #{reconnects} waiting for frames from rp2040 (resetting rp2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_RESET - reconnects);
                                     }
                                 }
                             }
                         }
                     }
-                    Err(e) => println!("{} not found: {}", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"}, e.to_string())
+                    Err(e) => warn!("{} not found: {}", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"}, e.to_string())
                 }
                 // Wait 1 second between attempts to connect to the frame socket
                 sleep(Duration::from_millis(1000));
             }
         });
 
-        println!("Waiting to acquire frames from rp2040");
+        info!("Waiting to acquire frames from rp2040");
         let mut got_first_frame = false;
-        'frame: loop {
+        let mut file_download: Option<Vec<u8>> = None;
+        let mut transfer_count = 0;
+        let mut header = [0u8; 7];
+        let mut crc_buf = [0u8; 4];
+        let mut part_count = 0;
+        let mut start = Instant::now();
+        let crc_check = Crc::<u16>::new(&CRC_16_XMODEM);
+        let max_size: usize = 8;//raw_read_buffer.len();
+        'transfer: loop {
             let mut got_frame = false;
             let mut radiometry_enabled = false;
-            if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(150))) {
-                if _pin_level.is_some() {
-                    // TODO: Add more protocol layer to this - maybe an error correction ack at the end
-                    //  that causes a resend.
-                    let mut size = [0u8; 4];
-                    // First, the rp2040 sends the size of the chunk to read out, which is a fixed size u32
-                    let start = Instant::now();
-                    if let Ok(_) = spi.read(&mut size) {
-                        // The top 4 bits are the read type.
-                        // 0x1 = initial startup info
-                        // 0x2 = a raw frame
-                        // 0x3 = a cptv file?
-                        // The bottom 28 bits are the transfer size.
+            // Align our SPI reads to the start of the sequence 1, 2, 3, 4
+            //read_into_buffer(&mut header, &mut spi);
+            spi.read(&mut header).unwrap();
+            let transfer_type = header[0];
+            let mut num_bytes = LittleEndian::read_u32(&header[1..5]) as usize;
+            num_bytes = num_bytes.min(max_size);
+            let crc_from_remote = LittleEndian::read_u16(&header[5..7]);
 
-                        let transfer_header = BigEndian::read_u32(&size) as usize;
-                        let transfer_type = transfer_header >> 28;
-                        let num_bytes = transfer_header & 0x0fff_ffff;
-                        let max_size: usize = raw_read_buffer.len();
-                        if !got_first_frame {
-                            println!("-- SPI got transfer type {}", transfer_type);
-                        }
 
-                        if num_bytes >= 4 && num_bytes < max_size {
-                            if !got_first_frame {
-                                println!("-- SPI read {} bytes from rp2040", num_bytes);
-                            }
-                            let chunk = &mut raw_read_buffer[0..num_bytes];
-                            match spi.read(chunk) {
-                                Ok(_) => {
-                                    match transfer_type {
-                                        0x1 => {
-                                           radiometry_enabled = BigEndian::read_u32(&chunk[0..4]) == 1;
-                                            let firmware_version = BigEndian::read_u32(&chunk[4..8]);
-                                            println!("Got startup info: radiometry enabled: {}, firmware version: {}", radiometry_enabled, firmware_version);
-                                        }
-                                        0x2 => {
-                                            // Frame
-                                            let mut frame = [0u8; FRAME_LENGTH];
-                                            // NOTE: We need to swizzle the pixel bytes.
-                                            BigEndian::write_u32_into(unsafe { &u8_slice_to_u32(&chunk) }, &mut frame);
-                                            let back = FRAME_BUFFER.get_back().lock().unwrap();
-                                            back.replace(Some(frame));
-                                            if !got_first_frame {
-                                                got_first_frame = true;
-                                                println!("Got first frame from rp2040");
-                                            }
-                                            got_frame = true;
-                                        }
-                                        _ => println!("Unhandled transfer type, {:#x}", transfer_type)
-                                    }
-                                }
-                                Err(e) => {
-                                    println!("Failed reading all bytes of chunk {:?}", e);
-                                }
-                            }
-                        } else {
-                            // No bytes to read
-                        }
-                    } else {
-                        println!("Failed reading size to pull");
-                    }
-                    //println!("transfer took {:?}", start.elapsed());
-
-                    if got_frame {
-                        FRAME_BUFFER.swap();
-                        got_frame = false;
-                        let _ = tx.send(radiometry_enabled);
-                    } else {
-                        got_first_frame = false;
-                    }
-                } else {
-                    // println!("No ping from rp2040");
-                }
+            if num_bytes != 0 {
+                // info!("Header {:?}, tt {}, crc {}, num_bytes {}", &header, transfer_type, crc_from_remote, num_bytes);
             }
+
+            // if transfer_type < 1 || transfer_type > 6 {
+            //     panic!("unknown transfer type {}", transfer_type);
+            //     continue 'transfer;
+            // }
+
+            if transfer_type > 1 {
+                transfer_count += 1;
+            }
+            if transfer_type == CAMERA_BEGIN_FILE_TRANSFER {
+                start = Instant::now();
+            }
+
+
+            let now = chrono::Local::now();
+            if num_bytes != 0 {
+                // info!("-- [{}] SPI got transfer type {}, #{} of {} bytes", now.format("%H:%M:%S:%.3f"), transfer_type, transfer_count, num_bytes);
+            }
+            let mut chunk = &mut [0u8;8][..];
+            if num_bytes != 0 && transfer_type > 0 && transfer_type < 6 {
+                chunk = &mut raw_read_buffer[0..num_bytes];
+                //read_into_buffer(chunk, &mut spi);
+                spi.read(chunk).unwrap();
+            }
+            sleep(Duration::from_millis(1));
+            spi.write(&[1, 2, 3, 4]).unwrap();
+            sleep(Duration::from_millis(1));
+            continue;
+
+            // Write back the crc we calculated.
+            let crc = crc_check.checksum(&chunk);
+            LittleEndian::write_u16(&mut crc_buf[0..2], crc);
+            LittleEndian::write_u16(&mut crc_buf[2..4], crc);
+            if num_bytes != 0 {
+                info!("Returning calculated crc {:?}", &crc_buf);
+            }
+            //write_buffer(&header, &mut spi);
+            if num_bytes != 0 {
+                info!("sent crc verification");
+            }
+            if crc == crc_from_remote {
+                match transfer_type {
+                    CAMERA_CONNECT_INFO => {
+                        radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 1;
+                        let firmware_version = LittleEndian::read_u32(&chunk[4..8]);
+                        info!("Got startup info: radiometry enabled: {}, firmware version: {}", radiometry_enabled, firmware_version);
+                        // Terminate any existing file download.
+                        let in_progress_file_transfer = file_download.take();
+                        if let Some(file) = in_progress_file_transfer {
+                            warn!("Aborting in progress file transfer with {} bytes", file.len());
+                        }
+                    }
+                    CAMERA_RAW_FRAME_TRANSFER => {
+                        // Frame
+                        let mut frame = [0u8; FRAME_LENGTH];
+                        // NOTE: We need to swizzle the pixel bytes.
+                        LittleEndian::write_u32_into(unsafe { &u8_slice_to_u32(&chunk) }, &mut frame);
+                        let back = FRAME_BUFFER.get_back().lock().unwrap();
+                        back.replace(Some(frame));
+                        if !got_first_frame {
+                            got_first_frame = true;
+                            info!("Got first frame from rp2040");
+                        }
+                        got_frame = true;
+                        FRAME_BUFFER.swap();
+                        let _ = tx.send(radiometry_enabled);
+                    }
+                    CAMERA_BEGIN_FILE_TRANSFER => {
+                        if file_download.is_some() {
+                            warn!("Trying to begin file without ending current");
+                        }
+                        info!("Begin file transfer");
+                        // Open new file transfer
+
+                        part_count += 1;
+                        let mut file = Vec::with_capacity(10_000_000);
+                        file.extend_from_slice(&chunk);
+                        file_download = Some(file);
+                    }
+                    CAMERA_RESUME_FILE_TRANSFER => {
+                        if let Some(file) = &mut file_download {
+                            // Continue current file transfer
+                            //println!("Continue file transfer");
+                            part_count += 1;
+                            file.extend_from_slice(&chunk);
+                        } else {
+                            warn!("Trying to continue file with no open file");
+                        }
+                    }
+                    CAMERA_END_FILE_TRANSFER => {
+                        // End current file transfer
+                        if !file_download.is_some() {
+                            warn!("Trying to end file with no open file");
+                        }
+                        if let Some(mut file) = file_download.take() {
+                            // Continue current file transfer
+                            let megabytes_per_second = (file.len() + chunk.len()) as f32 / Instant::now().duration_since(start).as_secs_f32() / (1024.0 * 1024.0);
+                            info!("End file transfer, took {:?} for {} bytes, {}MB/s", Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
+                            part_count = 0;
+                            file.extend_from_slice(&chunk);
+                            save_file_to_disk(file);
+                        } else {
+                            warn!("Trying to end file with no open file");
+                        }
+                    }
+                    CAMERA_BEGIN_AND_END_FILE_TRANSFER => {
+                        if file_download.is_some() {
+                            info!("Trying to begin (and end) file without ending current");
+                        }
+                        // Open and end new file transfer
+                        part_count = 0;
+                        let mut file = Vec::new();
+                        file.extend_from_slice(&chunk);
+                        save_file_to_disk(file);
+                    }
+                    _ => if num_bytes != 0 { warn!("Unhandled transfer type, {:#x}", transfer_type) }
+                }
+            } else {
+                warn!("Crc check failed, remote was notified and will re-transmit");
+            }
+
         }
     }).unwrap().join();
 }
