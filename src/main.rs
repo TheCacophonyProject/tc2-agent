@@ -14,9 +14,8 @@ use thread_priority::ThreadBuilderExt;
 use argh::FromArgs;
 use std::fs;
 
-use log::{info, warn, error};
+use log::{info, warn};
 use simplelog::*;
-use chrono::{Datelike, Timelike};
 use crc::{Crc, CRC_16_XMODEM};
 
 const SEGMENT_LENGTH: usize = 9760;
@@ -256,103 +255,6 @@ fn get_socket_address(config: &ModeConfig) -> String {
     address
 }
 
-fn align_sync(spi: &mut Spi) {
-    let mut byte_out = [255u8; 1];
-    let mut byte_in = [0u8; 1];
-    //let mut i = 0;
-    //let mut match_count = 0;
-    // The idea is to both terminate the loop on the same transaction.
-    loop {
-        spi.transfer(&mut byte_in, &byte_out).unwrap();
-        if byte_in[0] == 1 {
-            byte_out[0] = 2;
-            spi.transfer(&mut byte_in, &byte_out).unwrap();
-            break;
-        } else {
-            byte_out[0] = 255;
-        }
-        // We transfer a byte, and get the same byte back 4 times, which means we're aligned.
-
-        //println!("Byte in {}, byte out {}, i {}", byte_in[0], byte_in[0] << 1, i);
-        // if byte_in[0] == (i + 1) {
-        //     match_count += 1;
-        //     i += 1;
-        //     if match_count == 4 {
-        //         break;
-        //     }
-        // } else {
-        //     // Try to align i.
-        //     i = 0;
-        //     match_count = 0;
-        // }
-        // if let Some(index) = pattern.iter().position(|x|*x == byte_in[0]) {
-        //     //i = (index + 1) % 4;
-        //     if reply_pattern[i] == byte_in[0] * 2 {
-        //         //println!("Got {}, set index {}", byte_in[0], (index + 1) % 4);
-        //         if i == reply_pattern.len() - 1 {
-        //             break;
-        //         }
-        //     } else {
-        //         i = (index + 1) % 4;
-        //         println!("Got {}, setting next index {}", byte_in[0], i);
-        //     }
-        // }
-    }
-    //println!("Here");
-
-    // 'outer: loop {
-    //     while spi.transfer(&mut byte_in, &reply_pattern[i..i + 1]).is_ok() && byte_in[0] == pattern[i] {
-    //         i += 1;
-    //         if i == pattern.len() {
-    //             break 'outer;
-    //         }
-    //     }
-    // }
-
-    //println!("Aligned");
-    // loop {
-    //     spi.read(&mut byte).unwrap();
-    //     if byte[0] == 1 {
-    //         spi.read(&mut byte).unwrap();
-    //         if byte[0] == 2 {
-    //             spi.read(&mut byte).unwrap();
-    //             if byte[0] == 3 {
-    //                 spi.read(&mut byte).unwrap();
-    //                 if byte[0] == 4 {
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
-}
-
-fn read_into_buffer(buf: &mut [u8], spi: &mut Spi) {
-    let mut i = 0;
-    let mut b = [0u8; 1];
-    loop {
-        let read = spi.read(&mut b);
-        if let Ok(size) = read {
-            buf[i] = b[0];
-            i += 1;
-            if i == buf.len() {
-                break;
-            }
-        }
-    }
-}
-
-fn write_buffer(buf: &[u8], spi: &mut Spi) {
-    let mut i = 0;
-    loop {
-        if let Ok(_) = spi.write(&buf[i..i + 1]) {
-            i += 1;
-            if i == buf.len() {
-                break;
-            }
-        }
-    }
-}
 
 fn main() {
     let log_config = ConfigBuilder::default().set_time_level(LevelFilter::Off).build();
