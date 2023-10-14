@@ -86,11 +86,18 @@ fn read_telemetry(frame: &Frame) -> Telemetry {
     }
 }
 
-fn send_frame(stream: &mut SocketStream) -> (Option<Telemetry>, bool) {
+fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetry>, bool) {
     let fb = {
         FRAME_BUFFER.get_front().lock().unwrap().take()
     };
-    if let Some(fb) = fb {
+    if let Some(mut fb) = fb {
+        if is_recording {
+            // Write recording flag into unused telemetry.
+            fb[639] = 1;
+        } else {
+            fb[638] = 0;
+        }
+
         // Make sure there are no zero/bad pixels:
         let pixels = unsafe { u8_as_u16_slice(&fb[640..]) };
         let pos = pixels.iter().position(|&px| px == 0);
@@ -323,7 +330,7 @@ fn main() {
                         let mut ms_elapsed = 0;
                         'send_loop: loop {
                             let rec_timeout_ms = 10;
-                            if let Ok(radiometry_enabled) = rx.recv_timeout(Duration::from_millis(rec_timeout_ms)) { // Increasing to 100 seams to make hte connect more reliably. Was there a reason for it being 1?
+                            if let Ok((radiometry_enabled, is_recording)) = rx.recv_timeout(Duration::from_millis(rec_timeout_ms)) { // Increasing to 100 seams to make hte connect more reliably. Was there a reason for it being 1?
                                 if !config.use_wifi && !sent_header {
                                     // Send the header info here:
                                     let header: &[u8] =
@@ -353,7 +360,7 @@ fn main() {
                                     reconnects = 0;
                                 }
                                 let s = Instant::now();
-                                let (telemetry, sent) = send_frame(&mut stream);
+                                let (telemetry, sent) = send_frame(&mut stream, is_recording);
                                 let e = s.elapsed().as_secs_f32();
                                 if e > 0.1 {
                                     info!("socket send took {}s", e);
@@ -493,93 +500,112 @@ fn main() {
                         spi.read(chunk).unwrap();
                         //info!("-- [{}] SPI got transfer type {}, #{} of {} bytes", now.format("%H:%M:%S:%.3f"), transfer_type, transfer_count, num_bytes);
 
-                        // Write back the crc we calculated.
-                        let crc = crc_check.checksum(&chunk);
-                        LittleEndian::write_u16(&mut crc_buf[4..6], crc);
-                        LittleEndian::write_u16(&mut crc_buf[6..8], crc);
+                        if transfer_type != CAMERA_RAW_FRAME_TRANSFER {
+                            // Write back the crc we calculated.
+                            let crc = crc_check.checksum(&chunk);
+                            LittleEndian::write_u16(&mut crc_buf[4..6], crc);
+                            LittleEndian::write_u16(&mut crc_buf[6..8], crc);
 
-                        if let Ok(_pin_level) = pin.poll_interrupt(false, None) {
-                            spi.write(&crc_buf).unwrap();
-                            if crc == crc_from_remote {
-                                match transfer_type {
-                                    CAMERA_CONNECT_INFO => {
-                                        radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 1;
-                                        let firmware_version = LittleEndian::read_u32(&chunk[4..8]);
-                                        info!("Got startup info: radiometry enabled: {}, firmware version: {}", radiometry_enabled, firmware_version);
-                                        // Terminate any existing file download.
-                                        let in_progress_file_transfer = file_download.take();
-                                        if let Some(file) = in_progress_file_transfer {
-                                            warn!("Aborting in progress file transfer with {} bytes", file.len());
+                            if let Ok(_pin_level) = pin.poll_interrupt(false, None) {
+                                spi.write(&crc_buf).unwrap();
+                                if crc == crc_from_remote {
+                                    match transfer_type {
+                                        CAMERA_CONNECT_INFO => {
+                                            radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 1;
+                                            let firmware_version = LittleEndian::read_u32(&chunk[4..8]);
+                                            info!("Got startup info: radiometry enabled: {}, firmware version: {}", radiometry_enabled, firmware_version);
+                                            // Terminate any existing file download.
+                                            let in_progress_file_transfer = file_download.take();
+                                            if let Some(file) = in_progress_file_transfer {
+                                                warn!("Aborting in progress file transfer with {} bytes", file.len());
+                                            }
                                         }
-                                    }
-                                    CAMERA_RAW_FRAME_TRANSFER => {
-                                        // Frame
-                                        let mut frame = [0u8; FRAME_LENGTH];
-                                        // NOTE: We need to swizzle the pixel bytes.
-                                        LittleEndian::write_u32_into(unsafe { &u8_slice_to_u32(&chunk) }, &mut frame);
-                                        let back = FRAME_BUFFER.get_back().lock().unwrap();
-                                        back.replace(Some(frame));
-                                        if !got_first_frame {
-                                            got_first_frame = true;
-                                            info!("Got first frame from rp2040");
+                                        CAMERA_RAW_FRAME_TRANSFER => {
+                                            // Frame
+                                            let mut frame = [0u8; FRAME_LENGTH];
+                                            frame.copy_from_slice(&chunk[0..FRAME_LENGTH]);
+                                            let back = FRAME_BUFFER.get_back().lock().unwrap();
+                                            back.replace(Some(frame));
+                                            if !got_first_frame {
+                                                got_first_frame = true;
+                                                info!("Got first frame from rp2040");
+                                            }
+                                            got_frame = true;
+                                            FRAME_BUFFER.swap();
+                                            let is_recording = crc_from_remote == 1;
+                                            let _ = tx.send((radiometry_enabled, is_recording));
                                         }
-                                        got_frame = true;
-                                        FRAME_BUFFER.swap();
-                                        let _ = tx.send(radiometry_enabled);
-                                    }
-                                    CAMERA_BEGIN_FILE_TRANSFER => {
-                                        if file_download.is_some() {
-                                            warn!("Trying to begin file without ending current");
-                                        }
-                                        info!("Begin file transfer");
-                                        // Open new file transfer
+                                        CAMERA_BEGIN_FILE_TRANSFER => {
+                                            if file_download.is_some() {
+                                                warn!("Trying to begin file without ending current");
+                                            }
+                                            info!("Begin file transfer");
+                                            // Open new file transfer
 
-                                        part_count += 1;
-                                        let mut file = Vec::with_capacity(10_000_000);
-                                        file.extend_from_slice(&chunk);
-                                        file_download = Some(file);
-                                    }
-                                    CAMERA_RESUME_FILE_TRANSFER => {
-                                        if let Some(file) = &mut file_download {
-                                            // Continue current file transfer
-                                            //println!("Continue file transfer");
                                             part_count += 1;
+                                            let mut file = Vec::with_capacity(10_000_000);
                                             file.extend_from_slice(&chunk);
-                                        } else {
-                                            warn!("Trying to continue file with no open file");
+                                            file_download = Some(file);
                                         }
-                                    }
-                                    CAMERA_END_FILE_TRANSFER => {
-                                        // End current file transfer
-                                        if !file_download.is_some() {
-                                            warn!("Trying to end file with no open file");
+                                        CAMERA_RESUME_FILE_TRANSFER => {
+                                            if let Some(file) = &mut file_download {
+                                                // Continue current file transfer
+                                                //println!("Continue file transfer");
+                                                part_count += 1;
+                                                file.extend_from_slice(&chunk);
+                                            } else {
+                                                warn!("Trying to continue file with no open file");
+                                            }
                                         }
-                                        if let Some(mut file) = file_download.take() {
-                                            // Continue current file transfer
-                                            let megabytes_per_second = (file.len() + chunk.len()) as f32 / Instant::now().duration_since(start).as_secs_f32() / (1024.0 * 1024.0);
-                                            info!("End file transfer, took {:?} for {} bytes, {}MB/s", Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
+                                        CAMERA_END_FILE_TRANSFER => {
+                                            // End current file transfer
+                                            if !file_download.is_some() {
+                                                warn!("Trying to end file with no open file");
+                                            }
+                                            if let Some(mut file) = file_download.take() {
+                                                // Continue current file transfer
+                                                let megabytes_per_second = (file.len() + chunk.len()) as f32 / Instant::now().duration_since(start).as_secs_f32() / (1024.0 * 1024.0);
+                                                info!("End file transfer, took {:?} for {} bytes, {}MB/s", Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
+                                                part_count = 0;
+                                                file.extend_from_slice(&chunk);
+                                                save_file_to_disk(file);
+                                            } else {
+                                                warn!("Trying to end file with no open file");
+                                            }
+                                        }
+                                        CAMERA_BEGIN_AND_END_FILE_TRANSFER => {
+                                            if file_download.is_some() {
+                                                info!("Trying to begin (and end) file without ending current");
+                                            }
+                                            // Open and end new file transfer
                                             part_count = 0;
+                                            let mut file = Vec::new();
                                             file.extend_from_slice(&chunk);
                                             save_file_to_disk(file);
-                                        } else {
-                                            warn!("Trying to end file with no open file");
                                         }
+                                        _ => if num_bytes != 0 { warn!("Unhandled transfer type, {:#x}", transfer_type) }
                                     }
-                                    CAMERA_BEGIN_AND_END_FILE_TRANSFER => {
-                                        if file_download.is_some() {
-                                            info!("Trying to begin (and end) file without ending current");
-                                        }
-                                        // Open and end new file transfer
-                                        part_count = 0;
-                                        let mut file = Vec::new();
-                                        file.extend_from_slice(&chunk);
-                                        save_file_to_disk(file);
-                                    }
-                                    _ => if num_bytes != 0 { warn!("Unhandled transfer type, {:#x}", transfer_type) }
+                                } else {
+                                    warn!("Crc check failed, remote was notified and will re-transmit");
                                 }
-                            } else {
-                                warn!("Crc check failed, remote was notified and will re-transmit");
                             }
+                        } else {
+                            // Frame
+                            let mut frame = [0u8; FRAME_LENGTH];
+                            // FIXME: Is this correct for outputting frames for thermal-recorder to make the CPTV files?
+
+                            BigEndian::write_u16_into(unsafe { &u8_slice_to_u16(&chunk[0..FRAME_LENGTH]) }, &mut frame);
+                            //frame.copy_from_slice(&chunk[0..FRAME_LENGTH]);
+                            let back = FRAME_BUFFER.get_back().lock().unwrap();
+                            back.replace(Some(frame));
+                            if !got_first_frame {
+                                got_first_frame = true;
+                                info!("Got first frame from rp2040");
+                            }
+                            got_frame = true;
+                            let is_recording = crc_from_remote == 1;
+                            FRAME_BUFFER.swap();
+                            let _ = tx.send((radiometry_enabled, is_recording));
                         }
 
                     }
@@ -591,4 +617,7 @@ fn main() {
 
 pub unsafe fn u8_slice_to_u32(p: &[u8]) -> &[u32] {
     core::slice::from_raw_parts((p as *const [u8]) as *const u32, p.len() / 4)
+}
+pub unsafe fn u8_slice_to_u16(p: &[u8]) -> &[u16] {
+    core::slice::from_raw_parts((p as *const [u8]) as *const u16, p.len() / 2)
 }
