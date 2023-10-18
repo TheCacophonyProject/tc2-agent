@@ -15,7 +15,7 @@ readonly TARGET_PATH=/home/pi/tc2-agent
 readonly SOURCE_PATH=./target/armv7-unknown-linux-musleabihf/release/tc2-agent
 readonly DEB_SOURCE_DIR=./target/armv7-unknown-linux-musleabihf/debian/
 readonly TARGET_ARCH=armv7-unknown-linux-musleabihf
-#readonly TARGET_ARCH=aarch64-unknown-linux-gnu # TODO Get it wrking with this target arch
+#readonly TARGET_ARCH=aarch64-unknown-linux-gnu # TODO Get it working with this target arch
 
 DEB_OPTION=false
 WIFI_OPTION=false
@@ -48,8 +48,8 @@ if [ "$DEB_OPTION" = true ]; then
 else
   scp ${SOURCE_PATH} ${TARGET_HOST}:${TARGET_PATH}
   if [ "$WIFI_OPTION" = true ]; then
-    # NOTE: To start in wifi frame serve mode with a custom spi speed:
-    ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH} --use-wifi --spi-speed 10
+    # NOTE: To start in wifi frame serve mode:
+    ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH} --use-wifi
   else
     ssh -t ${TARGET_HOST} sudo chrt -f 99 ${TARGET_PATH}
   fi

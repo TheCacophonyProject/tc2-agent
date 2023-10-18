@@ -18,6 +18,7 @@ use log::{info, warn};
 use simplelog::*;
 use crc::{Crc, CRC_16_XMODEM};
 
+const EXPECTED_FIRMWARE_VERSION: u32 = 3;
 const SEGMENT_LENGTH: usize = 9760;
 const CHUNK_LENGTH: usize = SEGMENT_LENGTH / 4;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
@@ -466,6 +467,9 @@ fn main() {
                         warn!("Header integrity check failed {:?}", header);
                         LittleEndian::write_u16(&mut crc_buf[4..6], 0);
                         LittleEndian::write_u16(&mut crc_buf[6..8], 0);
+
+                        // FIXME Shouldn't do this for raw frames, since that's not expecting a crc check
+                        // back.  Maybe we should just always expect a CRC sized payload?
                         spi.write(&crc_buf).unwrap();
                         continue 'transfer;
                     }
@@ -496,7 +500,9 @@ fn main() {
                     let now = chrono::Local::now();
                     // We sort of have to assume we got the right number of bytes to read, right?
                     if num_bytes != 0 && transfer_type > 0 && transfer_type < 6 {
-                        let mut chunk = &mut raw_read_buffer[0..num_bytes];
+                        let mut chunk = if transfer_type == CAMERA_RAW_FRAME_TRANSFER { &mut raw_read_buffer[0..num_bytes] } else {
+                            &mut raw_read_buffer[0..num_bytes]
+                        };
                         spi.read(chunk).unwrap();
                         //info!("-- [{}] SPI got transfer type {}, #{} of {} bytes", now.format("%H:%M:%S:%.3f"), transfer_type, transfer_count, num_bytes);
 
@@ -514,6 +520,7 @@ fn main() {
                                             radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 1;
                                             let firmware_version = LittleEndian::read_u32(&chunk[4..8]);
                                             info!("Got startup info: radiometry enabled: {}, firmware version: {}", radiometry_enabled, firmware_version);
+                                            assert_eq!(firmware_version, EXPECTED_FIRMWARE_VERSION, "Unsupported firmware version, expected {}, got {}", EXPECTED_FIRMWARE_VERSION, firmware_version);
                                             // Terminate any existing file download.
                                             let in_progress_file_transfer = file_download.take();
                                             if let Some(file) = in_progress_file_transfer {
