@@ -96,7 +96,7 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
             // Write recording flag into unused telemetry.
             fb[639] = 1;
         } else {
-            fb[638] = 0;
+            fb[639] = 0;
         }
 
         // Make sure there are no zero/bad pixels:
@@ -300,7 +300,7 @@ fn main() {
             run_pin.set_high();
             sleep(Duration::from_millis(1000));
         }
-        let debug_mode = true;
+        let debug_mode = false;
         if !debug_mode {
             let date = chrono::Local::now();
             println!("Resetting rp2040 on startup, {}", date.format("%Y-%m-%d--%H:%M:%S"));
@@ -343,7 +343,6 @@ fn main() {
                                     if let Err(_) = stream.write_all(header) {
                                         warn!("Failed sending header info");
                                     }
-                                    // println!("Sent header");
 
                                     // Clear existing
                                     if let Err(_) = stream.write_all(b"clear") {
@@ -355,7 +354,7 @@ fn main() {
                                 }
 
                                 if reconnects > 0 {
-                                    info!("Got frame connection");
+                                    info!("Got frame socket connection");
                                     reconnects = 0;
                                     prev_frame_num = None;
                                     reconnects = 0;
@@ -443,7 +442,6 @@ fn main() {
             if let Ok(_pin_level) = pin.poll_interrupt(false, None) {
                 if _pin_level.is_some() {
                     spi.read(&mut header).unwrap();
-                    //info!("Got header {:?}", header);
                     let transfer_type = header[0];
                     let transfer_type_dup = header[1];
 
@@ -458,10 +456,6 @@ fn main() {
                     let num_bytes_check = num_bytes == num_bytes_dup;
                     let header_crc_check = crc_from_remote == crc_from_remote_dup && crc_from_remote_inv_dup == crc_from_remote_inv && crc_from_remote_inv.reverse_bits() == crc_from_remote;
                     let transfer_type_check = transfer_type == transfer_type_dup;
-
-                    if num_bytes != 0 {
-                        //info!("Header {:?}, tt {}, crc {}, num_bytes {}", &header, transfer_type, crc_from_remote, num_bytes);
-                    }
 
                     if !num_bytes_check || !header_crc_check || !transfer_type_check {
                         warn!("Header integrity check failed {:?}", header);
@@ -504,7 +498,6 @@ fn main() {
                             &mut raw_read_buffer[0..num_bytes]
                         };
                         spi.read(chunk).unwrap();
-                        //info!("-- [{}] SPI got transfer type {}, #{} of {} bytes", now.format("%H:%M:%S:%.3f"), transfer_type, transfer_count, num_bytes);
 
                         if transfer_type != CAMERA_RAW_FRAME_TRANSFER {
                             // Write back the crc we calculated.
@@ -599,10 +592,7 @@ fn main() {
                         } else {
                             // Frame
                             let mut frame = [0u8; FRAME_LENGTH];
-                            // FIXME: Is this correct for outputting frames for thermal-recorder to make the CPTV files?
-
                             BigEndian::write_u16_into(unsafe { &u8_slice_to_u16(&chunk[0..FRAME_LENGTH]) }, &mut frame);
-                            //frame.copy_from_slice(&chunk[0..FRAME_LENGTH]);
                             let back = FRAME_BUFFER.get_back().lock().unwrap();
                             back.replace(Some(frame));
                             if !got_first_frame {
