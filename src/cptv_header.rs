@@ -6,6 +6,7 @@ use nom::number::streaming::{le_f32, le_u16, le_u32, le_u64, le_u8};
 use std::error::Error;
 use std::io::Read;
 
+// Decode CPTV headers
 #[derive(Debug, Clone)]
 pub struct Cptv2Header {
     pub timestamp: u64,
