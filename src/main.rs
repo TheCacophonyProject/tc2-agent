@@ -1,96 +1,50 @@
-use std::{time::{Duration}, thread, cell::RefCell, sync::Mutex, io};
-use std::io::{Write};
-use std::net::{Shutdown, TcpStream};
-use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use rppal::{spi::{Bus, Mode, SlaveSelect, Spi, Polarity}, gpio::{Gpio, Trigger}};
-use std::sync::mpsc::channel;
+mod cptv_header;
+mod device_config;
+mod double_buffer;
+mod mode_config;
+mod socket_stream;
+mod telemetry;
+mod utils;
+
+use argh::FromArgs;
+use byteorder::{BigEndian, ByteOrder, LittleEndian};
+use chrono::{NaiveDateTime, TimeZone};
+use rppal::spi::BitOrder;
+use rppal::{
+    gpio::{Gpio, Trigger},
+    spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
+};
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+use std::sync::mpsc::{channel, TryRecvError};
 use std::thread::sleep;
 use std::time::Instant;
-use rppal::spi::BitOrder;
-use byteorder::{LittleEndian, ByteOrder, BigEndian};
-use thread_priority::*;
+use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
-use argh::FromArgs;
-use std::fs;
+use thread_priority::*;
 
-use log::{info, warn};
-use simplelog::*;
+use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
+use crate::device_config::DeviceConfig;
+use crate::double_buffer::DoubleBuffer;
+use crate::mode_config::ModeConfig;
+use crate::socket_stream::{get_socket_address, SocketStream};
+use crate::telemetry::{read_telemetry, Telemetry};
+use crate::utils::u8_slice_as_u16_slice;
 use crc::{Crc, CRC_16_XMODEM};
+use log::{error, info, warn};
+use notify::event::{AccessKind, AccessMode};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
+use simplelog::*;
 
 const EXPECTED_FIRMWARE_VERSION: u32 = 3;
 const SEGMENT_LENGTH: usize = 9760;
 const CHUNK_LENGTH: usize = SEGMENT_LENGTH / 4;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
-type Frame = [u8; FRAME_LENGTH];
-pub static FRAME_BUFFER: DoubleBuffer = DoubleBuffer {
-    front: Mutex::new(RefCell::new(None)),
-    back: Mutex::new(RefCell::new(None)),
-    swapper: AtomicUsize::new(0),
-};
-
-pub struct DoubleBuffer {
-    pub front: Mutex<RefCell<Option<Frame>>>,
-    pub back: Mutex<RefCell<Option<Frame>>>,
-    swapper: AtomicUsize,
-}
-
-impl DoubleBuffer {
-    pub fn swap(&self) {
-        self.swapper.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn get_front(&self) -> &Mutex<RefCell<Option<Frame>>> {
-        let val = self.swapper.load(Ordering::Acquire);
-        if val % 2 == 0 {
-            &self.front
-        } else {
-            &self.back
-        }
-    }
-
-    pub fn get_back(&self) -> &Mutex<RefCell<Option<Frame>>> {
-        let val = self.swapper.load(Ordering::Acquire);
-        if val % 2 == 0 {
-            &self.back
-        } else {
-            &self.front
-        }
-    }
-}
-pub unsafe fn u8_as_u16_slice(p: &[u8]) -> &[u16] {
-    core::slice::from_raw_parts((p as *const [u8]) as *const u16, p.len() / 2)
-}
-
-struct Telemetry {
-    frame_num: u32,
-    msec_on: u32,
-    ffc_in_progress: bool,
-    msec_since_last_ffc: u32
-}
-
-fn read_telemetry(frame: &Frame) -> Telemetry {
-    let mut buf = [0u8;160];
-    BigEndian::write_u16_into(unsafe  { u8_as_u16_slice(&frame[0..160]) }, &mut buf);
-    let frame_num = LittleEndian::read_u32(&buf[40..44]);
-    let msec_on = LittleEndian::read_u32(&buf[2..6]);
-    let time_at_last_ffc = LittleEndian::read_u32(&buf[60..64]);
-    let msec_since_last_ffc = msec_on - time_at_last_ffc;
-    let status_bits = LittleEndian::read_u32(&buf[6..10]);
-    let ffc_state = (status_bits >> 4) & 0b11;
-    let ffc_in_progress = ffc_state == 0b10;
-    Telemetry {
-        frame_num,
-        msec_on,
-        ffc_in_progress,
-        msec_since_last_ffc
-    }
-}
-
+pub type Frame = [u8; FRAME_LENGTH];
+pub static FRAME_BUFFER: DoubleBuffer = DoubleBuffer::new();
 fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetry>, bool) {
-    let fb = {
-        FRAME_BUFFER.get_front().lock().unwrap().take()
-    };
+    let fb = { FRAME_BUFFER.get_front().lock().unwrap().take() };
     if let Some(mut fb) = fb {
         if is_recording {
             // Write recording flag into unused telemetry.
@@ -100,13 +54,13 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
         }
 
         // Make sure there are no zero/bad pixels:
-        let pixels = unsafe { u8_as_u16_slice(&fb[640..]) };
+        let pixels = u8_slice_as_u16_slice(&fb[640..]);
         let pos = pixels.iter().position(|&px| px == 0);
         let mut found_bad_pixels = false;
-        if let Some(_pos) = pos {
-            // let y = pos / 160;
-            // let x = pos - (y * 160);
-            // println!("Zero px found at ({}, {}) not sending", x, y);
+        if let Some(pos) = pos {
+            let y = pos / 160;
+            let x = pos - (y * 160);
+            println!("Zero px found at ({}, {}) not sending", x, y);
             found_bad_pixels = true;
         }
         // Make sure each frame number is ascending correctly.
@@ -120,87 +74,48 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
             (Some(telemetry), true)
         }
     } else {
-        return (None, true)
+        return (None, true);
     }
 }
 
-fn save_file_to_disk(bytes: Vec<u8>) {
-    thread::spawn(move || {
-        let now = chrono::Local::now();
-        fs::write(format!("{}.cptv", now.format("%Y-%m-%d--%H-%M-%S")), &bytes).unwrap();
+fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>) {
+    thread::spawn(move || match decode_cptv_header_streaming(&cptv_bytes) {
+        Ok(header) => match header {
+            CptvHeader::V2(header) => {
+                let recording_date_time =
+                    NaiveDateTime::from_timestamp_millis(header.timestamp as i64 / 1000)
+                        .unwrap_or(chrono::Local::now().naive_local());
+                let path = format!(
+                    "/var/spool/cptv/{}.cptv",
+                    recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+                );
+                // If the file already exists, don't re-save it.
+                let is_existing_file = match fs::metadata(&path) {
+                    Ok(metadata) => metadata.len() as usize == cptv_bytes.len(),
+                    Err(_) => false,
+                };
+                if !is_existing_file {
+                    match fs::write(&path, &cptv_bytes) {
+                        Ok(()) => {
+                            info!("Saved CPTV file {}", path);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed writing CPTV file to storage at {}, reason: {}",
+                                path, e
+                            );
+                        }
+                    }
+                } else {
+                    error!("File {} already exists, discarding duplicate", path);
+                }
+            }
+            _ => error!("Unsupported CPTV file format, discarding file"),
+        },
+        Err(e) => {
+            error!("Invalid CPTV file: ({:?}), discarding", e);
+        }
     });
-}
-
-struct SocketStream {
-    unix: Option<UnixStream>,
-    tcp: Option<TcpStream>
-}
-
-impl SocketStream {
-    fn flush(&mut self) -> io::Result<()> {
-        match &mut self.tcp {
-            Some(stream) => stream.flush(),
-            None => match &mut self.unix {
-                Some(stream) => stream.flush(),
-                None => unreachable!("Must have stream")
-            }
-        }
-    }
-
-    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
-        match &mut self.tcp {
-            Some(stream) => stream.write_all(bytes),
-            None => match &mut self.unix {
-                Some(stream) => stream.write_all(bytes),
-                None => unreachable!("Must have stream")
-            }
-        }
-    }
-
-    fn shutdown(&mut self) -> io::Result<()> {
-        match &mut self.tcp {
-            Some(stream) => stream.shutdown(Shutdown::Both),
-            None => match &mut self.unix {
-                Some(stream) => stream.shutdown(Shutdown::Both),
-                None => unreachable!("Must have stream")
-            }
-        }
-    }
-}
-
-fn get_stream(use_wifi: &bool, address: &str) -> io::Result<SocketStream> {
-    if !*use_wifi {
-        UnixStream::connect(address).map(|stream| {
-            //stream.set_write_timeout(Some(Duration::from_millis(1500))).unwrap();
-            //stream.set_nonblocking(true).unwrap();
-            SocketStream { unix: Some(stream), tcp: None }
-        })
-
-    } else {
-        TcpStream::connect(address).map(|stream| {
-           //stream.set_nonblocking(true).unwrap();
-           stream.set_nodelay(true).unwrap();
-           stream.set_write_timeout(Some(Duration::from_millis(1500))).unwrap();
-           SocketStream { unix: None, tcp: Some(stream) }
-       })
-    }
-}
-
-fn default_spi_speed() -> u32 {
-    12
-}
-
-#[derive(FromArgs)]
-/// Agent for `tc2-firmware` to output thermal camera frames to either a local unix domain socket,
-/// or a remote viewer application via wifi.
-struct ModeConfig {
-    /// output frames over wifi to `tc2-frames` desktop application
-    #[argh(switch)]
-    use_wifi: bool,
-
-    /// raspberry pi SPI speed in Mhz, defaults to 12
-    #[argh(option, default = "default_spi_speed()")]
-    spi_speed: u32
 }
 
 const CAMERA_CONNECT_INFO: u8 = 0x1;
@@ -215,65 +130,68 @@ const CAMERA_END_FILE_TRANSFER: u8 = 0x5;
 
 const CAMERA_BEGIN_AND_END_FILE_TRANSFER: u8 = 0x6;
 
-fn get_socket_address(config: &ModeConfig) -> String {
-    let address = {
-        // Find the socket address
-        let address = if config.use_wifi {
-            // Scan for servers on port 34254.
-            use mdns_sd::{ServiceDaemon, ServiceEvent};
-            // Create a daemon
-            let mdns = ServiceDaemon::new().expect("Failed to create daemon");
-
-            // Browse for a service type.
-            let service_type = "_mdns-tc2-frames._udp.local.";
-            let receiver = mdns.browse(service_type).expect("Failed to browse");
-            let mut address = None;
-            info!("Trying to resolve tc2-frames service, please ensure t2c-frames app is running on the same network");
-            'service_finder: loop {
-                while let Ok(event) = receiver.recv() {
-                    match event {
-                        ServiceEvent::ServiceResolved(info) => {
-                            for add in info.get_addresses().iter() {
-                                address = Some(add.to_string());
-                                info!("Resolved a tc2-frames service at: {:?}", add);
-                                break 'service_finder;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            address
-        } else {
-            Some("/var/run/lepton-frames".to_string())
-        };
-        if let Some(address) = &address {
-            info!("Got address {}", address);
-        }
-        if config.use_wifi && address.is_none() {
-            panic!("t2c-frames service not found on local network");
-        }
-        let address = if config.use_wifi {
-            format!("{}:34254", address.unwrap())
-        } else {
-            address.unwrap()
-        };
-        address
-    };
-    address
-}
-
-
 fn main() {
-    let log_config = ConfigBuilder::default().set_time_level(LevelFilter::Off).build();
-    TermLogger::init(LevelFilter::Info, log_config, TerminalMode::Mixed, ColorChoice::Auto).unwrap();
+    let log_config = ConfigBuilder::default()
+        .set_time_level(LevelFilter::Off)
+        .build();
+    TermLogger::init(
+        LevelFilter::Info,
+        log_config,
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    )
+    .unwrap();
     println!("\n=========\nStarting thermal camera 2 agent, run with --help to see options.\n");
     let config: ModeConfig = argh::from_env();
+    let device_config = device_config::load_device_config();
+    if device_config.is_none() {
+        error!("Config not found at /etc/cacophony/config.toml");
+        std::process::exit(1);
+    }
+    let mut current_config = device_config.unwrap();
+    let initial_config = current_config.clone();
+    let (config_tx, config_rx) = channel();
+    let mut watcher = notify::recommended_watcher(move |res| match res {
+        Ok(Event { kind, .. }) => {
+            match kind {
+                EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
+                    // File got written to
+                    // Send event to
+                    let device_config = device_config::load_device_config();
+                    match device_config {
+                        Some(config) => {
+                            // Send to rp2040 to write via a channel somehow.  Maybe we have to restart the rp2040 here so that it re-handshakes and
+                            // picks up the new info
+                            if config != current_config {
+                                current_config = config;
+                                let _ = config_tx.send(current_config.clone());
+                            }
+                        }
+                        None => {
+                            error!("Config not found at /etc/cacophony/config.toml");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(e) => error!("file watch error for /etc/cacophony/config.toml: {:?}", e),
+    })
+    .unwrap();
+
+    // Add a path to be watched. All files and directories at that path and
+    // below will be monitored for changes.
+    watcher
+        .watch(
+            Path::new("/etc/cacophony/config.toml"),
+            RecursiveMode::NonRecursive,
+        )
+        .unwrap();
 
     // We want real-time priority for all the work we do.
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
-
 
         // 1MB buffer that we won't fully use at the moment.
         let mut raw_read_buffer = [0u8; 1024 * 1024];
@@ -300,6 +218,8 @@ fn main() {
             run_pin.set_high();
             sleep(Duration::from_millis(1000));
         }
+        // Debug mode, or camera is in low-power mode.
+        // Start tc2-agent with a --low-power argument perhaps if you want low power mode, and it can tell the camera when it handshakes.
         let debug_mode = true;
         if !debug_mode {
             let date = chrono::Local::now();
@@ -312,6 +232,7 @@ fn main() {
         pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
         let (tx, rx) = channel();
+        let (restart_tx, restart_rx) = channel();
 
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
             // Spawn a thread which can output the frames, converted to rgb grayscale
@@ -324,16 +245,41 @@ fn main() {
             let mut prev_time_on_msec = 0u32;
 
             loop {
-                match get_stream(&config.use_wifi, &address) {
+                if let Ok(_) = restart_rx.try_recv() {
+                    error!("Restarting on config change");
+                    if !run_pin.is_set_high() {
+                        run_pin.set_high();
+                        sleep(Duration::from_millis(1000));
+                    }
+
+                    run_pin.set_low();
+                    sleep(Duration::from_millis(1000));
+                    run_pin.set_high();
+                }
+                match SocketStream::from_address(&address, *&config.use_wifi) {
                     Ok(mut stream) => {
                         info!("Connected to {}, waiting for frames from rp2040", if config.use_wifi { &"tc2-frames server"} else { &"thermal-recorder unix socket"});
                         let mut sent_header = false;
                         let mut ms_elapsed = 0;
                         'send_loop: loop {
-                            let rec_timeout_ms = 10;
-                            if let Ok((radiometry_enabled, is_recording)) = rx.recv_timeout(Duration::from_millis(rec_timeout_ms)) { // Increasing to 100 seams to make hte connect more reliably. Was there a reason for it being 1?
+                            // Check if we need to reset rp2040 because of a config change
+                            if let Ok(_) = restart_rx.try_recv() {
+                                error!("Restarting on config change");
+                                if !run_pin.is_set_high() {
+                                    run_pin.set_high();
+                                    sleep(Duration::from_millis(1000));
+                                }
+
+                                run_pin.set_low();
+                                sleep(Duration::from_millis(1000));
+                                run_pin.set_high();
+                            }
+
+                            let recv_timeout_ms = 10;
+                            if let Ok((radiometry_enabled, is_recording)) = rx.recv_timeout(Duration::from_millis(recv_timeout_ms)) {
                                 if !config.use_wifi && !sent_header {
                                     // Send the header info here:
+                                    // TODO: Actually get camera serial from rp2040
                                     let header: &[u8] =
                                         if radiometry_enabled {
                                             b"ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: lepton3.5\nBrand: flir\nFPS: 9\nFirmware: 1.0\nCameraSerial: f00bar\n\n"
@@ -343,14 +289,12 @@ fn main() {
                                     if let Err(_) = stream.write_all(header) {
                                         warn!("Failed sending header info");
                                     }
-                                    // println!("Sent header");
 
                                     // Clear existing
                                     if let Err(_) = stream.write_all(b"clear") {
                                         warn!("Failed clearing buffer");
                                     }
                                     let _ = stream.flush();
-                                    // println!("Clear buffer");
                                     sent_header = true;
                                 }
 
@@ -389,7 +333,7 @@ fn main() {
                                 ms_elapsed = 0;
                             } else if !debug_mode {
                                 const NUM_ATTEMPTS_BEFORE_RESET: usize = 10;
-                                ms_elapsed += rec_timeout_ms;
+                                ms_elapsed += recv_timeout_ms;
                                 if ms_elapsed > 5000 {
                                     ms_elapsed = 0;
                                     reconnects += 1;
@@ -427,16 +371,50 @@ fn main() {
         let mut file_download: Option<Vec<u8>> = None;
         let mut transfer_count = 0;
         let mut header = [0u8; 18];
-        let mut crc_buf = [0u8; 32];
-        crc_buf[0] = 1;
-        crc_buf[1] = 2;
-        crc_buf[2] = 3;
-        crc_buf[3] = 4;
+        let mut return_payload_buf = [0u8; 32 + 104];
+        // If it's the initial handshake, we need to send to the rp2040:
+        // - device_id (u32) - 4
+        // - device_name (64 bytes) 64
+        // - latitude (f32) - 4
+        // - longitude (f32) - 4
+        // - altitude (u8, f32) - 5
+        // - loc_timestamp (u64) - 8
+        // - accuracy (u8, f32) - 5
+
+        // - window start (u8, i32) - 5
+        // - window_end (u8, i32) - 5
+        // --- 104 bytes
+
+        return_payload_buf[0] = 1;
+        return_payload_buf[1] = 2;
+        return_payload_buf[2] = 3;
+        return_payload_buf[3] = 4;
+
         let mut part_count = 0;
         let mut start = Instant::now();
         let crc_check = Crc::<u16>::new(&CRC_16_XMODEM);
         let max_size: usize = raw_read_buffer.len();
+        let mut device_config: DeviceConfig = initial_config;
+        let mut rp2040_needs_reset = false;
         'transfer: loop {
+            // Check once per frame to see if the config file may have been changed
+            let updated_config = config_rx.try_recv();
+            match updated_config {
+                Ok(config) => {
+                    // NOTE: Defer this till a time we know the rp2040 isn't bust writing to flash memory.
+                    rp2040_needs_reset = true;
+                    device_config = config;
+                }
+                Err(kind) => {
+                    match kind {
+                        TryRecvError::Empty => {},
+                        TryRecvError::Disconnected => {
+                            warn!("Disconnected from config file watcher channel");
+                        },
+                    }
+                }
+            }
+
             let mut got_frame = false;
             let mut radiometry_enabled = false;
             // Align our SPI reads to the start of the sequence 1, 2, 3, 4
@@ -459,34 +437,32 @@ fn main() {
                     let header_crc_check = crc_from_remote == crc_from_remote_dup && crc_from_remote_inv_dup == crc_from_remote_inv && crc_from_remote_inv.reverse_bits() == crc_from_remote;
                     let transfer_type_check = transfer_type == transfer_type_dup;
 
+
                     if num_bytes != 0 {
                         //info!("Header {:?}, tt {}, crc {}, num_bytes {}", &header, transfer_type, crc_from_remote, num_bytes);
                     }
 
                     if !num_bytes_check || !header_crc_check || !transfer_type_check {
                         warn!("Header integrity check failed {:?}", header);
-                        LittleEndian::write_u16(&mut crc_buf[4..6], 0);
-                        LittleEndian::write_u16(&mut crc_buf[6..8], 0);
-
-                        // FIXME Shouldn't do this for raw frames, since that's not expecting a crc check
-                        // back.  Maybe we should just always expect a CRC sized payload?
-                        spi.write(&crc_buf).unwrap();
+                        LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
+                        LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
+                        spi.write(&return_payload_buf).unwrap();
                         continue 'transfer;
                     }
 
                     if num_bytes == 0 {
                         warn!("zero-sized payload");
-                        LittleEndian::write_u16(&mut crc_buf[4..6], 0);
-                        LittleEndian::write_u16(&mut crc_buf[6..8], 0);
-                        spi.write(&crc_buf).unwrap();
+                        LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
+                        LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
+                        spi.write(&return_payload_buf).unwrap();
                         continue 'transfer;
                     }
 
-                    if transfer_type < 1 || transfer_type > 6 {
+                    if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_BEGIN_AND_END_FILE_TRANSFER {
                         warn!("unknown transfer type {}", transfer_type);
-                        LittleEndian::write_u16(&mut crc_buf[4..6], 0);
-                        LittleEndian::write_u16(&mut crc_buf[6..8], 0);
-                        spi.write(&crc_buf).unwrap();
+                        LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
+                        LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
+                        spi.write(&return_payload_buf).unwrap();
                         continue 'transfer;
                     }
 
@@ -500,20 +476,27 @@ fn main() {
                     let now = chrono::Local::now();
                     // We sort of have to assume we got the right number of bytes to read, right?
                     if num_bytes != 0 && transfer_type > 0 && transfer_type < 6 {
-                        let mut chunk = if transfer_type == CAMERA_RAW_FRAME_TRANSFER { &mut raw_read_buffer[0..num_bytes] } else {
-                            &mut raw_read_buffer[0..num_bytes]
-                        };
+                        let mut chunk = &mut raw_read_buffer[0..num_bytes];
                         spi.read(chunk).unwrap();
                         //info!("-- [{}] SPI got transfer type {}, #{} of {} bytes", now.format("%H:%M:%S:%.3f"), transfer_type, transfer_count, num_bytes);
 
                         if transfer_type != CAMERA_RAW_FRAME_TRANSFER {
                             // Write back the crc we calculated.
                             let crc = crc_check.checksum(&chunk);
-                            LittleEndian::write_u16(&mut crc_buf[4..6], crc);
-                            LittleEndian::write_u16(&mut crc_buf[6..8], crc);
+                            LittleEndian::write_u16(&mut return_payload_buf[4..6], crc);
+                            LittleEndian::write_u16(&mut return_payload_buf[6..8], crc);
+
+                            if transfer_type == CAMERA_CONNECT_INFO {
+                                // Write all the info we need about the device:
+                                write_device_config(&mut return_payload_buf, &device_config);
+                            }
 
                             if let Ok(_pin_level) = pin.poll_interrupt(false, None) {
-                                spi.write(&crc_buf).unwrap();
+                                if transfer_type == CAMERA_CONNECT_INFO {
+                                    spi.write(&return_payload_buf).unwrap();
+                                } else {
+                                    spi.write(&return_payload_buf[0..32]).unwrap();
+                                }
                                 if crc == crc_from_remote {
                                     match transfer_type {
                                         CAMERA_CONNECT_INFO => {
@@ -575,7 +558,7 @@ fn main() {
                                                 info!("End file transfer, took {:?} for {} bytes, {}MB/s", Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
                                                 part_count = 0;
                                                 file.extend_from_slice(&chunk);
-                                                save_file_to_disk(file);
+                                                save_cptv_file_to_disk(file);
                                             } else {
                                                 warn!("Trying to end file with no open file");
                                             }
@@ -588,7 +571,7 @@ fn main() {
                                             part_count = 0;
                                             let mut file = Vec::new();
                                             file.extend_from_slice(&chunk);
-                                            save_file_to_disk(file);
+                                            save_cptv_file_to_disk(file);
                                         }
                                         _ => if num_bytes != 0 { warn!("Unhandled transfer type, {:#x}", transfer_type) }
                                     }
@@ -599,10 +582,7 @@ fn main() {
                         } else {
                             // Frame
                             let mut frame = [0u8; FRAME_LENGTH];
-                            // FIXME: Is this correct for outputting frames for thermal-recorder to make the CPTV files?
-
-                            BigEndian::write_u16_into(unsafe { &u8_slice_to_u16(&chunk[0..FRAME_LENGTH]) }, &mut frame);
-                            //frame.copy_from_slice(&chunk[0..FRAME_LENGTH]);
+                            BigEndian::write_u16_into(u8_slice_as_u16_slice(&chunk[0..FRAME_LENGTH]), &mut frame);
                             let back = FRAME_BUFFER.get_back().lock().unwrap();
                             back.replace(Some(frame));
                             if !got_first_frame {
@@ -611,6 +591,12 @@ fn main() {
                             }
                             got_frame = true;
                             let is_recording = crc_from_remote == 1;
+                            if !is_recording && rp2040_needs_reset {
+                                rp2040_needs_reset = false;
+                                let date = chrono::Local::now();
+                                error!("Resetting rp2040 on config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                let _ = restart_tx.send(true);
+                            }
                             FRAME_BUFFER.swap();
                             let _ = tx.send((radiometry_enabled, is_recording));
                         }
@@ -621,10 +607,45 @@ fn main() {
         }
     }).unwrap().join();
 }
+fn write_device_config(return_payload_buf: &mut [u8], device_config: &DeviceConfig) {
+    let device_id = device_config.device_id();
+    LittleEndian::write_u32(&mut return_payload_buf[8..12], device_id);
+    let device_name = device_config.device_name();
+    let (latitude, longitude) = device_config.lat_lng();
+    LittleEndian::write_f32(&mut return_payload_buf[12..16], latitude);
+    LittleEndian::write_f32(&mut return_payload_buf[16..20], longitude);
+    let (has_loc_timestamp, timestamp) = if let Some(timestamp) = device_config.location_timestamp()
+    {
+        (1u8, timestamp)
+    } else {
+        (0u8, 0)
+    };
+    return_payload_buf[20] = has_loc_timestamp;
+    LittleEndian::write_u64(&mut return_payload_buf[21..29], timestamp);
+    let (has_loc_altitude, altitude) = if let Some(altitude) = device_config.location_altitude() {
+        (1u8, altitude)
+    } else {
+        (0u8, 0.0)
+    };
+    return_payload_buf[29] = has_loc_altitude;
+    LittleEndian::write_f32(&mut return_payload_buf[30..34], altitude);
+    let (has_loc_accuracy, accuracy) = if let Some(accuracy) = device_config.location_accuracy() {
+        (1u8, accuracy)
+    } else {
+        (0u8, 0.0)
+    };
+    return_payload_buf[34] = has_loc_accuracy;
+    LittleEndian::write_f32(&mut return_payload_buf[35..39], accuracy);
+    let (abs_rel_start, abs_rel_end) = device_config.recording_window();
+    let (start_is_abs, start_seconds_offset) = abs_rel_start.time_offset();
+    let (end_is_abs, end_seconds_offset) = abs_rel_end.time_offset();
+    return_payload_buf[39] = if start_is_abs { 1 } else { 0 };
+    LittleEndian::write_i32(&mut return_payload_buf[40..44], start_seconds_offset);
+    return_payload_buf[44] = if end_is_abs { 1 } else { 0 };
+    LittleEndian::write_i32(&mut return_payload_buf[45..49], end_seconds_offset);
 
-pub unsafe fn u8_slice_to_u32(p: &[u8]) -> &[u32] {
-    core::slice::from_raw_parts((p as *const [u8]) as *const u32, p.len() / 4)
-}
-pub unsafe fn u8_slice_to_u16(p: &[u8]) -> &[u16] {
-    core::slice::from_raw_parts((p as *const [u8]) as *const u16, p.len() / 2)
+    let device_name_length = device_name.len().min(63) as u8;
+    return_payload_buf[49] = device_name_length;
+    &mut return_payload_buf[50..50 + device_name_length]
+        .copy_from_slice(&device_name[0..device_name_length]);
 }
