@@ -25,6 +25,7 @@ nom = "7.1.3"
 serde = { version = "1.0.183", features = ["derive"] }
 toml = "0.7.6"
 notify = { version = "6.1.1", default-features = false }
+chrono-tz = "0.8.3"
 
 [target.armv7-unknown-linux-musleabihf]
 # applies to target-specific builds

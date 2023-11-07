@@ -78,15 +78,18 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
     }
 }
 
-fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>) {
+fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
+    let output_dir = String::from(output_dir);
     thread::spawn(move || match decode_cptv_header_streaming(&cptv_bytes) {
         Ok(header) => match header {
             CptvHeader::V2(header) => {
                 let recording_date_time =
                     NaiveDateTime::from_timestamp_millis(header.timestamp as i64 / 1000)
                         .unwrap_or(chrono::Local::now().naive_local());
+                // TODO: Check output dir exists, otherwise create it.
                 let path = format!(
-                    "/var/spool/cptv/{}.cptv",
+                    "{}/{}.cptv",
+                    output_dir,
                     recording_date_time.format("%Y-%m-%d--%H-%M-%S")
                 );
                 // If the file already exists, don't re-save it.
@@ -164,6 +167,7 @@ fn main() {
                             // picks up the new info
                             if config != current_config {
                                 current_config = config;
+                                warn!("Config updated");
                                 let _ = config_tx.send(current_config.clone());
                             }
                         }
@@ -401,7 +405,8 @@ fn main() {
             let updated_config = config_rx.try_recv();
             match updated_config {
                 Ok(config) => {
-                    // NOTE: Defer this till a time we know the rp2040 isn't bust writing to flash memory.
+                    // NOTE: Defer this till a time we know the rp2040 isn't writing to flash memory.
+                    info!("Config updated, should update pi");
                     rp2040_needs_reset = true;
                     device_config = config;
                 }
@@ -488,7 +493,7 @@ fn main() {
 
                             if transfer_type == CAMERA_CONNECT_INFO {
                                 // Write all the info we need about the device:
-                                write_device_config(&mut return_payload_buf, &device_config);
+                                write_device_config(&mut return_payload_buf[8..], &device_config);
                             }
 
                             if let Ok(_pin_level) = pin.poll_interrupt(false, None) {
@@ -558,7 +563,7 @@ fn main() {
                                                 info!("End file transfer, took {:?} for {} bytes, {}MB/s", Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
                                                 part_count = 0;
                                                 file.extend_from_slice(&chunk);
-                                                save_cptv_file_to_disk(file);
+                                                save_cptv_file_to_disk(file, device_config.output_dir());
                                             } else {
                                                 warn!("Trying to end file with no open file");
                                             }
@@ -571,7 +576,7 @@ fn main() {
                                             part_count = 0;
                                             let mut file = Vec::new();
                                             file.extend_from_slice(&chunk);
-                                            save_cptv_file_to_disk(file);
+                                            save_cptv_file_to_disk(file, device_config.output_dir());
                                         }
                                         _ => if num_bytes != 0 { warn!("Unhandled transfer type, {:#x}", transfer_type) }
                                     }
@@ -609,43 +614,49 @@ fn main() {
 }
 fn write_device_config(return_payload_buf: &mut [u8], device_config: &DeviceConfig) {
     let device_id = device_config.device_id();
-    LittleEndian::write_u32(&mut return_payload_buf[8..12], device_id);
-    let device_name = device_config.device_name();
+    LittleEndian::write_u32(&mut return_payload_buf[0..4], device_id);
+
     let (latitude, longitude) = device_config.lat_lng();
-    LittleEndian::write_f32(&mut return_payload_buf[12..16], latitude);
-    LittleEndian::write_f32(&mut return_payload_buf[16..20], longitude);
+    LittleEndian::write_f32(&mut return_payload_buf[4..8], latitude);
+    LittleEndian::write_f32(&mut return_payload_buf[8..12], longitude);
     let (has_loc_timestamp, timestamp) = if let Some(timestamp) = device_config.location_timestamp()
     {
         (1u8, timestamp)
     } else {
         (0u8, 0)
     };
-    return_payload_buf[20] = has_loc_timestamp;
-    LittleEndian::write_u64(&mut return_payload_buf[21..29], timestamp);
+    return_payload_buf[12] = has_loc_timestamp;
+    LittleEndian::write_u64(&mut return_payload_buf[13..21], timestamp);
     let (has_loc_altitude, altitude) = if let Some(altitude) = device_config.location_altitude() {
         (1u8, altitude)
     } else {
         (0u8, 0.0)
     };
-    return_payload_buf[29] = has_loc_altitude;
-    LittleEndian::write_f32(&mut return_payload_buf[30..34], altitude);
+    return_payload_buf[21] = has_loc_altitude;
+    LittleEndian::write_f32(&mut return_payload_buf[22..26], altitude);
     let (has_loc_accuracy, accuracy) = if let Some(accuracy) = device_config.location_accuracy() {
         (1u8, accuracy)
     } else {
         (0u8, 0.0)
     };
-    return_payload_buf[34] = has_loc_accuracy;
-    LittleEndian::write_f32(&mut return_payload_buf[35..39], accuracy);
+    return_payload_buf[26] = has_loc_accuracy;
+    LittleEndian::write_f32(&mut return_payload_buf[27..31], accuracy);
     let (abs_rel_start, abs_rel_end) = device_config.recording_window();
     let (start_is_abs, start_seconds_offset) = abs_rel_start.time_offset();
     let (end_is_abs, end_seconds_offset) = abs_rel_end.time_offset();
-    return_payload_buf[39] = if start_is_abs { 1 } else { 0 };
-    LittleEndian::write_i32(&mut return_payload_buf[40..44], start_seconds_offset);
-    return_payload_buf[44] = if end_is_abs { 1 } else { 0 };
-    LittleEndian::write_i32(&mut return_payload_buf[45..49], end_seconds_offset);
+    return_payload_buf[31] = if start_is_abs { 1 } else { 0 };
+    LittleEndian::write_i32(&mut return_payload_buf[32..36], start_seconds_offset);
+    return_payload_buf[36] = if end_is_abs { 1 } else { 0 };
+    LittleEndian::write_i32(&mut return_payload_buf[37..41], end_seconds_offset);
+    return_payload_buf[41] = if device_config.is_continuous_recorder() {
+        1
+    } else {
+        0
+    };
 
-    let device_name_length = device_name.len().min(63) as u8;
-    return_payload_buf[49] = device_name_length;
-    &mut return_payload_buf[50..50 + device_name_length]
+    let device_name = device_config.device_name();
+    let device_name_length = device_name.len().min(63) as usize;
+    return_payload_buf[42] = device_name_length as u8;
+    &mut return_payload_buf[43..43 + device_name_length]
         .copy_from_slice(&device_name[0..device_name_length]);
 }

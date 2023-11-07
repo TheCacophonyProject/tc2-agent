@@ -1,11 +1,13 @@
 // Read camera config file
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use chrono_tz::OffsetComponents;
 use log::{error, info};
 use serde::de::Visitor;
 use serde::ser::Error;
 use serde::{Deserialize, Deserializer};
 use std::fs;
 use std::ops::Add;
+use std::str::FromStr;
 use toml::value::Offset;
 
 fn default_constant_recorder() -> bool {
@@ -119,6 +121,8 @@ where
                         'h' => hour_min.hour = num as u8,
                         _ => {}
                     };
+                } else {
+                    hour_min.min = num as u8
                 }
             }
         }
@@ -201,22 +205,39 @@ struct HourMin {
     hour: u8,
     min: u8,
 }
+
+fn timezone_offset_seconds() -> i32 {
+    // IMPORTANT: This relies on the system timezone being set correctly to the same locale as the
+    // devices' GPS coordinates to work out correct absolute start/end recording window times.
+    let now = Local::now();
+    let local_tz = now.timezone();
+    local_tz
+        .offset_from_utc_datetime(&now.naive_utc())
+        .local_minus_utc()
+}
 #[derive(Debug, PartialEq, Clone)]
-struct AbsRelTime {
+pub struct AbsRelTime {
     absolute_time: Option<HourMin>,
     relative_time_seconds: Option<i32>,
 }
 
 impl AbsRelTime {
-    pub fn time_offset(&self) -> Option<(bool, i32)> {
+    pub fn time_offset(&self) -> (bool, i32) {
         // Absolute or relative time in seconds in the day
         if let Some(abs_time) = &self.absolute_time {
-            Some((
-                true,
-                (abs_time.hour as i32 * 60 * 60) + (abs_time.min as i32 * 60),
-            ))
+            // NOTE: We need to convert this to UTC offsets, since that's what our timestamp is.
+            let seconds_past_midnight =
+                (abs_time.hour as i32 * 60 * 60) + (abs_time.min as i32 * 60);
+            info!("Seconds past midnight local {}", seconds_past_midnight);
+            let tz_offset = timezone_offset_seconds();
+            info!(
+                "TZ offset {}, seconds past UTC midnight {}",
+                tz_offset,
+                (seconds_past_midnight - tz_offset) % 86_400
+            );
+            (true, (seconds_past_midnight - tz_offset) % 86_400)
         } else {
-            Some((false, self.relative_time_seconds.unwrap()))
+            (false, self.relative_time_seconds.unwrap())
         }
     }
 }
@@ -313,33 +334,47 @@ impl DeviceConfig {
 
     // Only call these once we know the device is registered
     pub fn device_id(&self) -> u32 {
-        self.device_info.unwrap().id.unwrap()
+        self.device_info.as_ref().unwrap().id.unwrap()
     }
 
     pub fn device_name(&self) -> &[u8] {
-        self.device_info.unwrap().name.unwrap().as_bytes()
+        self.device_info
+            .as_ref()
+            .unwrap()
+            .name
+            .as_ref()
+            .unwrap()
+            .as_bytes()
     }
 
     pub fn lat_lng(&self) -> (f32, f32) {
         (
-            self.location.unwrap().latitude.unwrap(),
-            self.location.unwrap().longitude.unwrap(),
+            self.location.as_ref().unwrap().latitude.unwrap(),
+            self.location.as_ref().unwrap().longitude.unwrap(),
         )
     }
     pub fn location_timestamp(&self) -> Option<u64> {
-        self.location.unwrap().timestamp
+        self.location.as_ref().unwrap().timestamp
     }
     pub fn location_altitude(&self) -> Option<f32> {
-        self.location.unwrap().altitude
+        self.location.as_ref().unwrap().altitude
     }
     pub fn location_accuracy(&self) -> Option<f32> {
-        self.location.unwrap().accuracy
+        self.location.as_ref().unwrap().accuracy
     }
     pub fn recording_window(&self) -> (AbsRelTime, AbsRelTime) {
         (
             self.recording_window.start_recording.clone(),
             self.recording_window.stop_recording.clone(),
         )
+    }
+
+    pub fn output_dir(&self) -> &str {
+        &self.recording_settings.output_dir
+    }
+
+    pub fn is_continuous_recorder(&self) -> bool {
+        self.recording_settings.constant_recorder
     }
 }
 
@@ -349,14 +384,17 @@ pub fn load_device_config() -> Option<DeviceConfig> {
     let device_config: DeviceConfig = toml::from_str(&config_toml_str).ok()?;
 
     // TODO: Make sure device has sane windows etc.
-
     if !device_config.has_location() {
         error!("No location set for this device. To enter recording mode, a location must be set.");
         // TODO: Event log error?
         std::process::exit(1);
     }
+    if !device_config.is_registered() {
+        error!("This device is not yet registered.  To enter recording mode the device must be named assigned to a project.");
+        // TODO: Event log error?
+        std::process::exit(1);
+    }
     info!("Got config {:?}", device_config);
-
     Some(device_config)
 }
 fn main() {}
@@ -395,8 +433,7 @@ updated = 2023-11-02T08:24:21+13:00
 activate = true
 
 [windows]
-
-  start-recording = "30m"
+start-recording = "30m"
 stop-recording = "07:50"
 "#,
         )
