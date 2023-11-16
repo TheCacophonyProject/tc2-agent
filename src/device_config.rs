@@ -1,4 +1,5 @@
 // Read camera config file
+use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::OffsetComponents;
 use log::{error, info};
@@ -6,11 +7,15 @@ use serde::de::Visitor;
 use serde::ser::Error;
 use serde::{Deserialize, Deserializer};
 use std::fs;
+use std::io::{Cursor, Write};
 use std::ops::Add;
 use std::str::FromStr;
 use toml::value::Offset;
 
 fn default_constant_recorder() -> bool {
+    false
+}
+fn default_low_power_mode() -> bool {
     false
 }
 
@@ -285,6 +290,8 @@ struct ThermalRecordingSettings {
     output_dir: String,
     #[serde(rename = "constant-recorder", default = "default_constant_recorder")]
     constant_recorder: bool,
+    #[serde(rename = "use-low-power-mode", default = "default_low_power_mode")]
+    use_low_power_mode: bool,
     #[serde(rename = "min-disk-space-mb", default = "default_min_disk_space_mb")]
     min_disk_space_mb: u32,
 }
@@ -295,6 +302,7 @@ impl Default for ThermalRecordingSettings {
             output_dir: default_output_dir(),
             constant_recorder: default_constant_recorder(),
             min_disk_space_mb: default_min_disk_space_mb(),
+            use_low_power_mode: default_low_power_mode(),
         }
     }
 }
@@ -376,28 +384,79 @@ impl DeviceConfig {
     pub fn is_continuous_recorder(&self) -> bool {
         self.recording_settings.constant_recorder
     }
-}
-
-pub fn load_device_config() -> Option<DeviceConfig> {
-    let config_toml = fs::read("/etc/cacophony/config.toml").ok()?;
-    let config_toml_str = String::from_utf8(config_toml).ok()?;
-    let device_config: DeviceConfig = toml::from_str(&config_toml_str).ok()?;
-
-    // TODO: Make sure device has sane windows etc.
-    if !device_config.has_location() {
-        error!("No location set for this device. To enter recording mode, a location must be set.");
-        // TODO: Event log error?
-        std::process::exit(1);
+    pub fn use_low_power_mode(&self) -> bool {
+        self.recording_settings.use_low_power_mode
     }
-    if !device_config.is_registered() {
-        error!("This device is not yet registered.  To enter recording mode the device must be named assigned to a project.");
-        // TODO: Event log error?
-        std::process::exit(1);
+
+    pub fn load_from_fs() -> Option<DeviceConfig> {
+        let config_toml = fs::read("/etc/cacophony/config.toml").ok()?;
+        let config_toml_str = String::from_utf8(config_toml).ok()?;
+        let device_config: DeviceConfig = toml::from_str(&config_toml_str).ok()?;
+
+        // TODO: Make sure device has sane windows etc.
+        if !device_config.has_location() {
+            error!(
+                "No location set for this device. To enter recording mode, a location must be set."
+            );
+            // TODO: Event log error?
+            std::process::exit(1);
+        }
+        if !device_config.is_registered() {
+            error!("This device is not yet registered.  To enter recording mode the device must be named assigned to a project.");
+            // TODO: Event log error?
+            std::process::exit(1);
+        }
+        info!("Got config {:?}", device_config);
+        Some(device_config)
     }
-    info!("Got config {:?}", device_config);
-    Some(device_config)
+
+    pub fn write_to_slice(&self, output: &mut [u8]) {
+        let mut buf = Cursor::new(output);
+        let device_id = self.device_id();
+        buf.write_u32::<LittleEndian>(device_id).unwrap();
+
+        let (latitude, longitude) = self.lat_lng();
+        buf.write_f32::<LittleEndian>(latitude).unwrap();
+        buf.write_f32::<LittleEndian>(longitude).unwrap();
+        let (has_loc_timestamp, timestamp) = if let Some(timestamp) = self.location_timestamp() {
+            (1u8, timestamp)
+        } else {
+            (0u8, 0)
+        };
+        buf.write_u8(has_loc_timestamp).unwrap();
+        buf.write_u64::<LittleEndian>(timestamp).unwrap();
+        let (has_loc_altitude, altitude) = if let Some(altitude) = self.location_altitude() {
+            (1u8, altitude)
+        } else {
+            (0u8, 0.0)
+        };
+        buf.write_u8(has_loc_altitude).unwrap();
+        buf.write_f32::<LittleEndian>(altitude).unwrap();
+        let (has_loc_accuracy, accuracy) = if let Some(accuracy) = self.location_accuracy() {
+            (1u8, accuracy)
+        } else {
+            (0u8, 0.0)
+        };
+        buf.write_u8(has_loc_accuracy).unwrap();
+        buf.write_f32::<LittleEndian>(accuracy).unwrap();
+        let (abs_rel_start, abs_rel_end) = self.recording_window();
+        let (start_is_abs, start_seconds_offset) = abs_rel_start.time_offset();
+        let (end_is_abs, end_seconds_offset) = abs_rel_end.time_offset();
+        buf.write_u8(if start_is_abs { 1 } else { 0 }).unwrap();
+        buf.write_i32::<LittleEndian>(start_seconds_offset).unwrap();
+        buf.write_u8(if end_is_abs { 1 } else { 0 }).unwrap();
+        buf.write_i32::<LittleEndian>(end_seconds_offset).unwrap();
+        buf.write_u8(if self.is_continuous_recorder() { 1 } else { 0 })
+            .unwrap();
+        buf.write_u8(if self.use_low_power_mode() { 1 } else { 0 })
+            .unwrap();
+
+        let device_name = self.device_name();
+        let device_name_length = device_name.len().min(63);
+        buf.write_u8(device_name_length as u8).unwrap();
+        buf.write(&device_name[0..device_name_length]).unwrap();
+    }
 }
-fn main() {}
 
 #[cfg(test)]
 mod tests {
