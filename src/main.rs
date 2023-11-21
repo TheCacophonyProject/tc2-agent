@@ -495,6 +495,10 @@ fn main() {
                                 has_failed = true;
                                 warn!("Header integrity check failed {:?}", &header_slice[..]);
                             }
+
+                            // Well, this is super tricky if this is a raw frame transfer that got garbled.
+                            // Do we care about this case?  In the case where the pi wants frames, it should just restart
+                            // the rp2040 on startup.
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
@@ -556,7 +560,7 @@ fn main() {
                                 let crc = crc_check.checksum(&chunk);
                                 LittleEndian::write_u16(&mut return_payload_buf[4..6], crc);
                                 LittleEndian::write_u16(&mut return_payload_buf[6..8], crc);
-
+                                //info!("Transfer type {}", transfer_type);
                                 if transfer_type == CAMERA_CONNECT_INFO {
                                     info!("Got camera connect info");
                                     // Write all the info we need about the device:
@@ -565,6 +569,7 @@ fn main() {
 
                                 if let Ok(_pin_level) = pin.poll_interrupt(false, Some(Duration::from_millis(1000))) {
                                     if transfer_type == CAMERA_CONNECT_INFO {
+                                        info!("Sending camera connect info {}, {}", crc, crc_from_remote);
                                         spi.write(&return_payload_buf).unwrap();
                                     } else {
                                         spi.write(&return_payload_buf[0..32]).unwrap();
