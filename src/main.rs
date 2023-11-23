@@ -85,6 +85,7 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
     thread::spawn(move || match decode_cptv_header_streaming(&cptv_bytes) {
         Ok(header) => match header {
             CptvHeader::V2(header) => {
+                info!("CPTV Header {:?}", header);
                 let recording_date_time =
                     NaiveDateTime::from_timestamp_millis(header.timestamp as i64 / 1000)
                         .unwrap_or(chrono::Local::now().naive_local());
@@ -100,6 +101,22 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                     Err(_) => false,
                 };
                 if !is_existing_file {
+                    match fs::write(&path, &cptv_bytes) {
+                        Ok(()) => {
+                            info!("Saved CPTV file {}", path);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed writing CPTV file to storage at {}, reason: {}",
+                                path, e
+                            );
+                        }
+                    }
+                    let path = format!(
+                        "{}/{}.cptv",
+                        "/home/pi",
+                        recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+                    );
                     match fs::write(&path, &cptv_bytes) {
                         Ok(()) => {
                             info!("Saved CPTV file {}", path);
@@ -230,8 +247,6 @@ fn main() {
             run_pin.set_high();
             sleep(Duration::from_millis(1000));
         }
-        // Debug mode, or camera is in low-power mode.
-        // Start tc2-agent with a --low-power argument perhaps if you want low power mode, and it can tell the camera when it handshakes.
         let debug_mode = true;
         if !debug_mode {
             let date = chrono::Local::now();
@@ -392,7 +407,7 @@ fn main() {
         let mut got_first_frame = false;
         let mut file_download: Option<Vec<u8>> = None;
         let mut transfer_count = 0;
-        let mut header = [0u8; 18 + 8];
+        let mut header = [0u8; 18];
         let mut return_payload_buf = [0u8; 32 + 104];
         // If it's the initial handshake, we need to send to the rp2040:
         // - device_id (u32) - 4
@@ -445,31 +460,9 @@ fn main() {
             if let Ok(_pin_level) = pin.poll_interrupt(false, Some(Duration::from_millis(1000))) {
                 if _pin_level.is_some() {
                     spi.read(&mut header).unwrap();
-                    let mut start_offset = 0;
-
-                    // NOTE: All requests should start with the transfer type x2 bytes, then the length x4 bytes, twice.
-                    //  Some raspberry pis, for reasons unknown duplicate the first 8 bytes of the payload twice, so we want to detect this
-                    //  and find the "real" start offset.
-                    let start_code = header[0];
-                    if header[1] == start_code {
-                        let length = &header[2..6];
-                        let length_2 = &header[6..10];
-                        let mut fake_offset = false;
-                        for (a, b) in  length.iter().zip(length_2) {
-                            if *a != *b {
-                                fake_offset = true;
-                                break;
-                            }
-                        }
-                        if fake_offset {
-                            start_offset += 8;
-                            info!("Start offset shifted {}", start_offset);
-                        }
-
-                    }
                     {
-                        let header_slice = &header[start_offset..];
-                        //info!("Header slice {:?}, starting at offset {}, {:?}", &header_slice, start_offset, header);
+                        let header_slice = &header;
+                        //info!("Header slice {:?}, starting at offset {}", &header_slice, start_offset);
                         let transfer_type = header_slice[0];
                         let transfer_type_dup = header_slice[1];
 
@@ -569,10 +562,11 @@ fn main() {
 
                                 if let Ok(_pin_level) = pin.poll_interrupt(false, Some(Duration::from_millis(1000))) {
                                     if transfer_type == CAMERA_CONNECT_INFO {
-                                        info!("Sending camera connect info {}, {}", crc, crc_from_remote);
+                                        info!("Sending camera connect info");
                                         spi.write(&return_payload_buf).unwrap();
                                     } else {
-                                        spi.write(&return_payload_buf[0..32]).unwrap();
+                                        //spi.write(&return_payload_buf[0..32]).unwrap();
+                                        spi.write(&return_payload_buf).unwrap();
                                     }
                                     if crc == crc_from_remote {
                                         match transfer_type {
@@ -618,6 +612,11 @@ fn main() {
                                                 if let Some(file) = &mut file_download {
                                                     // Continue current file transfer
                                                     //println!("Continue file transfer");
+                                                    if part_count % 100 == 0 {
+                                                        let megabytes_per_second = (file.len() + chunk.len()) as f32 / Instant::now().duration_since(start).as_secs_f32() / (1024.0 * 1024.0);
+                                                        info!("Transferring part #{} {:?} for {} bytes, {}MB/s", part_count, Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
+                                                    }
+
                                                     part_count += 1;
                                                     file.extend_from_slice(&chunk);
                                                 } else {
