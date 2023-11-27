@@ -15,7 +15,7 @@ use rppal::{
     spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
 };
 use std::fs;
-use std::io::{Cursor, Write};
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, TryRecvError};
@@ -212,8 +212,8 @@ fn main() {
         .unwrap();
 
     let term = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term)).unwrap();
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
+    // signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term)).unwrap();
+    // signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
 
     // We want real-time priority for all the work we do.
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
@@ -407,7 +407,7 @@ fn main() {
         let mut got_first_frame = false;
         let mut file_download: Option<Vec<u8>> = None;
         let mut transfer_count = 0;
-        let mut header = [0u8; 18];
+        let mut header = [0u8; 8 + 18];
         let mut return_payload_buf = [0u8; 32 + 104];
         // If it's the initial handshake, we need to send to the rp2040:
         // - device_id (u32) - 4
@@ -456,13 +456,21 @@ fn main() {
 
             let mut got_frame = false;
             let mut radiometry_enabled = false;
-            // Align our SPI reads to the start of the sequence 1, 2, 3, 4
-            if let Ok(_pin_level) = pin.poll_interrupt(false, Some(Duration::from_millis(1000))) {
+
+            // // We might have to abandon using pin interrupt to trigger SPI, and just constantly poll for a pattern to align to.
+            // // Align our SPI reads to the start of the sequence 1, 2, 3, 4, 1, 2, 3, 4
+            // // Can it also be related to our DMA transfers?
+            if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(1000))) {
                 if _pin_level.is_some() {
+                    // NOTE: We should be aligned.
                     spi.read(&mut header).unwrap();
                     {
-                        let header_slice = &header;
-                        //info!("Header slice {:?}, starting at offset {}", &header_slice, start_offset);
+                        let header_slice = if &header[2..6] != &header[6..10] {
+                            info!("Offset 8");
+                            &header[8..]
+                        } else {
+                            &header
+                        };
                         let transfer_type = header_slice[0];
                         let transfer_type_dup = header_slice[1];
 
@@ -477,7 +485,6 @@ fn main() {
                         let num_bytes_check = num_bytes == num_bytes_dup;
                         let header_crc_check = crc_from_remote == crc_from_remote_dup && crc_from_remote_inv_dup == crc_from_remote_inv && crc_from_remote_inv.reverse_bits() == crc_from_remote;
                         let transfer_type_check = transfer_type == transfer_type_dup;
-
 
                         if num_bytes != 0 {
                             //info!("Header {:?}, tt {}, crc {}, num_bytes {}", &header, transfer_type, crc_from_remote, num_bytes);
@@ -560,7 +567,7 @@ fn main() {
                                     &device_config.write_to_slice(&mut return_payload_buf[8..]);
                                 }
 
-                                if let Ok(_pin_level) = pin.poll_interrupt(false, Some(Duration::from_millis(1000))) {
+                                if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(1000))) {
                                     if transfer_type == CAMERA_CONNECT_INFO {
                                         info!("Sending camera connect info");
                                         spi.write(&return_payload_buf).unwrap();
