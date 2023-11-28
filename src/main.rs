@@ -34,7 +34,7 @@ use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
 use crate::utils::u8_slice_as_u16_slice;
 use crc::{Crc, CRC_16_XMODEM};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rppal::i2c::I2c;
@@ -63,7 +63,7 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
         if let Some(pos) = pos {
             let y = pos / 160;
             let x = pos - (y * 160);
-            println!("Zero px found at ({}, {}) not sending", x, y);
+            debug!("Zero px found at ({}, {}) not sending", x, y);
             found_bad_pixels = true;
         }
         // Make sure each frame number is ascending correctly.
@@ -116,8 +116,9 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                             );
                         }
                     }
+
+                    // NOTE: For debug purposes, we may want to also save the CPTV file locally for inspection.
                     /*
-                    NOTE: For debug purposes, we may want to also save the CPTV file locally for inspection.
                     let path = format!(
                         "{}/{}.cptv",
                         "/home/pi",
