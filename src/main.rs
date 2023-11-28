@@ -39,7 +39,7 @@ use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use simplelog::*;
 
-const EXPECTED_FIRMWARE_VERSION: u32 = 3;
+const EXPECTED_FIRMWARE_VERSION: u32 = 4;
 const SEGMENT_LENGTH: usize = 9760;
 const CHUNK_LENGTH: usize = SEGMENT_LENGTH / 4;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
@@ -62,8 +62,8 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
         if let Some(pos) = pos {
             let y = pos / 160;
             let x = pos - (y * 160);
-            //println!("Zero px found at ({}, {}) not sending", x, y);
-            //found_bad_pixels = true;
+            println!("Zero px found at ({}, {}) not sending", x, y);
+            found_bad_pixels = true;
         }
         // Make sure each frame number is ascending correctly.
         let telemetry = read_telemetry(&fb);
@@ -85,11 +85,14 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
     thread::spawn(move || match decode_cptv_header_streaming(&cptv_bytes) {
         Ok(header) => match header {
             CptvHeader::V2(header) => {
-                info!("CPTV Header {:?}", header);
+                info!("Saving CPTV file with header {:?}", header);
                 let recording_date_time =
                     NaiveDateTime::from_timestamp_millis(header.timestamp as i64 / 1000)
                         .unwrap_or(chrono::Local::now().naive_local());
-                // TODO: Check output dir exists, otherwise create it.
+                if fs::metadata(&output_dir).is_err() {
+                    fs::create_dir(&output_dir)
+                        .expect(&format!("Failed to create output directory {}", output_dir));
+                }
                 let path = format!(
                     "{}/{}.cptv",
                     output_dir,
@@ -112,6 +115,8 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                             );
                         }
                     }
+                    /*
+                    NOTE: For debug purposes, we may want to also save the CPTV file locally for inspection.
                     let path = format!(
                         "{}/{}.cptv",
                         "/home/pi",
@@ -128,6 +133,7 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                             );
                         }
                     }
+                     */
                 } else {
                     error!("File {} already exists, discarding duplicate", path);
                 }
@@ -173,6 +179,10 @@ fn main() {
     let mut current_config = device_config.unwrap();
     let initial_config = current_config.clone();
     let (config_tx, config_rx) = channel();
+    if !current_config.use_low_power_mode() {
+        // Restart rp2040 on startup in non-low-power-mode
+        let _ = config_tx.send(current_config.clone());
+    }
     let mut watcher = notify::recommended_watcher(move |res| match res {
         Ok(Event { kind, .. }) => {
             match kind {
@@ -201,7 +211,6 @@ fn main() {
         Err(e) => error!("file watch error for /etc/cacophony/config.toml: {:?}", e),
     })
     .unwrap();
-
     // Add a path to be watched. All files and directories at that path and
     // below will be monitored for changes.
     watcher
@@ -212,8 +221,8 @@ fn main() {
         .unwrap();
 
     let term = Arc::new(AtomicBool::new(false));
-    // signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term)).unwrap();
-    // signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term)).unwrap();
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
 
     // We want real-time priority for all the work we do.
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
