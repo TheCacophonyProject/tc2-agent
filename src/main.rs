@@ -37,6 +37,7 @@ use crc::{Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
+use rppal::i2c::I2c;
 use simplelog::*;
 
 const EXPECTED_FIRMWARE_VERSION: u32 = 4;
@@ -471,15 +472,17 @@ fn main() {
             // // Can it also be related to our DMA transfers?
             if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(1000))) {
                 if _pin_level.is_some() {
-                    // NOTE: We should be aligned.
                     spi.read(&mut header).unwrap();
                     {
+                        // For some reason, on some hardware, the first SPI transfer from the rp2040 has the first 8 bytes
+                        // wrong, and in these instances they should be skipped.  If they are correct we expect to see 2
+                        // repeated redundant u32s representing the length of the payload to read.
                         let header_slice = if &header[2..6] != &header[6..10] {
-                            info!("Offset 8");
                             &header[8..]
                         } else {
                             &header
                         };
+                        // NOTE: We should be aligned now.
                         let transfer_type = header_slice[0];
                         let transfer_type_dup = header_slice[1];
 
@@ -511,11 +514,7 @@ fn main() {
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
-                            if term.load(Ordering::Relaxed) {
-                                // We got terminated - before we exit, clean up the tc2-agent ready state register
-                                if let Some(attiny_i2c) = &mut attiny_i2c_interface {
-                                    attiny_i2c.write(&[0x07, 0x00]).expect("Failed writing ready state to attiny");
-                                }
+                            if process_interrupted(&term, &mut attiny_i2c_interface) {
                                 break 'transfer;
                             }
                             continue 'transfer;
@@ -526,11 +525,7 @@ fn main() {
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
-                            if term.load(Ordering::Relaxed) {
-                                // We got terminated - before we exit, clean up the tc2-agent ready state register
-                                if let Some(attiny_i2c) = &mut attiny_i2c_interface {
-                                    attiny_i2c.write(&[0x07, 0x00]).expect("Failed writing ready state to attiny");
-                                }
+                            if process_interrupted(&term, &mut attiny_i2c_interface) {
                                 break 'transfer;
                             }
                             continue 'transfer;
@@ -541,11 +536,7 @@ fn main() {
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
-                            if term.load(Ordering::Relaxed) {
-                                // We got terminated - before we exit, clean up the tc2-agent ready state register
-                                if let Some(attiny_i2c) = &mut attiny_i2c_interface {
-                                    attiny_i2c.write(&[0x07, 0x00]).expect("Failed writing ready state to attiny");
-                                }
+                            if process_interrupted(&term, &mut attiny_i2c_interface) {
                                 break 'transfer;
                             }
                             continue 'transfer;
@@ -696,15 +687,25 @@ fn main() {
                     }
                 }
             }
-            if term.load(Ordering::Relaxed) {
-                // We got terminated - before we exit, clean up the tc2-agent ready state register
-                if let Some(attiny_i2c) = &mut attiny_i2c_interface {
-                    attiny_i2c.write(&[0x07, 0x00]).expect("Failed writing ready state to attiny");
-                }
+            if process_interrupted(&term, &mut attiny_i2c_interface) {
                 break 'transfer;
             }
         }
         info!("Exiting gracefully");
         Ok::<(), Error>(())
     }).unwrap().join();
+}
+
+fn process_interrupted(term: &Arc<AtomicBool>, attiny_i2c_interface: &mut Option<I2c>) -> bool {
+    if term.load(Ordering::Relaxed) {
+        // We got terminated - before we exit, clean up the tc2-agent ready state register
+        if let Some(attiny_i2c) = attiny_i2c_interface {
+            attiny_i2c
+                .write(&[0x07, 0x00])
+                .expect("Failed writing ready state to attiny");
+        }
+        true
+    } else {
+        false
+    }
 }
