@@ -6,16 +6,14 @@ mod socket_stream;
 mod telemetry;
 mod utils;
 
-use argh::FromArgs;
-use byteorder::{BigEndian, ByteOrder, LittleEndian, WriteBytesExt};
-use chrono::{NaiveDateTime, TimeZone};
+use byteorder::{BigEndian, ByteOrder, LittleEndian};
+use chrono::NaiveDateTime;
 use rppal::spi::BitOrder;
 use rppal::{
     gpio::{Gpio, Trigger},
     spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
 };
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, TryRecvError};
@@ -40,9 +38,8 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rppal::i2c::I2c;
 use simplelog::*;
 
-const EXPECTED_FIRMWARE_VERSION: u32 = 4;
+const EXPECTED_FIRMWARE_VERSION: u32 = 5;
 const SEGMENT_LENGTH: usize = 9760;
-const CHUNK_LENGTH: usize = SEGMENT_LENGTH / 4;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 pub type Frame = [u8; FRAME_LENGTH];
 pub static FRAME_BUFFER: DoubleBuffer = DoubleBuffer::new();
@@ -181,10 +178,11 @@ fn main() {
     let mut current_config = device_config.unwrap();
     let initial_config = current_config.clone();
     let (config_tx, config_rx) = channel();
-    if !current_config.use_low_power_mode() {
-        // Restart rp2040 on startup in non-low-power-mode
-        let _ = config_tx.send(current_config.clone());
-    }
+    let debug_mode = false;
+    // if !debug_mode && !current_config.use_low_power_mode() {
+    //     // Restart rp2040 on startup in non-low-power-mode
+    //     let _ = config_tx.send(current_config.clone());
+    // }
     let mut watcher = notify::recommended_watcher(move |res| match res {
         Ok(Event { kind, .. }) => {
             match kind {
@@ -228,7 +226,6 @@ fn main() {
 
     // We want real-time priority for all the work we do.
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
-
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
         // 1MB buffer that we won't fully use at the moment.
@@ -258,14 +255,6 @@ fn main() {
             run_pin.set_high();
             sleep(Duration::from_millis(1000));
         }
-        let debug_mode = true;
-        if !debug_mode {
-            let date = chrono::Local::now();
-            warn!("Resetting rp2040 on startup, {}", date.format("%Y-%m-%d--%H:%M:%S"));
-            run_pin.set_low();
-            sleep(Duration::from_millis(1000));
-            run_pin.set_high();
-        }
 
         pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
@@ -284,7 +273,7 @@ fn main() {
 
             loop {
                 if let Ok(_) = restart_rx.try_recv() {
-                    error!("Restarting on config change");
+                    info!("Restarting rp2040");
                     if !run_pin.is_set_high() {
                         run_pin.set_high();
                         sleep(Duration::from_millis(1000));
@@ -302,7 +291,7 @@ fn main() {
                         'send_loop: loop {
                             // Check if we need to reset rp2040 because of a config change
                             if let Ok(_) = restart_rx.try_recv() {
-                                error!("Restarting on config change");
+                                info!("Restarting rp2040");
                                 if !run_pin.is_set_high() {
                                     run_pin.set_high();
                                     sleep(Duration::from_millis(1000));
@@ -314,84 +303,86 @@ fn main() {
                             }
 
                             let recv_timeout_ms = 10;
-                            if let Ok((radiometry_enabled, is_recording)) = rx.recv_timeout(Duration::from_millis(recv_timeout_ms)) {
-                                if !config.use_wifi && !sent_header {
-                                    // Send the header info here:
-                                    // TODO: Actually get camera serial from rp2040
-                                    let header: &[u8] =
-                                        if radiometry_enabled {
-                                            b"ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: lepton3.5\nBrand: flir\nFPS: 9\nFirmware: 1.0\nCameraSerial: f00bar\n\n"
-                                        } else {
-                                            b"ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: lepton3\nBrand: flir\nFPS: 9\nFirmware: 1.0\nCameraSerial: f00bar\n\n"
-                                        };
-                                    if let Err(_) = stream.write_all(header) {
-                                        warn!("Failed sending header info");
-                                    }
-
-                                    // Clear existing
-                                    if let Err(_) = stream.write_all(b"clear") {
-                                        warn!("Failed clearing buffer");
-                                    }
-                                    let _ = stream.flush();
-                                    sent_header = true;
-                                }
-
-                                if reconnects > 0 {
-                                    info!("Got frame connection");
-                                    reconnects = 0;
-                                    prev_frame_num = None;
-                                    reconnects = 0;
-                                }
-                                let s = Instant::now();
-                                let (telemetry, sent) = send_frame(&mut stream, is_recording);
-                                let e = s.elapsed().as_secs_f32();
-                                if e > 0.1 {
-                                    info!("socket send took {}s", e);
-                                }
-                                if !sent {
-                                    warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
-                                    let _ = stream.shutdown().is_ok();
-                                    ms_elapsed = 0;
-                                    break 'send_loop;
-                                } else {
-                                    if let Some(telemetry) = telemetry {
-                                        if let Some(prev_frame_num) = prev_frame_num {
-                                            if !telemetry.ffc_in_progress {
-                                                if telemetry.frame_num != prev_frame_num + 1 {
-                                                    // NOTE: Frames can be missed when the raspberry pi blocks the thread with the unix socket in `thermal-recorder`.
-                                                    // println!("====");
-                                                    // println!("Missed {} frames after {}s on", telemetry.frame_num - (prev_frame_num + 1), telemetry.msec_on as f32 / 1000.0);
-                                                }
-                                            }
+                            let result = rx.recv_timeout(Duration::from_millis(recv_timeout_ms));
+                            match result {
+                                Ok((Some((radiometry_enabled, is_recording, firmware_version, camera_serial)), None)) => {
+                                    if !config.use_wifi && !sent_header {
+                                        // Send the header info here:
+                                        let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
+                                        let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
+                                        if let Err(_) = stream.write_all(header.as_bytes()) {
+                                            warn!("Failed sending header info");
                                         }
-                                        prev_frame_num = Some(telemetry.frame_num);
-                                        prev_time_on_msec = telemetry.msec_on;
+
+                                        // Clear existing
+                                        if let Err(_) = stream.write_all(b"clear") {
+                                            warn!("Failed clearing buffer");
+                                        }
+                                        let _ = stream.flush();
+                                        sent_header = true;
                                     }
-                                }
-                                ms_elapsed = 0;
-                            } else if !debug_mode {
-                                const NUM_ATTEMPTS_BEFORE_RESET: usize = 10;
-                                ms_elapsed += recv_timeout_ms;
-                                if ms_elapsed > 5000 {
-                                    ms_elapsed = 0;
-                                    reconnects += 1;
-                                    if reconnects == NUM_ATTEMPTS_BEFORE_RESET {
-                                        let date = chrono::Local::now();
-                                        warn!("Resetting rp2040 at {}", date.format("%Y-%m-%d--%H:%M:%S"));
+
+                                    if reconnects > 0 {
+                                        info!("Got frame connection");
                                         reconnects = 0;
                                         prev_frame_num = None;
-                                        {
-                                            if !run_pin.is_set_high() {
-                                                run_pin.set_high();
-                                                sleep(Duration::from_millis(1000));
-                                            }
-
-                                            run_pin.set_low();
-                                            sleep(Duration::from_millis(1000));
-                                            run_pin.set_high();
-                                        }
+                                        reconnects = 0;
+                                    }
+                                    let s = Instant::now();
+                                    let (telemetry, sent) = send_frame(&mut stream, is_recording);
+                                    let e = s.elapsed().as_secs_f32();
+                                    if e > 0.1 {
+                                        info!("socket send took {}s", e);
+                                    }
+                                    if !sent {
+                                        warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
+                                        let _ = stream.shutdown().is_ok();
+                                        ms_elapsed = 0;
+                                        break 'send_loop;
                                     } else {
-                                        info!("-- #{reconnects} waiting for frames from rp2040 (resetting rp2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_RESET - reconnects);
+                                        if let Some(telemetry) = telemetry {
+                                            if let Some(prev_frame_num) = prev_frame_num {
+                                                if !telemetry.ffc_in_progress {
+                                                    if telemetry.frame_num != prev_frame_num + 1 {
+                                                        // NOTE: Frames can be missed when the raspberry pi blocks the thread with the unix socket in `thermal-recorder`.
+                                                        // println!("====");
+                                                        // println!("Missed {} frames after {}s on", telemetry.frame_num - (prev_frame_num + 1), telemetry.msec_on as f32 / 1000.0);
+                                                    }
+                                                }
+                                            }
+                                            prev_frame_num = Some(telemetry.frame_num);
+                                            prev_time_on_msec = telemetry.msec_on;
+                                        }
+                                    }
+                                    ms_elapsed = 0;
+                                },
+                                Ok((None, Some(transfer_in_progress))) => {
+                                    ms_elapsed = 0;
+                                },
+                                _ => {
+                                    const NUM_ATTEMPTS_BEFORE_RESET: usize = 10;
+                                    ms_elapsed += recv_timeout_ms;
+                                    if ms_elapsed > 5000 {
+                                        ms_elapsed = 0;
+                                        reconnects += 1;
+                                        if reconnects == NUM_ATTEMPTS_BEFORE_RESET {
+                                            let date = chrono::Local::now();
+                                            warn!("Resetting rp2040 at {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                            reconnects = 0;
+                                            prev_frame_num = None;
+                                            {
+                                                if !run_pin.is_set_high() {
+                                                    run_pin.set_high();
+                                                    sleep(Duration::from_millis(1000));
+                                                }
+
+                                                run_pin.set_low();
+                                                sleep(Duration::from_millis(1000));
+                                                run_pin.set_high();
+                                            }
+                                        } else {
+                                            info!("-- #{reconnects} waiting for frames from rp2040 (resetting rp2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_RESET - reconnects);
+                                        }
                                     }
                                 }
                             }
@@ -418,25 +409,12 @@ fn main() {
         let mut got_first_frame = false;
         let mut file_download: Option<Vec<u8>> = None;
         let mut transfer_count = 0;
-        let mut header = [0u8; 8 + 18];
+        let mut header = [0u8; 8 + 26];
         let mut return_payload_buf = [0u8; 32 + 104];
-        // If it's the initial handshake, we need to send to the rp2040:
-        // - device_id (u32) - 4
-        // - device_name (64 bytes) 64
-        // - latitude (f32) - 4
-        // - longitude (f32) - 4
-        // - altitude (u8, f32) - 5
-        // - loc_timestamp (u64) - 8
-        // - accuracy (u8, f32) - 5
 
-        // - window start (u8, i32) - 5
-        // - window_end (u8, i32) - 5
-        // --- 104 bytes
-
-        return_payload_buf[0] = 1;
-        return_payload_buf[1] = 2;
-        return_payload_buf[2] = 3;
-        return_payload_buf[3] = 4;
+        // This sequence is used to synchronise the return payload start on the rp2040, since
+        // it seems to have a fair bit of slop/offsetting.
+        return_payload_buf[0..4].copy_from_slice(&[1, 2, 3, 4]);
 
         let mut part_count = 0;
         let mut start = Instant::now();
@@ -445,15 +423,19 @@ fn main() {
         let mut device_config: DeviceConfig = initial_config;
         let mut rp2040_needs_reset = false;
         let mut has_failed = false;
+        let mut got_startup_info = false;
+
         'transfer: loop {
             // Check once per frame to see if the config file may have been changed
             let updated_config = config_rx.try_recv();
             match updated_config {
                 Ok(config) => {
                     // NOTE: Defer this till a time we know the rp2040 isn't writing to flash memory.
-                    info!("Config updated, should update pi");
+                    if device_config != config {
+                        info!("Config updated, should update pi");
+                        device_config = config;
+                    }
                     rp2040_needs_reset = true;
-                    device_config = config;
                 }
                 Err(kind) => {
                     match kind {
@@ -465,8 +447,10 @@ fn main() {
                 }
             }
 
-            let mut got_frame = false;
             let mut radiometry_enabled = false;
+            let mut file_transfer_in_progress = false;
+            let mut firmware_version = 0;
+            let mut lepton_serial_number = String::from("");
 
             // // We might have to abandon using pin interrupt to trigger SPI, and just constantly poll for a pattern to align to.
             // // Align our SPI reads to the start of the sequence 1, 2, 3, 4, 1, 2, 3, 4
@@ -475,14 +459,18 @@ fn main() {
                 if _pin_level.is_some() {
                     spi.read(&mut header).unwrap();
                     {
+                        info!("Read {} bytes of header", header.len());
+                        info!("Header {:?}", header);
                         // For some reason, on some hardware, the first SPI transfer from the rp2040 has the first 8 bytes
                         // wrong, and in these instances they should be skipped.  If they are correct we expect to see 2
                         // repeated redundant u32s representing the length of the payload to read.
-                        let header_slice = if &header[2..6] != &header[6..10] {
-                            &header[8..]
+                        let offset = if &header[2..6] != &header[6..10] {
+                            8
                         } else {
-                            &header
+                            0
                         };
+                        let header_slice = &header[offset..];
+                        //info!("Header {:?}", header);
                         // NOTE: We should be aligned now.
                         let transfer_type = header_slice[0];
                         let transfer_type_dup = header_slice[1];
@@ -495,15 +483,20 @@ fn main() {
                         let crc_from_remote_inv = LittleEndian::read_u16(&header_slice[14..16]);
                         let crc_from_remote_inv_dup = LittleEndian::read_u16(&header_slice[16..=17]);
 
+                        let actual_num_bytes = LittleEndian::read_u32(&header_slice[18..=21]) as usize;
+                        let actual_num_bytes_dup = LittleEndian::read_u32(&header_slice[22..=25]) as usize;
+
                         let num_bytes_check = num_bytes == num_bytes_dup;
                         let header_crc_check = crc_from_remote == crc_from_remote_dup && crc_from_remote_inv_dup == crc_from_remote_inv && crc_from_remote_inv.reverse_bits() == crc_from_remote;
                         let transfer_type_check = transfer_type == transfer_type_dup;
+                        let actual_num_bytes_check = actual_num_bytes == actual_num_bytes_dup;
 
                         if num_bytes != 0 {
-                            //info!("Header {:?}, tt {}, crc {}, num_bytes {}", &header, transfer_type, crc_from_remote, num_bytes);
+                            //info!("Header {:?}, tt {}, crc {}, num_bytes {}, actual_num_bytes {}", &header, transfer_type, crc_from_remote, num_bytes, actual_num_bytes);
+                            assert!(num_bytes <= actual_num_bytes);
                         }
 
-                        if !num_bytes_check || !header_crc_check || !transfer_type_check {
+                        if !num_bytes_check || !header_crc_check || !transfer_type_check || !actual_num_bytes_check {
                             if !has_failed {
                                 has_failed = true;
                                 warn!("Header integrity check failed {:?}", &header_slice[..]);
@@ -549,11 +542,14 @@ fn main() {
                         if transfer_type == CAMERA_BEGIN_FILE_TRANSFER {
                             start = Instant::now();
                         }
-                        let now = chrono::Local::now();
-                        // We sort of have to assume we got the right number of bytes to read, right?
+                        // let now = chrono::Local::now();
                         if num_bytes != 0 && transfer_type > 0 && transfer_type < 6 {
-                            let mut chunk = &mut raw_read_buffer[0..num_bytes];
+                            info!("Reading {} bytes from payload", actual_num_bytes + offset);
+                            let chunk = &mut raw_read_buffer[0..(actual_num_bytes + offset)];
                             spi.read(chunk).unwrap();
+                            info!("Read {} bytes of payload", chunk.len());
+                            let chunk = &chunk[..num_bytes];
+                            info!("Took {} actual bytes", chunk.len());
                             //info!("-- [{}] SPI got transfer type {}, #{} of {} bytes", now.format("%H:%M:%S:%.3f"), transfer_type, transfer_count, num_bytes);
 
                             if transfer_type != CAMERA_RAW_FRAME_TRANSFER {
@@ -561,33 +557,42 @@ fn main() {
                                 let crc = crc_check.checksum(&chunk);
                                 LittleEndian::write_u16(&mut return_payload_buf[4..6], crc);
                                 LittleEndian::write_u16(&mut return_payload_buf[6..8], crc);
-                                //info!("Transfer type {}", transfer_type);
                                 if transfer_type == CAMERA_CONNECT_INFO {
-                                    info!("Got camera connect info");
                                     // Write all the info we need about the device:
-                                    &device_config.write_to_slice(&mut return_payload_buf[8..]);
+                                    device_config.write_to_slice(&mut return_payload_buf[8..]);
                                 }
 
                                 if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(1000))) {
                                     if transfer_type == CAMERA_CONNECT_INFO {
-                                        info!("Sending camera connect info");
+                                        info!("Sending camera device config to rp2040");
                                         spi.write(&return_payload_buf).unwrap();
                                     } else {
-                                        //spi.write(&return_payload_buf[0..32]).unwrap();
                                         spi.write(&return_payload_buf).unwrap();
                                     }
                                     if crc == crc_from_remote {
                                         match transfer_type {
                                             CAMERA_CONNECT_INFO => {
                                                 radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 1;
-                                                let firmware_version = LittleEndian::read_u32(&chunk[4..8]);
-                                                info!("Got startup info: radiometry enabled: {}, firmware version: {}", radiometry_enabled, firmware_version);
-                                                assert_eq!(firmware_version, EXPECTED_FIRMWARE_VERSION, "Unsupported firmware version, expected {}, got {}", EXPECTED_FIRMWARE_VERSION, firmware_version);
+                                                firmware_version = LittleEndian::read_u32(&chunk[4..8]);
+                                                lepton_serial_number = format!("{}", LittleEndian::read_u32(&chunk[8..12]));
+                                                got_startup_info = true;
+                                                info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{}", radiometry_enabled, firmware_version, lepton_serial_number);
+                                                if firmware_version != EXPECTED_FIRMWARE_VERSION {
+                                                    exit_cleanly(&mut attiny_i2c_interface);
+                                                    error!("Unsupported firmware version, expected {}, got {}", EXPECTED_FIRMWARE_VERSION, firmware_version);
+                                                    panic!("Exit");
+                                                }
+                                                if device_config.use_low_power_mode() && !radiometry_enabled {
+                                                    exit_cleanly(&mut attiny_i2c_interface);
+                                                    error!("Low power mode is currently only supported on lepton sensors with radiometry, exiting.");
+                                                    panic!("Exit");
+                                                }
                                                 // Terminate any existing file download.
                                                 let in_progress_file_transfer = file_download.take();
                                                 if let Some(file) = in_progress_file_transfer {
                                                     warn!("Aborting in progress file transfer with {} bytes", file.len());
                                                 }
+                                                let _ = tx.send((None, Some(false)));
                                             }
                                             CAMERA_RAW_FRAME_TRANSFER => {
                                                 // Frame
@@ -599,10 +604,9 @@ fn main() {
                                                     got_first_frame = true;
                                                     info!("Got first frame from rp2040");
                                                 }
-                                                got_frame = true;
                                                 FRAME_BUFFER.swap();
                                                 let is_recording = crc_from_remote == 1;
-                                                let _ = tx.send((radiometry_enabled, is_recording));
+                                                let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number)), None));
                                             }
                                             CAMERA_BEGIN_FILE_TRANSFER => {
                                                 if file_download.is_some() {
@@ -615,6 +619,7 @@ fn main() {
                                                 let mut file = Vec::with_capacity(10_000_000);
                                                 file.extend_from_slice(&chunk);
                                                 file_download = Some(file);
+                                                let _ = tx.send((None, Some(true)));
                                             }
                                             CAMERA_RESUME_FILE_TRANSFER => {
                                                 if let Some(file) = &mut file_download {
@@ -627,8 +632,14 @@ fn main() {
 
                                                     part_count += 1;
                                                     file.extend_from_slice(&chunk);
+                                                    let _ = tx.send((None, Some(true)));
                                                 } else {
                                                     warn!("Trying to continue file with no open file");
+                                                    if !got_startup_info {
+                                                        let date = chrono::Local::now();
+                                                        error!("Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                                        let _ = restart_tx.send(true);
+                                                    }
                                                 }
                                             }
                                             CAMERA_END_FILE_TRANSFER => {
@@ -643,6 +654,7 @@ fn main() {
                                                     part_count = 0;
                                                     file.extend_from_slice(&chunk);
                                                     save_cptv_file_to_disk(file, device_config.output_dir());
+                                                    let _ = tx.send((None, Some(false)));
                                                 } else {
                                                     warn!("Trying to end file with no open file");
                                                 }
@@ -656,6 +668,7 @@ fn main() {
                                                 let mut file = Vec::new();
                                                 file.extend_from_slice(&chunk);
                                                 save_cptv_file_to_disk(file, device_config.output_dir());
+                                                let _ = tx.send((None, Some(false)));
                                             }
                                             _ => if num_bytes != 0 { warn!("Unhandled transfer type, {:#x}", transfer_type) }
                                         }
@@ -671,18 +684,22 @@ fn main() {
                                 back.replace(Some(frame));
                                 if !got_first_frame {
                                     got_first_frame = true;
-                                    info!("Got first frame from rp2040");
+                                    info!("Got first frame from rp2040, got startup info {}", got_startup_info);
                                 }
-                                got_frame = true;
                                 let is_recording = crc_from_remote == 1;
-                                if !is_recording && rp2040_needs_reset {
-                                    rp2040_needs_reset = false;
+                                if !is_recording && (rp2040_needs_reset || !got_startup_info) {
                                     let date = chrono::Local::now();
-                                    error!("Resetting rp2040 on config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                    if !got_startup_info {
+                                        error!("Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                    } else if rp2040_needs_reset {
+                                        error!("Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                        rp2040_needs_reset = false;
+                                        got_startup_info = false;
+                                    }
                                     let _ = restart_tx.send(true);
                                 }
                                 FRAME_BUFFER.swap();
-                                let _ = tx.send((radiometry_enabled, is_recording));
+                                let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number)), None));
                             }
                         }
                     }
@@ -697,14 +714,18 @@ fn main() {
     }).unwrap().join();
 }
 
+fn exit_cleanly(attiny_i2c_interface: &mut Option<I2c>) {
+    if let Some(attiny_i2c) = attiny_i2c_interface {
+        attiny_i2c
+            .write(&[0x07, 0x00])
+            .expect("Failed writing ready state to attiny");
+    }
+}
+
 fn process_interrupted(term: &Arc<AtomicBool>, attiny_i2c_interface: &mut Option<I2c>) -> bool {
     if term.load(Ordering::Relaxed) {
         // We got terminated - before we exit, clean up the tc2-agent ready state register
-        if let Some(attiny_i2c) = attiny_i2c_interface {
-            attiny_i2c
-                .write(&[0x07, 0x00])
-                .expect("Failed writing ready state to attiny");
-        }
+        exit_cleanly(attiny_i2c_interface);
         true
     } else {
         false

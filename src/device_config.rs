@@ -1,15 +1,11 @@
 // Read camera config file
 use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
-use chrono_tz::OffsetComponents;
 use log::{error, info};
-use serde::de::Visitor;
-use serde::ser::Error;
 use serde::{Deserialize, Deserializer};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::ops::Add;
-use std::str::FromStr;
 use toml::value::Offset;
 
 fn default_constant_recorder() -> bool {
@@ -48,6 +44,8 @@ where
     D: Deserializer<'de>,
 {
     let s: String = Deserialize::deserialize(deserializer)?;
+
+    info!("Deserialising time from config {}", s);
     // NOTE: This is probably not that robust on all possible input strings – but we should solve this
     //  with better validation/UI elsewhere where users are inputting time offsets
     let mut tokens: Vec<NumberString> = Vec::new();

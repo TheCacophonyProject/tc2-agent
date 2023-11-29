@@ -258,7 +258,7 @@ pub fn decode_cptv_header_streaming(cptv_bytes: &[u8]) -> Result<CptvHeader, Box
     let mut decoder = MultiGzDecoder::new(cptv_bytes);
     let mut unzipped = Vec::new();
     let mut buffer = [0u8; 32];
-    let mut cptv_header: CptvHeader;
+    let cptv_header: CptvHeader;
     loop {
         match decode_cptv_header(&unzipped) {
             Ok((_, header)) => {
