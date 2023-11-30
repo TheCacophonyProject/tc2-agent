@@ -23,15 +23,13 @@ script:
   - sed -i "s/version = \"0.0.0-snapshot\"/version = \"${TRAVIS_TAG#v}\"/g" Cargo.toml
   - cargo install cargo-deb
   - cargo build --release --target=armv7-unknown-linux-musleabihf
-  - cargo deb --target=armv7-unknown-linux-musleabihf
-  - ls target/armv7-unknown-linux-musleabihf/debian/*.deb
-  #- cargo test --target=armv7-unknown-linux-musleabihf
+  - cargo deb --target=armv7-unknown-linux-musleabihf --output tc2-agent_${TRAVIS_TAG#v}_armhf.deb
 
 deploy:
   provider: releases
   token: $GITHUB_TOKEN
   file:
-    - "target/armv7-unknown-linux-musleabihf/debian/tc2-agent_${TRAVIS_TAG#v}_armhf.deb"
+    - "tc2-agent_${TRAVIS_TAG#v}_armhf.deb"
   skip_cleanup: true
   on:
     tags: true
