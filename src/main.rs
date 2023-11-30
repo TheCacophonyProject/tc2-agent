@@ -60,8 +60,8 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
         if let Some(pos) = pos {
             let y = pos / 160;
             let x = pos - (y * 160);
-            debug!("Zero px found at ({}, {}) not sending", x, y);
-            found_bad_pixels = true;
+            info!("Zero px found at ({}, {}) not sending", x, y);
+            //found_bad_pixels = true;
         }
         // Make sure each frame number is ascending correctly.
         let telemetry = read_telemetry(&fb);
@@ -448,19 +448,19 @@ fn main() {
             }
 
             let mut radiometry_enabled = false;
-            let mut file_transfer_in_progress = false;
             let mut firmware_version = 0;
             let mut lepton_serial_number = String::from("");
 
             // // We might have to abandon using pin interrupt to trigger SPI, and just constantly poll for a pattern to align to.
             // // Align our SPI reads to the start of the sequence 1, 2, 3, 4, 1, 2, 3, 4
             // // Can it also be related to our DMA transfers?
-            if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(1000))) {
+            if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(2000))) {
                 if _pin_level.is_some() {
+                    header.fill(0);
                     spi.read(&mut header).unwrap();
                     {
-                        info!("Read {} bytes of header", header.len());
-                        info!("Header {:?}", header);
+                        //info!("Read {} bytes of header", header.len());
+                        //info!("Header {:?}", header);
                         // For some reason, on some hardware, the first SPI transfer from the rp2040 has the first 8 bytes
                         // wrong, and in these instances they should be skipped.  If they are correct we expect to see 2
                         // repeated redundant u32s representing the length of the payload to read.
@@ -469,6 +469,7 @@ fn main() {
                         } else {
                             0
                         };
+                        //info!("Got offset {}", offset);
                         let header_slice = &header[offset..];
                         //info!("Header {:?}", header);
                         // NOTE: We should be aligned now.
@@ -490,10 +491,13 @@ fn main() {
                         let header_crc_check = crc_from_remote == crc_from_remote_dup && crc_from_remote_inv_dup == crc_from_remote_inv && crc_from_remote_inv.reverse_bits() == crc_from_remote;
                         let transfer_type_check = transfer_type == transfer_type_dup;
                         let actual_num_bytes_check = actual_num_bytes == actual_num_bytes_dup;
+                        //info!("Got num bytes {}/{}, {:?}", num_bytes, actual_num_bytes, &header[..]);
 
                         if num_bytes != 0 {
                             //info!("Header {:?}, tt {}, crc {}, num_bytes {}, actual_num_bytes {}", &header, transfer_type, crc_from_remote, num_bytes, actual_num_bytes);
-                            assert!(num_bytes <= actual_num_bytes);
+                            if num_bytes > actual_num_bytes {
+                                continue 'transfer;
+                            }
                         }
 
                         if !num_bytes_check || !header_crc_check || !transfer_type_check || !actual_num_bytes_check {
@@ -507,7 +511,7 @@ fn main() {
                             // the rp2040 on startup.
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
-                            spi.write(&return_payload_buf).unwrap();
+                            //spi.write(&return_payload_buf).unwrap();
                             if process_interrupted(&term, &mut attiny_i2c_interface) {
                                 break 'transfer;
                             }
@@ -518,7 +522,7 @@ fn main() {
                             //warn!("zero-sized payload");
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
-                            spi.write(&return_payload_buf).unwrap();
+                            //spi.write(&return_payload_buf).unwrap();
                             if process_interrupted(&term, &mut attiny_i2c_interface) {
                                 break 'transfer;
                             }
@@ -529,7 +533,7 @@ fn main() {
                             warn!("unknown transfer type {}", transfer_type);
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
-                            spi.write(&return_payload_buf).unwrap();
+                            //spi.write(&return_payload_buf).unwrap();
                             if process_interrupted(&term, &mut attiny_i2c_interface) {
                                 break 'transfer;
                             }
@@ -544,12 +548,21 @@ fn main() {
                         }
                         // let now = chrono::Local::now();
                         if num_bytes != 0 && transfer_type > 0 && transfer_type < 6 {
-                            info!("Reading {} bytes from payload", actual_num_bytes + offset);
-                            let chunk = &mut raw_read_buffer[0..(actual_num_bytes + offset)];
+                            //info!("Reading {} bytes from payload", actual_num_bytes);
+                            /*
+                            let chunk = if offset == 8 {
+                                raw_read_buffer[0..8].copy_from_slice(&header_slice[header_slice.len() - 8..]);
+                                &mut raw_read_buffer[8..actual_num_bytes]
+                            } else {
+                                &mut raw_read_buffer[0..actual_num_bytes]
+                            };
+                             */
+                            let chunk = &mut raw_read_buffer[0..actual_num_bytes];
                             spi.read(chunk).unwrap();
-                            info!("Read {} bytes of payload", chunk.len());
-                            let chunk = &chunk[..num_bytes];
-                            info!("Took {} actual bytes", chunk.len());
+                            //info!("Read {} bytes of payload", chunk.len());
+                            let chunk = &raw_read_buffer[..num_bytes];
+                            //let remainder = &chunk[num_bytes..actual_num_bytes];
+                            ///info!("Took {} actual bytes", chunk.len());
                             //info!("-- [{}] SPI got transfer type {}, #{} of {} bytes", now.format("%H:%M:%S:%.3f"), transfer_type, transfer_count, num_bytes);
 
                             if transfer_type != CAMERA_RAW_FRAME_TRANSFER {
@@ -562,7 +575,7 @@ fn main() {
                                     device_config.write_to_slice(&mut return_payload_buf[8..]);
                                 }
 
-                                if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(1000))) {
+                                //if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(1000))) {
                                     if transfer_type == CAMERA_CONNECT_INFO {
                                         info!("Sending camera device config to rp2040");
                                         spi.write(&return_payload_buf).unwrap();
@@ -675,7 +688,7 @@ fn main() {
                                     } else {
                                         warn!("Crc check failed, remote was notified and will re-transmit");
                                     }
-                                }
+                                //}
                             } else {
                                 // Frame
                                 let mut frame = [0u8; FRAME_LENGTH];
