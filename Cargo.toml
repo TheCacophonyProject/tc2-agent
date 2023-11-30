@@ -1,6 +1,6 @@
 [package]
 name = "tc2-agent"
-version = "0.2.0-snapshot"
+version = "0.0.0-snapshot"  # Updated by travis on release.
 edition = "2021"
 description = "Program to interface between the Raspberry Pi and the RP2040 in the DOC AI Cam"
 license = "GPL v3.0"
@@ -41,5 +41,6 @@ depends = ""
 assets = [
   ["target/release/tc2-agent", "/usr/bin/", "755"], # Binary asset
   ["_releases/tc2-agent.service", "/etc/systemd/system/tc2-agent.service", "664"],
+  ["_releases/rp2040-firmware.elf", "/etc/cacophony/rp2040-firmware.elf", "664"],
 ]
 maintainer-scripts = "_releases/scripts"

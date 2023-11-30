@@ -20,7 +20,7 @@ before_script:
     echo "linker = \"arm-linux-gnueabihf-gcc\"" >> ~/.cargo/config
 
 script:
-  - sed -i "s/version = \"0.1.0-snapshot\"/version = \"${TRAVIS_TAG#v}\"/g" Cargo.toml
+  - sed -i "s/version = \"0.0.0-snapshot\"/version = \"${TRAVIS_TAG#v}\"/g" Cargo.toml
   - cargo install cargo-deb
   - cargo build --release --target=armv7-unknown-linux-musleabihf
   - cargo deb --target=armv7-unknown-linux-musleabihf
