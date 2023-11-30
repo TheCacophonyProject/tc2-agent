@@ -1,4 +1,8 @@
 #!/bin/bash
 systemctl daemon-reload
-systemctl enable tc2-agent.service
+systemctl stop tc2-agent.service
+
+## Program RP2040 firmware
+tc2-hat-rp2040 --elf /etc/cacophony/rp2040-firmware.elf
+
 systemctl restart tc2-agent.service
