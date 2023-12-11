@@ -33,6 +33,20 @@ fn default_activate_thermal_throttler() -> bool {
     false
 }
 
+fn default_recording_start_time() -> AbsRelTime {
+    AbsRelTime {
+        relative_time_seconds: Some(-(60 * 30)),
+        absolute_time: None,
+    }
+}
+
+fn default_recording_stop_time() -> AbsRelTime {
+    AbsRelTime {
+        relative_time_seconds: Some(60 * 30),
+        absolute_time: None,
+    }
+}
+
 #[derive(Debug)]
 struct TimeUnit(char);
 
@@ -249,12 +263,14 @@ impl AbsRelTime {
 struct TimeWindow {
     #[serde(
         rename = "start-recording",
-        deserialize_with = "from_time_abs_or_rel_str"
+        deserialize_with = "from_time_abs_or_rel_str",
+        default = "default_recording_start_time"
     )]
     start_recording: AbsRelTime,
     #[serde(
         rename = "stop-recording",
-        deserialize_with = "from_time_abs_or_rel_str"
+        deserialize_with = "from_time_abs_or_rel_str",
+        default = "default_recording_stop_time"
     )]
     stop_recording: AbsRelTime,
 }
@@ -262,14 +278,8 @@ struct TimeWindow {
 impl Default for TimeWindow {
     fn default() -> Self {
         TimeWindow {
-            start_recording: AbsRelTime {
-                absolute_time: None,
-                relative_time_seconds: Some(-(30 * 60)),
-            },
-            stop_recording: AbsRelTime {
-                absolute_time: None,
-                relative_time_seconds: Some(30 * 60),
-            },
+            start_recording: default_recording_start_time(),
+            stop_recording: default_recording_stop_time(),
         }
     }
 }
@@ -386,10 +396,13 @@ impl DeviceConfig {
         self.recording_settings.use_low_power_mode
     }
 
-    pub fn load_from_fs() -> Option<DeviceConfig> {
-        let config_toml = fs::read("/etc/cacophony/config.toml").ok()?;
-        let config_toml_str = String::from_utf8(config_toml).ok()?;
-        let device_config: DeviceConfig = toml::from_str(&config_toml_str).ok()?;
+    pub fn load_from_fs() -> Result<DeviceConfig, &'static str> {
+        let config_toml =
+            fs::read("/etc/cacophony/config.toml").map_err(|_| "Error reading file from disk")?;
+        let config_toml_str =
+            String::from_utf8(config_toml).map_err(|_| "Error parsing string from utf8")?;
+        let device_config: DeviceConfig =
+            toml::from_str(&config_toml_str).map_err(|_| "Error deserializing toml config")?;
 
         // TODO: Make sure device has sane windows etc.
         if !device_config.has_location() {
@@ -405,7 +418,7 @@ impl DeviceConfig {
             std::process::exit(1);
         }
         info!("Got config {:?}", device_config);
-        Some(device_config)
+        Ok(device_config)
     }
 
     pub fn write_to_slice(&self, output: &mut [u8]) {

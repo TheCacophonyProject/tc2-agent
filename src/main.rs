@@ -171,8 +171,8 @@ fn main() {
     println!("\n=========\nStarting thermal camera 2 agent, run with --help to see options.\n");
     let config: ModeConfig = argh::from_env();
     let device_config = DeviceConfig::load_from_fs();
-    if device_config.is_none() {
-        error!("Config not found at /etc/cacophony/config.toml");
+    if device_config.is_err() {
+        error!("Load config error: {}", device_config.err().unwrap());
         std::process::exit(1);
     }
     let mut current_config = device_config.unwrap();
@@ -190,7 +190,7 @@ fn main() {
                     // File got written to
                     // Send event to
                     match DeviceConfig::load_from_fs() {
-                        Some(config) => {
+                        Ok(config) => {
                             // Send to rp2040 to write via a channel somehow.  Maybe we have to restart the rp2040 here so that it re-handshakes and
                             // picks up the new info
                             if config != current_config {
@@ -199,8 +199,8 @@ fn main() {
                                 let _ = config_tx.send(current_config.clone());
                             }
                         }
-                        None => {
-                            error!("Config not found at /etc/cacophony/config.toml");
+                        Err(msg) => {
+                            error!("Load config error: {}", msg);
                             std::process::exit(1);
                         }
                     }
@@ -308,8 +308,7 @@ fn main() {
                                 Ok((Some((radiometry_enabled, is_recording, firmware_version, camera_serial)), None)) => {
                                     if !config.use_wifi && !sent_header {
                                         // Send the header info here:
-                                        //let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
-                                        let model = "lepton3.5";
+                                        let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
                                         let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
                                         if let Err(_) = stream.write_all(header.as_bytes()) {
                                             warn!("Failed sending header info");
@@ -425,6 +424,9 @@ fn main() {
         let mut rp2040_needs_reset = false;
         let mut has_failed = false;
         let mut got_startup_info = false;
+        let mut radiometry_enabled = false;
+        let mut firmware_version = 0;
+        let mut lepton_serial_number = String::from("");
 
         'transfer: loop {
             // Check once per frame to see if the config file may have been changed
@@ -447,10 +449,6 @@ fn main() {
                     }
                 }
             }
-
-            let mut radiometry_enabled = false;
-            let mut firmware_version = 0;
-            let mut lepton_serial_number = String::from("");
 
             // // We might have to abandon using pin interrupt to trigger SPI, and just constantly poll for a pattern to align to.
             // // Align our SPI reads to the start of the sequence 1, 2, 3, 4, 1, 2, 3, 4
@@ -620,7 +618,7 @@ fn main() {
                                                 }
                                                 FRAME_BUFFER.swap();
                                                 let is_recording = crc_from_remote == 1;
-                                                let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number)), None));
+                                                let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number.clone())), None));
                                             }
                                             CAMERA_BEGIN_FILE_TRANSFER => {
                                                 if file_download.is_some() {
@@ -713,7 +711,7 @@ fn main() {
                                     let _ = restart_tx.send(true);
                                 }
                                 FRAME_BUFFER.swap();
-                                let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number)), None));
+                                let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number.clone())), None));
                             }
                         }
                     }
