@@ -308,7 +308,8 @@ fn main() {
                                 Ok((Some((radiometry_enabled, is_recording, firmware_version, camera_serial)), None)) => {
                                     if !config.use_wifi && !sent_header {
                                         // Send the header info here:
-                                        let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
+                                        //let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
+                                        let model = "lepton3.5";
                                         let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
                                         if let Err(_) = stream.write_all(header.as_bytes()) {
                                             warn!("Failed sending header info");
