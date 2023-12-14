@@ -6,6 +6,8 @@ use serde::{Deserialize, Deserializer};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::ops::Add;
+use sun_times::sun_times;
+use toml::de::Error;
 use toml::value::Offset;
 
 fn default_constant_recorder() -> bool {
@@ -245,13 +247,13 @@ impl AbsRelTime {
             // NOTE: We need to convert this to UTC offsets, since that's what our timestamp is.
             let seconds_past_midnight =
                 (abs_time.hour as i32 * 60 * 60) + (abs_time.min as i32 * 60);
-            info!("Seconds past midnight local {}", seconds_past_midnight);
+            //info!("Seconds past midnight local {}", seconds_past_midnight);
             let tz_offset = timezone_offset_seconds();
-            info!(
-                "TZ offset {}, seconds past UTC midnight {}",
-                tz_offset,
-                (seconds_past_midnight - tz_offset) % 86_400
-            );
+            // info!(
+            //     "TZ offset {}, seconds past UTC midnight {}",
+            //     tz_offset,
+            //     (seconds_past_midnight - tz_offset) % 86_400
+            // );
             (true, (seconds_past_midnight - tz_offset) % 86_400)
         } else {
             (false, self.relative_time_seconds.unwrap())
@@ -401,24 +403,170 @@ impl DeviceConfig {
             fs::read("/etc/cacophony/config.toml").map_err(|_| "Error reading file from disk")?;
         let config_toml_str =
             String::from_utf8(config_toml).map_err(|_| "Error parsing string from utf8")?;
-        let device_config: DeviceConfig =
-            toml::from_str(&config_toml_str).map_err(|_| "Error deserializing toml config")?;
-
-        // TODO: Make sure device has sane windows etc.
-        if !device_config.has_location() {
-            error!(
+        let device_config: Result<DeviceConfig, Error> = toml::from_str(&config_toml_str);
+        match device_config {
+            Ok(device_config) => {
+                // TODO: Make sure device has sane windows etc.
+                if !device_config.has_location() {
+                    error!(
                 "No location set for this device. To enter recording mode, a location must be set."
             );
-            // TODO: Event log error?
-            std::process::exit(1);
+                    // TODO: Event log error?
+                    std::process::exit(1);
+                }
+                if !device_config.is_registered() {
+                    error!("This device is not yet registered.  To enter recording mode the device must be named assigned to a project.");
+                    // TODO: Event log error?
+                    std::process::exit(1);
+                }
+                info!("Got config {:?}", device_config);
+
+                let inside_recording_window =
+                    device_config.time_is_in_recording_window(&Utc::now().naive_utc());
+                info!("Inside recording window: {}", inside_recording_window);
+                if !inside_recording_window {
+                    device_config.print_next_recording_window(&Utc::now().naive_utc());
+                }
+
+                Ok(device_config)
+            }
+            Err(msg) => {
+                error!("Toml parse error: {:?}", msg);
+                Err("Error deserializing TOML config")
+            }
         }
-        if !device_config.is_registered() {
-            error!("This device is not yet registered.  To enter recording mode the device must be named assigned to a project.");
-            // TODO: Event log error?
-            std::process::exit(1);
+    }
+
+    pub fn next_recording_window(&self, now_utc: &NaiveDateTime) -> (NaiveDateTime, NaiveDateTime) {
+        let (is_absolute_start, mut start_offset) =
+            self.recording_window.start_recording.time_offset();
+        let (is_absolute_end, mut end_offset) = self.recording_window.stop_recording.time_offset();
+        if is_absolute_end && end_offset < 0 {
+            end_offset = 86_400 + end_offset;
         }
-        info!("Got config {:?}", device_config);
-        Ok(device_config)
+        if is_absolute_start && start_offset < 0 {
+            start_offset = 86_400 + start_offset;
+        }
+        let (sunrise, sunset) = if !is_absolute_start || !is_absolute_end {
+            let location = self
+                .location
+                .as_ref()
+                .expect("Relative recording windows require a location");
+            let (lat, lng) = (
+                location
+                    .latitude
+                    .expect("Relative recording windows require a valid latitude"),
+                location
+                    .longitude
+                    .expect("Relative recording windows require a valid longitude"),
+            );
+            let altitude = location.altitude;
+            let (mut sunrise, sunset) = sun_times(
+                now_utc.date(),
+                lat as f64,
+                lng as f64,
+                altitude.unwrap_or(0.0) as f64,
+            )
+            .unwrap();
+            if sunrise < sunset {
+                sunrise = sunrise.add(chrono::Duration::days(1));
+            }
+            (Some(sunrise), Some(sunset))
+        } else {
+            (None, None)
+        };
+
+        let mut start_time = if !is_absolute_start {
+            sunset
+                .unwrap()
+                .naive_utc()
+                .checked_add_signed(chrono::Duration::seconds(start_offset as i64))
+                .unwrap()
+        } else {
+            NaiveDateTime::new(
+                now_utc.date(),
+                NaiveTime::from_num_seconds_from_midnight_opt(start_offset as u32, 0).unwrap(),
+            )
+        };
+        let mut end_time = if !is_absolute_end {
+            sunrise
+                .unwrap()
+                .naive_utc()
+                .checked_add_signed(chrono::Duration::seconds(end_offset as i64))
+                .unwrap()
+        } else {
+            NaiveDateTime::new(
+                now_utc.date(),
+                NaiveTime::from_num_seconds_from_midnight_opt(end_offset as u32, 0).unwrap(),
+            )
+        };
+
+        if end_time < *now_utc {
+            end_time = end_time.add(chrono::Duration::days(1));
+            start_time = start_time.add(chrono::Duration::days(1));
+        }
+        // FIXME: Sometimes wrong for absolute windows?
+        else if end_time < start_time {
+            end_time = end_time.add(chrono::Duration::days(1));
+        }
+        (start_time, end_time)
+    }
+    pub fn next_recording_window_start(&self, now_utc: &NaiveDateTime) -> NaiveDateTime {
+        self.next_recording_window(now_utc).0
+    }
+
+    pub fn print_next_recording_window(&self, date_time_utc: &NaiveDateTime) {
+        let (start_time, end_time) = self.next_recording_window(date_time_utc);
+        let starts_in = start_time - *date_time_utc;
+        let starts_in_hours = starts_in.num_hours();
+        let starts_in_mins = starts_in.num_minutes() - (starts_in_hours * 60);
+        let ends_in = end_time - *date_time_utc;
+        let ends_in_hours = ends_in.num_hours();
+        let ends_in_mins = ends_in.num_minutes() - (ends_in_hours * 60);
+        let window = end_time - start_time;
+        let window_hours = window.num_hours();
+        let window_mins = window.num_minutes() - (window_hours * 60);
+        info!(
+            "Next recording window will start in {}h{}m and end in {}h{}m, window duration {}h{}m",
+            starts_in_hours, starts_in_mins, ends_in_hours, ends_in_mins, window_hours, window_mins
+        );
+
+        info!(
+            "Next recording window will end in {}h{}m, window duration {}h{}m",
+            ends_in_hours, ends_in_mins, window_hours, window_mins
+        );
+    }
+    pub fn time_is_in_recording_window(&self, date_time_utc: &NaiveDateTime) -> bool {
+        if self.is_continuous_recorder() {
+            return true;
+        }
+        let (start_time, end_time) = self.next_recording_window(date_time_utc);
+        let starts_in = start_time - *date_time_utc;
+        let starts_in_hours = starts_in.num_hours();
+        let starts_in_mins = starts_in.num_minutes() - (starts_in_hours * 60);
+        let ends_in = end_time - *date_time_utc;
+        let ends_in_hours = ends_in.num_hours();
+        let ends_in_mins = ends_in.num_minutes() - (ends_in_hours * 60);
+        let window = end_time - start_time;
+        let window_hours = window.num_hours();
+        let window_mins = window.num_minutes() - (window_hours * 60);
+        if start_time > *date_time_utc && end_time > *date_time_utc {
+            info!(
+                "Recording will start in {}h{}m and end in {}h{}m, window duration {}h{}m",
+                starts_in_hours,
+                starts_in_mins,
+                ends_in_hours,
+                ends_in_mins,
+                window_hours,
+                window_mins
+            );
+        } else if end_time > *date_time_utc {
+            info!(
+                "Recording will end in {}h{}m, window duration {}h{}m",
+                ends_in_hours, ends_in_mins, window_hours, window_mins
+            );
+        }
+        *date_time_utc > start_time && *date_time_utc < end_time
     }
 
     pub fn write_to_slice(&self, output: &mut [u8]) {

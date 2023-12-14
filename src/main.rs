@@ -121,7 +121,6 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                     }
 
                     // NOTE: For debug purposes, we may want to also save the CPTV file locally for inspection.
-                    /*
                     let path = format!(
                         "{}/{}.cptv",
                         "/home/pi",
@@ -138,7 +137,6 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                             );
                         }
                     }
-                     */
                 } else {
                     error!("File {} already exists, discarding duplicate", path);
                 }
@@ -251,11 +249,6 @@ fn main() {
     let mut current_config = device_config.unwrap();
     let initial_config = current_config.clone();
     let (config_tx, config_rx) = channel();
-    let debug_mode = false;
-    // if !debug_mode && !current_config.use_low_power_mode() {
-    //     // Restart rp2040 on startup in non-low-power-mode
-    //     let _ = config_tx.send(current_config.clone());
-    // }
     let mut watcher = notify::recommended_watcher(move |res| match res {
         Ok(Event { kind, .. }) => {
             match kind {
@@ -321,7 +314,7 @@ fn main() {
         let _ = fs::write("/sys/class/gpio/unexport", gpio_number);
 
         let gpio = Gpio::new().unwrap();
-        let mut pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_input_pulldown();
+        let mut pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_input();
         let mut run_pin = gpio.get(23).unwrap().into_output_high();
         if !run_pin.is_set_high() {
             info!("Setting run pin high to enable rp2040");
@@ -498,6 +491,11 @@ fn main() {
                     }
                 }
 
+                if !initial_config.use_low_power_mode() || safe_to_restart_rp2040(&mut attiny_i2c_interface) {
+                    // NOTE: Always reset rp2040 on startup if it's safe to do so.
+                    let _ = restart_tx.send(true);
+                }
+
             }
         } else {
             error!("Error communicating to attiny");
@@ -554,8 +552,18 @@ fn main() {
             // // We might have to abandon using pin interrupt to trigger SPI, and just constantly poll for a pattern to align to.
             // // Align our SPI reads to the start of the sequence 1, 2, 3, 4, 1, 2, 3, 4
             // // Can it also be related to our DMA transfers?
-            if let Ok(_pin_level) = pin.poll_interrupt(true, Some(Duration::from_millis(2000))) {
+            let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
+            if let Ok(_pin_level) = poll_result {
                 if _pin_level.is_some() {
+                    {
+                        drop(pin);
+                        let output_pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_output_low();
+                        drop(output_pin);
+                        pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_input();
+                        pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
+                        pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
+                    }
+
                     spi.read(&mut raw_read_buffer[..2066]).unwrap();
                     {
                         let header_slice = &raw_read_buffer[..header_length];
