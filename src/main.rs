@@ -188,24 +188,24 @@ impl TryFrom<u8> for ExtTransferMessage {
     }
 }
 
-fn read_attiny_recording_flag(attiny_i2c: &mut Option<I2c>) -> bool {
-    if let Some(attiny_i2c) = attiny_i2c {
-        let mut attiny_recording_state = [0u8; 1];
-        if attiny_i2c.write(&[0x07]).is_err() {
-            error!("Failed writing command to attiny");
-            return false;
-        }
-        if attiny_i2c.read(&mut attiny_recording_state).is_err() {
-            error!("Failed reading firmware version from attiny");
-            false
-        } else {
-            attiny_recording_state[0] & 0x04 == 0x04
-        }
+fn read_tc2_agent_state(attiny_i2c: &mut I2c) -> Option<u8> {
+    let mut attiny_recording_state = [0u8; 1];
+    if attiny_i2c.write(&[0x07]).is_err() {
+        error!("Failed writing command to attiny");
+        return None;
+    }
+    if attiny_i2c.read(&mut attiny_recording_state).is_err() {
+        error!("Failed reading agent state from attiny");
+        None
     } else {
-        false
+        Some(attiny_recording_state[0])
     }
 }
-fn safe_to_restart_rp2040(attiny_interface: &mut Option<I2c>) -> bool {
+
+fn read_attiny_recording_flag(attiny_i2c: &mut I2c) -> bool {
+    read_tc2_agent_state(attiny_i2c).map_or(false, |x| x & 0x04 == 0x04)
+}
+fn safe_to_restart_rp2040(attiny_interface: &mut I2c) -> bool {
     !read_attiny_recording_flag(attiny_interface)
 }
 
@@ -221,10 +221,15 @@ fn read_attiny_firmware_version(attiny_i2c: &mut I2c) -> Result<u8, &'static str
 }
 
 fn set_attiny_tc2_agent_ready(attiny_i2c: &mut I2c) -> Result<(), &'static str> {
-    if attiny_i2c.write(&[0x07, 0x02]).is_err() {
-        Err("Failed writing ready state to attiny")
+    let state = read_tc2_agent_state(attiny_i2c);
+    if let Some(state) = state {
+        if attiny_i2c.write(&[0x07, state | 0x02]).is_err() {
+            Err("Failed writing ready state to attiny")
+        } else {
+            Ok(())
+        }
     } else {
-        Ok(())
+        Err("Failed reading ready state to attiny")
     }
 }
 
@@ -491,9 +496,11 @@ fn main() {
                     }
                 }
 
-                if !initial_config.use_low_power_mode() || safe_to_restart_rp2040(&mut attiny_i2c_interface) {
-                    // NOTE: Always reset rp2040 on startup if it's safe to do so.
-                    let _ = restart_tx.send(true);
+                if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
+                    if !initial_config.use_low_power_mode() || safe_to_restart_rp2040(attiny_i2c_interface) {
+                        // NOTE: Always reset rp2040 on startup if it's safe to do so.
+                        let _ = restart_tx.send(true);
+                    }
                 }
 
             }
@@ -700,10 +707,12 @@ fn main() {
                                         } else {
                                             warn!("Trying to continue file with no open file");
                                             if !got_startup_info {
-                                                if safe_to_restart_rp2040(&mut attiny_i2c_interface) {
-                                                    let date = chrono::Local::now();
-                                                    error!("Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
-                                                    let _ = restart_tx.send(true);
+                                                if let Some(ref mut attiny_i2c_interface) = &mut attiny_i2c_interface {
+                                                    if safe_to_restart_rp2040(attiny_i2c_interface) {
+                                                        let date = chrono::Local::now();
+                                                        error!("Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                                        let _ = restart_tx.send(true);
+                                                    }
                                                 }
                                             }
                                         }

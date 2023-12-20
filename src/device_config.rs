@@ -504,9 +504,7 @@ impl DeviceConfig {
         if end_time < *now_utc {
             end_time = end_time.add(chrono::Duration::days(1));
             start_time = start_time.add(chrono::Duration::days(1));
-        }
-        // FIXME: Sometimes wrong for absolute windows?
-        else if end_time < start_time {
+        } else if end_time < start_time {
             end_time = end_time.add(chrono::Duration::days(1));
         }
         (start_time, end_time)
