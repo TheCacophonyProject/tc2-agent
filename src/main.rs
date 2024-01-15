@@ -1,4 +1,5 @@
 mod cptv_header;
+mod detection_mask;
 mod device_config;
 mod double_buffer;
 mod mode_config;
@@ -37,13 +38,13 @@ use crate::ExtTransferMessage::{
     EndFileTransfer, ResumeFileTransfer,
 };
 use crc::{Crc, CRC_16_XMODEM};
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rppal::i2c::I2c;
 use simplelog::*;
 
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 6;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 7;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 8;
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
@@ -531,8 +532,6 @@ fn main() {
         let mut radiometry_enabled = false;
         let mut firmware_version = 0;
         let mut lepton_serial_number = String::from("");
-
-
 
         'transfer: loop {
             // Check once per frame to see if the config file may have been changed

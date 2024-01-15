@@ -1,4 +1,5 @@
 // Read camera config file
+use crate::detection_mask::DetectionMask;
 use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use log::{error, info};
@@ -15,6 +16,10 @@ fn default_constant_recorder() -> bool {
 }
 fn default_low_power_mode() -> bool {
     false
+}
+
+fn default_mask_regions() -> DetectionMask {
+    DetectionMask::new(None)
 }
 
 fn default_min_disk_space_mb() -> u32 {
@@ -54,6 +59,20 @@ struct TimeUnit(char);
 
 #[derive(Debug)]
 struct NumberString(String, Option<TimeUnit>, bool);
+
+fn deserialize_mask_regions<'de, D>(deserializer: D) -> Result<DetectionMask, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let masks: toml::map::Map<String, toml::Value> = Deserialize::deserialize(deserializer)?;
+    for mask in masks {
+        println!("Masks {:?}", mask);
+    }
+    let mut mask = DetectionMask::new(None);
+
+    // TODO: Take mask regions if any, and convert them to a bitmap
+    Ok(mask)
+}
 
 fn from_time_abs_or_rel_str<'de, D>(deserializer: D) -> Result<AbsRelTime, D::Error>
 where
@@ -304,6 +323,12 @@ struct ThermalRecordingSettings {
     use_low_power_mode: bool,
     #[serde(rename = "min-disk-space-mb", default = "default_min_disk_space_mb")]
     min_disk_space_mb: u32,
+    #[serde(
+        rename = "mask-regions",
+        default = "default_mask_regions",
+        deserialize_with = "deserialize_mask_regions"
+    )]
+    mask_regions: DetectionMask,
 }
 
 impl Default for ThermalRecordingSettings {
@@ -313,6 +338,7 @@ impl Default for ThermalRecordingSettings {
             constant_recorder: default_constant_recorder(),
             min_disk_space_mb: default_min_disk_space_mb(),
             use_low_power_mode: default_low_power_mode(),
+            mask_regions: default_mask_regions(),
         }
     }
 }
@@ -636,6 +662,7 @@ min-disk-space-mb = 200
 min-secs = 5
 output-dir = "/var/spool/cptv"
 preview-secs = 1
+mask-regions = { trap = [[0.1, 0.3], [0.1, 0.2], [0.2, 0.5]], sky = [[0, 0], [0, 0.1], [1, 0.1], [1, 0]] }
 
 [location]
 accuracy = 0.0
