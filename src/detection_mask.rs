@@ -28,4 +28,8 @@ impl DetectionMask {
         let group = self.inner[index >> 3];
         group != 0 && group & (1 << (index % 8)) != 0
     }
+
+    pub fn inner(&self) -> &[u8; 2400] {
+        &self.inner
+    }
 }

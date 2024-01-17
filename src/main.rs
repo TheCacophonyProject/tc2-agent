@@ -32,10 +32,10 @@ use crate::double_buffer::DoubleBuffer;
 use crate::mode_config::ModeConfig;
 use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
-use crate::utils::u8_slice_as_u16_slice;
+use crate::utils::{u8_slice_as_u16_slice, u8_slice_as_u16_slice_mut};
 use crate::ExtTransferMessage::{
     BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo, CameraRawFrameTransfer,
-    EndFileTransfer, ResumeFileTransfer,
+    EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer,
 };
 use crc::{Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
@@ -44,8 +44,8 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rppal::i2c::I2c;
 use simplelog::*;
 
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 7;
-const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 8;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 8;
+const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 10;
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 pub type Frame = [u8; FRAME_LENGTH];
@@ -72,6 +72,7 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
         }
         // Make sure each frame number is ascending correctly.
         let telemetry = read_telemetry(&fb);
+        //info!("Got frame {:?}", telemetry.frame_num);
         if !telemetry.ffc_in_progress && !found_bad_pixels {
             if let Err(_) = stream.write_all(&fb) {
                 return (None, false);
@@ -162,6 +163,8 @@ const CAMERA_END_FILE_TRANSFER: u8 = 0x5;
 
 const CAMERA_BEGIN_AND_END_FILE_TRANSFER: u8 = 0x6;
 
+const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
+
 #[repr(u8)]
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ExtTransferMessage {
@@ -171,6 +174,7 @@ pub enum ExtTransferMessage {
     ResumeFileTransfer = 0x4,
     EndFileTransfer = 0x5,
     BeginAndEndFileTransfer = 0x6,
+    GetMotionDetectionMask = 0x7,
 }
 
 impl TryFrom<u8> for ExtTransferMessage {
@@ -184,6 +188,7 @@ impl TryFrom<u8> for ExtTransferMessage {
             0x4 => Ok(ResumeFileTransfer),
             0x5 => Ok(EndFileTransfer),
             0x6 => Ok(BeginAndEndFileTransfer),
+            0x7 => Ok(GetMotionDetectionMask),
             _ => Err(()),
         }
     }
@@ -344,6 +349,7 @@ fn main() {
             let mut prev_time_on_msec = 0u32;
 
             loop {
+                info!("Entering frame-socket loop");
                 if let Ok(_) = restart_rx.try_recv() {
                     info!("Restarting rp2040");
                     if !run_pin.is_set_high() {
@@ -617,7 +623,7 @@ fn main() {
                             continue 'transfer;
                         }
 
-                        if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_BEGIN_AND_END_FILE_TRANSFER {
+                        if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_GET_MOTION_DETECTION_MASK {
                             warn!("unknown transfer type {}", transfer_type);
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
@@ -648,10 +654,24 @@ fn main() {
 
                             if transfer_type == CAMERA_CONNECT_INFO {
                                 info!("Sending camera device config to rp2040");
-                                spi.write(&return_payload_buf).unwrap();
-                            } else {
+                                // TODO: Add a crc to the return payload.
                                 spi.write(&return_payload_buf).unwrap();
                             }
+                            else if transfer_type == CAMERA_GET_MOTION_DETECTION_MASK {
+                                let piece_number = &chunk[0];
+                                //info!("Got request for mask piece number {}", piece_number);
+                                let piece = device_config.mask_piece(*piece_number as usize);
+
+                                let mut piece_with_length = [0u8; 101];
+                                piece_with_length[0] = piece.len() as u8;
+                                piece_with_length[1..1 + piece.len()].copy_from_slice(piece);
+                                let crc = crc_check.checksum(&piece_with_length[0..1 + piece.len()]);
+                                LittleEndian::write_u16(&mut return_payload_buf[8..10], crc);
+                                //info!("Sending piece({}) {:?}", piece.len(), piece_with_length);
+                                &mut return_payload_buf[10..10 + piece.len() + 1].copy_from_slice(&piece_with_length);
+                            }
+                            // Always write the return buffer
+                            spi.write(&return_payload_buf).unwrap();
                             if crc == crc_from_remote {
                                 match transfer_type {
                                     CAMERA_CONNECT_INFO => {
@@ -709,7 +729,7 @@ fn main() {
                                                 if let Some(ref mut attiny_i2c_interface) = &mut attiny_i2c_interface {
                                                     if safe_to_restart_rp2040(attiny_i2c_interface) {
                                                         let date = chrono::Local::now();
-                                                        error!("Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                                        error!("1) Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
                                                         let _ = restart_tx.send(true);
                                                     }
                                                 }
@@ -744,6 +764,9 @@ fn main() {
                                         save_cptv_file_to_disk(file, device_config.output_dir());
                                         let _ = tx.send((None, Some(false)));
                                     }
+                                    CAMERA_GET_MOTION_DETECTION_MASK => {
+                                        // Already handled
+                                    }
                                     _ => if num_bytes != 0 { warn!("Unhandled transfer type, {:#x}", transfer_type) }
                                 }
                             } else {
@@ -754,6 +777,17 @@ fn main() {
                             // Frame
                             let mut frame = [0u8; FRAME_LENGTH];
                             BigEndian::write_u16_into(u8_slice_as_u16_slice(&raw_read_buffer[header_length..header_length + FRAME_LENGTH]), &mut frame);
+
+                            // let mask = device_config.mask();
+                            // for y in 0..120 {
+                            //     for x in 0..160 {
+                            //         let idx = y * 160 + x;
+                            //         if mask.is_masked_at_index(idx) {
+                            //             u8_slice_as_u16_slice_mut(&mut frame)[idx] = 10;
+                            //         }
+                            //     }
+                            // }
+
                             let back = FRAME_BUFFER.get_back().lock().unwrap();
                             back.replace(Some(frame));
                             if !got_first_frame {
@@ -764,9 +798,9 @@ fn main() {
                             if !is_recording && (rp2040_needs_reset || !got_startup_info) {
                                 let date = chrono::Local::now();
                                 if !got_startup_info {
-                                    error!("Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                    error!("2) Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
                                 } else if rp2040_needs_reset {
-                                    error!("Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                    error!("3) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
                                     rp2040_needs_reset = false;
                                     got_startup_info = false;
                                 }

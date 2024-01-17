@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 // Read camera config file
 use crate::detection_mask::DetectionMask;
 use byteorder::{LittleEndian, WriteBytesExt};
@@ -10,6 +11,8 @@ use std::ops::Add;
 use sun_times::sun_times;
 use toml::de::Error;
 use toml::value::Offset;
+use toml::Value;
+use triangulate::{ListFormat, Polygon};
 
 fn default_constant_recorder() -> bool {
     false
@@ -60,17 +63,109 @@ struct TimeUnit(char);
 #[derive(Debug)]
 struct NumberString(String, Option<TimeUnit>, bool);
 
+fn sign(p1: (f32, f32), p2: (f32, f32), p3: (f32, f32)) -> f32 {
+    (p1.0 - p3.0) * (p2.1 - p3.1) - (p2.0 - p3.0) * (p1.1 - p3.1)
+}
+
+fn point_in_triangle(triangle: ((f32, f32), (f32, f32), (f32, f32)), point: (f32, f32)) -> bool {
+    let d1 = sign(point, triangle.0, triangle.1);
+    let d2 = sign(point, triangle.1, triangle.2);
+    let d3 = sign(point, triangle.2, triangle.0);
+
+    let has_neg = (d1 < 0.) || (d2 < 0.) || (d3 < 0.);
+    let has_pos = (d1 > 0.) || (d2 > 0.) || (d3 > 0.);
+
+    return !(has_neg && has_pos);
+}
+
 fn deserialize_mask_regions<'de, D>(deserializer: D) -> Result<DetectionMask, D::Error>
 where
     D: Deserializer<'de>,
 {
     let masks: toml::map::Map<String, toml::Value> = Deserialize::deserialize(deserializer)?;
-    for mask in masks {
-        println!("Masks {:?}", mask);
+    let mut regions: HashMap<String, Vec<[f32; 2]>> = HashMap::new();
+    for (label, mask_region) in masks {
+        let mut region = Vec::new();
+        match mask_region {
+            Value::Array(val) => {
+                for (i, item) in val.iter().enumerate() {
+                    match item {
+                        Value::Array(coord) => {
+                            if coord.len() != 2 {
+                                error!(
+                                    "Region '{}'[{}]: Expected coord array of length 2, got {}",
+                                    label,
+                                    i,
+                                    coord.len()
+                                );
+                            } else {
+                                let mut x = 0.0;
+                                let mut y;
+                                for (idx, el) in coord.iter().enumerate() {
+                                    let el_val = match &el {
+                                        Value::Float(float_val) => Some(*float_val as f32),
+                                        Value::Integer(int_val) => Some(*int_val as f32),
+                                        _ => {
+                                            error!("Region '{}'[{}].{}: Unsupported coordinate value, expected Float or Integer", label, i, if idx == 0 {'x'} else { 'y' });
+                                            None
+                                        }
+                                    };
+                                    if let Some(val) = el_val {
+                                        if idx == 0 {
+                                            x = val;
+                                        } else {
+                                            y = val;
+                                            region.push([x, y]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => error!(
+                            "Region '{}'[{}]: Expected array of [x, y] coordinates",
+                            label, i
+                        ),
+                    }
+                }
+            }
+            _ => error!(
+                "Region '{}': Must be an array of [[x, y], ...] coordinates",
+                label
+            ),
+        }
+        regions.insert(label.clone(), region);
+    }
+    // Now need to triangulate polygons, and then fill the mask.
+    let mut triangles = Vec::new();
+    let w = 160.0;
+    let h = 120.0;
+    for (_label, polygon) in regions {
+        let mut triangulated_indices: Vec<usize> = Vec::new();
+        polygon
+            .triangulate(
+                triangulate::formats::IndexedListFormat::new(&mut triangulated_indices)
+                    .into_fan_format(),
+            )
+            .expect("Triangulation failed");
+        for corners in triangulated_indices.chunks_exact(3) {
+            // Map each triangle into the frame space, then do 'point-in triangle checks for each pixel of the frame.
+            triangles.push((
+                (polygon[corners[0]][0] * w, polygon[corners[0]][1] * h),
+                (polygon[corners[1]][0] * w, polygon[corners[1]][1] * h),
+                (polygon[corners[2]][0] * w, polygon[corners[2]][1] * h),
+            ));
+        }
     }
     let mut mask = DetectionMask::new(None);
-
-    // TODO: Take mask regions if any, and convert them to a bitmap
+    for y in 0..120 {
+        for x in 0..160 {
+            for triangle in &triangles {
+                if point_in_triangle(*triangle, (x as f32, y as f32)) {
+                    mask.set_pos(x, y);
+                }
+            }
+        }
+    }
     Ok(mask)
 }
 
@@ -411,6 +506,16 @@ impl DeviceConfig {
             self.recording_window.start_recording.clone(),
             self.recording_window.stop_recording.clone(),
         )
+    }
+
+    pub fn mask_piece(&self, index: usize) -> &[u8] {
+        let piece_length = 100;
+        let offset = index * piece_length;
+        &self.recording_settings.mask_regions.inner()[offset..2400.min(offset + piece_length)]
+    }
+
+    pub fn mask(&self) -> &DetectionMask {
+        &self.recording_settings.mask_regions
     }
 
     pub fn output_dir(&self) -> &str {
