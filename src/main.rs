@@ -35,7 +35,7 @@ use crate::telemetry::{read_telemetry, Telemetry};
 use crate::utils::{u8_slice_as_u16_slice, u8_slice_as_u16_slice_mut};
 use crate::ExtTransferMessage::{
     BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo, CameraRawFrameTransfer,
-    EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer,
+    EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer, SendLoggerEvent,
 };
 use crc::{Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
@@ -44,7 +44,7 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rppal::i2c::I2c;
 use simplelog::*;
 
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 8;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 9;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 11;
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
@@ -164,6 +164,7 @@ const CAMERA_END_FILE_TRANSFER: u8 = 0x5;
 const CAMERA_BEGIN_AND_END_FILE_TRANSFER: u8 = 0x6;
 
 const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
+const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
 
 #[repr(u8)]
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -175,6 +176,7 @@ pub enum ExtTransferMessage {
     EndFileTransfer = 0x5,
     BeginAndEndFileTransfer = 0x6,
     GetMotionDetectionMask = 0x7,
+    SendLoggerEvent = 0x8,
 }
 
 impl TryFrom<u8> for ExtTransferMessage {
@@ -189,6 +191,7 @@ impl TryFrom<u8> for ExtTransferMessage {
             0x5 => Ok(EndFileTransfer),
             0x6 => Ok(BeginAndEndFileTransfer),
             0x7 => Ok(GetMotionDetectionMask),
+            0x8 => Ok(SendLoggerEvent),
             _ => Err(()),
         }
     }
@@ -623,7 +626,7 @@ fn main() {
                             continue 'transfer;
                         }
 
-                        if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_GET_MOTION_DETECTION_MASK {
+                        if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_SEND_LOGGER_EVENT {
                             warn!("unknown transfer type {}", transfer_type);
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
@@ -646,16 +649,12 @@ fn main() {
                             let crc = crc_check.checksum(chunk);
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], crc);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], crc);
+
                             if transfer_type == CAMERA_CONNECT_INFO {
                                 info!("Got camera connect info {:?}", chunk);
                                 // Write all the info we need about the device:
                                 device_config.write_to_slice(&mut return_payload_buf[8..]);
-                            }
-
-                            if transfer_type == CAMERA_CONNECT_INFO {
                                 info!("Sending camera device config to rp2040");
-                                // TODO: Add a crc to the return payload.
-                                spi.write(&return_payload_buf).unwrap();
                             }
                             else if transfer_type == CAMERA_GET_MOTION_DETECTION_MASK {
                                 let piece_number = &chunk[0];
@@ -696,6 +695,17 @@ fn main() {
                                             warn!("Aborting in progress file transfer with {} bytes", file.len());
                                         }
                                         let _ = tx.send((None, Some(false)));
+                                    }
+                                    CAMERA_SEND_LOGGER_EVENT => {
+                                        info!("Got logger event {:?}", chunk);
+                                        let event_kind = LittleEndian::read_u16(&chunk[0..2]);
+                                        let event_timestamp = LittleEndian::read_u64(&chunk[2..2 + 8]);
+                                        // TODO: Depending on the event type there may be an additional payload
+                                        if let Some(time) = chrono::NaiveDateTime::from_timestamp_micros(event_timestamp as i64) {
+                                            info!("Event time {}", time);
+                                        } else {
+                                            warn!("Event had invalid timestamp {}", event_timestamp);
+                                        }
                                     }
                                     CAMERA_BEGIN_FILE_TRANSFER => {
                                         if file_download.is_some() {
