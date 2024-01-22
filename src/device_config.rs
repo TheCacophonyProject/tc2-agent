@@ -633,10 +633,10 @@ impl DeviceConfig {
         };
 
         if end_time < *now_utc {
-            end_time = end_time.add(chrono::Duration::days(1));
-            start_time = start_time.add(chrono::Duration::days(1));
+            end_time = end_time + chrono::Duration::days(1);
+            start_time = start_time + chrono::Duration::days(1);
         } else if end_time < start_time {
-            end_time = end_time.add(chrono::Duration::days(1));
+            start_time = start_time + chrono::Duration::days(1);
         }
         (start_time, end_time)
     }

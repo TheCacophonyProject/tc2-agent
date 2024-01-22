@@ -123,22 +123,22 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                     }
 
                     // NOTE: For debug purposes, we may want to also save the CPTV file locally for inspection.
-                    let path = format!(
-                        "{}/{}.cptv",
-                        "/home/pi",
-                        recording_date_time.format("%Y-%m-%d--%H-%M-%S")
-                    );
-                    match fs::write(&path, &cptv_bytes) {
-                        Ok(()) => {
-                            info!("Saved CPTV file {}", path);
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed writing CPTV file to storage at {}, reason: {}",
-                                path, e
-                            );
-                        }
-                    }
+                    // let path = format!(
+                    //     "{}/{}.cptv",
+                    //     "/home/pi",
+                    //     recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+                    // );
+                    // match fs::write(&path, &cptv_bytes) {
+                    //     Ok(()) => {
+                    //         info!("Saved CPTV file {}", path);
+                    //     }
+                    //     Err(e) => {
+                    //         error!(
+                    //             "Failed writing CPTV file to storage at {}, reason: {}",
+                    //             path, e
+                    //         );
+                    //     }
+                    // }
                 } else {
                     error!("File {} already exists, discarding duplicate", path);
                 }
