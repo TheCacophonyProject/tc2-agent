@@ -2,7 +2,9 @@ use std::collections::HashMap;
 // Read camera config file
 use crate::detection_mask::DetectionMask;
 use byteorder::{LittleEndian, WriteBytesExt};
-use chrono::{DateTime, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use chrono::{
+    DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
+};
 use log::{error, info};
 use serde::{Deserialize, Deserializer};
 use std::fs;
@@ -524,6 +526,13 @@ impl DeviceConfig {
 
     pub fn is_continuous_recorder(&self) -> bool {
         self.recording_settings.constant_recorder
+            || (self
+                .recording_window
+                .start_recording
+                .absolute_time
+                .is_some()
+                && self.recording_window.stop_recording.absolute_time.is_some()
+                && self.recording_window.start_recording == self.recording_window.stop_recording)
     }
     pub fn use_low_power_mode(&self) -> bool {
         self.recording_settings.use_low_power_mode
@@ -578,7 +587,7 @@ impl DeviceConfig {
         if is_absolute_start && start_offset < 0 {
             start_offset = 86_400 + start_offset;
         }
-        let (sunrise, sunset) = if !is_absolute_start || !is_absolute_end {
+        let (window_start, window_end) = if !is_absolute_start || !is_absolute_end {
             let location = self
                 .location
                 .as_ref()
@@ -592,27 +601,68 @@ impl DeviceConfig {
                     .expect("Relative recording windows require a valid longitude"),
             );
             let altitude = location.altitude;
-            let (mut sunrise, sunset) = sun_times(
+            let yesterday_utc = *now_utc - Duration::days(1);
+            let (_, yesterday_sunset) = sun_times(
+                yesterday_utc.date(),
+                lat as f64,
+                lng as f64,
+                altitude.unwrap_or(0.0) as f64,
+            )
+            .unwrap();
+            let yesterday_sunset =
+                yesterday_sunset.naive_utc() + Duration::seconds(start_offset as i64);
+            let (today_sunrise, today_sunset) = sun_times(
                 now_utc.date(),
                 lat as f64,
                 lng as f64,
                 altitude.unwrap_or(0.0) as f64,
             )
             .unwrap();
-            if sunrise < sunset {
-                sunrise = sunrise.add(chrono::Duration::days(1));
+            let today_sunrise = today_sunrise.naive_utc() + Duration::seconds(end_offset as i64);
+            let today_sunset = today_sunset.naive_utc() + Duration::seconds(start_offset as i64);
+            let tomorrow_utc = *now_utc + Duration::days(1);
+            let (tomorrow_sunrise, tomorrow_sunset) = sun_times(
+                tomorrow_utc.date(),
+                lat as f64,
+                lng as f64,
+                altitude.unwrap_or(0.0) as f64,
+            )
+            .unwrap();
+            let tomorrow_sunrise =
+                tomorrow_sunrise.naive_utc() + Duration::seconds(end_offset as i64);
+            let tomorrow_sunset =
+                tomorrow_sunset.naive_utc() + Duration::seconds(start_offset as i64);
+
+            if *now_utc > today_sunset && *now_utc > tomorrow_sunrise {
+                let two_days_from_now_utc = *now_utc + Duration::days(2);
+                let (two_days_sunrise, _) = sun_times(
+                    two_days_from_now_utc.date(),
+                    lat as f64,
+                    lng as f64,
+                    altitude.unwrap_or(0.0) as f64,
+                )
+                .unwrap();
+                let two_days_sunrise =
+                    two_days_sunrise.naive_utc() + Duration::seconds(end_offset as i64);
+                (Some(tomorrow_sunset), Some(two_days_sunrise))
+            } else if (*now_utc > today_sunset && *now_utc < tomorrow_sunrise)
+                || (*now_utc < today_sunset && *now_utc > today_sunrise)
+            {
+                (Some(today_sunset), Some(tomorrow_sunrise))
+            } else if *now_utc < tomorrow_sunset
+                && *now_utc < today_sunrise
+                && *now_utc > yesterday_sunset
+            {
+                (Some(yesterday_sunset), Some(today_sunrise))
+            } else {
+                panic!("Unable to calculate relative time window");
             }
-            (Some(sunrise), Some(sunset))
         } else {
             (None, None)
         };
 
         let mut start_time = if !is_absolute_start {
-            sunset
-                .unwrap()
-                .naive_utc()
-                .checked_add_signed(chrono::Duration::seconds(start_offset as i64))
-                .unwrap()
+            window_start.unwrap()
         } else {
             NaiveDateTime::new(
                 now_utc.date(),
@@ -620,11 +670,7 @@ impl DeviceConfig {
             )
         };
         let mut end_time = if !is_absolute_end {
-            sunrise
-                .unwrap()
-                .naive_utc()
-                .checked_add_signed(chrono::Duration::seconds(end_offset as i64))
-                .unwrap()
+            window_end.unwrap()
         } else {
             NaiveDateTime::new(
                 now_utc.date(),
@@ -632,11 +678,37 @@ impl DeviceConfig {
             )
         };
 
-        if end_time < *now_utc {
-            end_time = end_time + chrono::Duration::days(1);
-            start_time = start_time + chrono::Duration::days(1);
-        } else if end_time < start_time {
-            start_time = start_time + chrono::Duration::days(1);
+        if is_absolute_start || is_absolute_end {
+            let start_minus_one_day = start_time - Duration::days(1);
+            let mut start_plus_one_day = start_time + Duration::days(1);
+            let mut end_minus_one_day = end_time - Duration::days(1);
+            let end_plus_one_day = end_time + Duration::days(1);
+
+            if start_minus_one_day > end_minus_one_day {
+                end_minus_one_day = end_minus_one_day + Duration::days(1);
+            }
+            if start_plus_one_day > end_plus_one_day {
+                start_plus_one_day = start_time;
+            }
+            if end_minus_one_day > *now_utc {
+                if is_absolute_start {
+                    start_time = start_minus_one_day;
+                }
+                if is_absolute_end {
+                    end_time = end_minus_one_day;
+                }
+            }
+            if end_time < start_time && is_absolute_end {
+                end_time = end_plus_one_day;
+            }
+            if *now_utc > end_time {
+                if is_absolute_start {
+                    start_time = start_plus_one_day;
+                }
+                if is_absolute_end {
+                    end_time = end_plus_one_day;
+                }
+            }
         }
         (start_time, end_time)
     }
@@ -695,7 +767,7 @@ impl DeviceConfig {
                 ends_in_hours, ends_in_mins, window_hours, window_mins
             );
         }
-        *date_time_utc > start_time && *date_time_utc < end_time
+        *date_time_utc >= start_time && *date_time_utc <= end_time
     }
 
     pub fn write_to_slice(&self, output: &mut [u8]) {
