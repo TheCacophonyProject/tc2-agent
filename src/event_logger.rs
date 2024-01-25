@@ -1,7 +1,7 @@
 use crate::event_logger::LoggerEventKind::{
     EndedRecording, GotPowerOnTimeout, GotRpiPoweredDown, GotRpiPoweredOn, LostSync,
     OffloadedRecording, Rp2040Sleep, SavedNewConfig, SetAlarm, StartedRecording,
-    StartedSendingFramesToRpi, ToldRpiToSleep, ToldRpiToWake,
+    StartedSendingFramesToRpi, ToldRpiToSleep, ToldRpiToWake, WouldDiscardAsFalsePositive,
 };
 use rustbus::{DuplexConn, MessageBuilder};
 
@@ -20,6 +20,7 @@ pub enum LoggerEventKind {
     LostSync,
     SetAlarm(u64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
     GotPowerOnTimeout,
+    WouldDiscardAsFalsePositive,
 }
 
 impl Into<u16> for LoggerEventKind {
@@ -39,6 +40,7 @@ impl Into<u16> for LoggerEventKind {
             LostSync => 11,
             SetAlarm(_) => 12,
             GotPowerOnTimeout => 13,
+            WouldDiscardAsFalsePositive => 14,
         }
     }
 }
@@ -61,6 +63,7 @@ impl TryFrom<u16> for LoggerEventKind {
             11 => Ok(LostSync),
             12 => Ok(SetAlarm(0)),
             13 => Ok(GotPowerOnTimeout),
+            14 => Ok(WouldDiscardAsFalsePositive),
             _ => Err(()),
         }
     }

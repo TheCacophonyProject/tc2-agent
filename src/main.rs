@@ -552,6 +552,7 @@ fn main() {
         let max_size: usize = raw_read_buffer.len();
         let mut device_config: DeviceConfig = initial_config;
         let mut rp2040_needs_reset = false;
+        let mut sent_reset_request = false;
         let mut has_failed = false;
         let mut got_startup_info = false;
 
@@ -857,7 +858,10 @@ fn main() {
                                     rp2040_needs_reset = false;
                                     got_startup_info = false;
                                 }
-                                let _ = restart_tx.send(true);
+                                if !sent_reset_request {
+                                    sent_reset_request = false;
+                                    let _ = restart_tx.send(true);
+                                }
                             }
                             FRAME_BUFFER.swap();
                             let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number.clone())), None));
