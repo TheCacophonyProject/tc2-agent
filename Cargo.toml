@@ -29,6 +29,7 @@ chrono-tz = "0.8.3"
 signal-hook = "0.3.17"
 sun-times = "0.2.0"
 triangulate = "0.2.0"
+rustbus = "0.19.3"
 
 [target.armv7-unknown-linux-musleabihf]
 # applies to target-specific builds

@@ -9,11 +9,13 @@ impl DetectionMask {
             inner: mask.unwrap_or([0u8; 2400]),
         }
     }
+    #[allow(unused)]
     pub fn is_masked_at_pos(&self, x: usize, y: usize) -> bool {
         let index = (y * 160) + x;
         self.inner[index >> 3] & (1 << (index % 8)) != 0
     }
 
+    #[allow(unused)]
     pub fn set_index(&mut self, index: usize) {
         self.inner[index >> 3] |= 1 << (index % 8);
     }
@@ -24,6 +26,7 @@ impl DetectionMask {
     }
 
     #[inline(always)]
+    #[allow(unused)]
     pub fn is_masked_at_index(&self, index: usize) -> bool {
         let group = self.inner[index >> 3];
         group != 0 && group & (1 << (index % 8)) != 0

@@ -75,7 +75,7 @@ pub fn get_socket_address(config: &ModeConfig) -> String {
             // Browse for a service type.
             let service_type = "_mdns-tc2-frames._udp.local.";
             let receiver = mdns.browse(service_type).expect("Failed to browse");
-            let mut address;
+            let address;
             info!("Trying to resolve tc2-frames service, please ensure t2c-frames app is running on the same network");
             'service_finder: loop {
                 while let Ok(event) = receiver.recv() {

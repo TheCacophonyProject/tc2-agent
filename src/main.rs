@@ -2,6 +2,7 @@ mod cptv_header;
 mod detection_mask;
 mod device_config;
 mod double_buffer;
+mod event_logger;
 mod mode_config;
 mod socket_stream;
 mod telemetry;
@@ -29,10 +30,11 @@ use thread_priority::*;
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
 use crate::device_config::DeviceConfig;
 use crate::double_buffer::DoubleBuffer;
+use crate::event_logger::{LoggerEvent, LoggerEventKind};
 use crate::mode_config::ModeConfig;
 use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
-use crate::utils::{u8_slice_as_u16_slice, u8_slice_as_u16_slice_mut};
+use crate::utils::u8_slice_as_u16_slice;
 use crate::ExtTransferMessage::{
     BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo, CameraRawFrameTransfer,
     EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer, SendLoggerEvent,
@@ -42,6 +44,8 @@ use log::{error, info, warn};
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use rppal::i2c::I2c;
+use rustbus::connection::Timeout;
+use rustbus::{get_system_bus_path, DuplexConn};
 use simplelog::*;
 
 const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 9;
@@ -61,19 +65,20 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
         }
 
         // Make sure there are no zero/bad pixels:
-        let pixels = u8_slice_as_u16_slice(&fb[640..]);
-        let pos = pixels.iter().position(|&px| px == 0);
-        let mut found_bad_pixels = false;
-        if let Some(pos) = pos {
-            let y = pos / 160;
-            let x = pos - (y * 160);
-            info!("Zero px found at ({}, {}) not sending", x, y);
-            //found_bad_pixels = true;
-        }
+        //let pixels = u8_slice_as_u16_slice(&fb[640..]);
+        //let pos = pixels.iter().position(|&px| px == 0);
+        // let mut found_bad_pixels = false;
+        // if let Some(pos) = pos {
+        //     let y = pos / 160;
+        //     let x = pos - (y * 160);
+        //     info!("Zero px found at ({}, {}) not sending", x, y);
+        //     //found_bad_pixels = true;
+        // }
         // Make sure each frame number is ascending correctly.
         let telemetry = read_telemetry(&fb);
         //info!("Got frame {:?}", telemetry.frame_num);
-        if !telemetry.ffc_in_progress && !found_bad_pixels {
+        if !telemetry.ffc_in_progress {
+            //  && !found_bad_pixels
             if let Err(_) = stream.write_all(&fb) {
                 return (None, false);
             }
@@ -260,6 +265,20 @@ fn main() {
         error!("Load config error: {}", device_config.err().unwrap());
         std::process::exit(1);
     }
+
+    let session_path = get_system_bus_path().unwrap_or_else(|e| {
+        error!("Error getting system DBus: {}", e);
+        std::process::exit(1);
+    });
+    let mut dbus_conn = DuplexConn::connect_to_bus(session_path, true).unwrap_or_else(|e| {
+        error!("Error connecting to system DBus: {}", e);
+        std::process::exit(1);
+    });
+    let _unique_name: String = dbus_conn.send_hello(Timeout::Infinite).unwrap_or_else(|e| {
+        error!("Error getting handshake with system DBus: {}", e);
+        std::process::exit(1);
+    });
+
     let mut current_config = device_config.unwrap();
     let initial_config = current_config.clone();
     let (config_tx, config_rx) = channel();
@@ -349,7 +368,6 @@ fn main() {
             info!("Connecting to frame socket {}", address);
             let mut reconnects = 0;
             let mut prev_frame_num = None;
-            let mut prev_time_on_msec = 0u32;
 
             loop {
                 info!("Entering frame-socket loop");
@@ -408,7 +426,6 @@ fn main() {
 
                                     if reconnects > 0 {
                                         info!("Got frame connection");
-                                        reconnects = 0;
                                         prev_frame_num = None;
                                         reconnects = 0;
                                     }
@@ -421,7 +438,6 @@ fn main() {
                                     if !sent {
                                         warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
                                         let _ = stream.shutdown().is_ok();
-                                        ms_elapsed = 0;
                                         break 'send_loop;
                                     } else {
                                         if let Some(telemetry) = telemetry {
@@ -435,12 +451,14 @@ fn main() {
                                                 }
                                             }
                                             prev_frame_num = Some(telemetry.frame_num);
-                                            prev_time_on_msec = telemetry.msec_on;
+                                            if telemetry.frame_num % 2700 == 0 {
+                                                info!("Got frame #{}", telemetry.frame_num);
+                                            }
                                         }
                                     }
                                     ms_elapsed = 0;
                                 },
-                                Ok((None, Some(transfer_in_progress))) => {
+                                Ok((None, Some(_transfer_in_progress))) => {
                                     ms_elapsed = 0;
                                 },
                                 _ => {
@@ -493,7 +511,7 @@ fn main() {
                 match version {
                     Ok(version) => match version {
                         EXPECTED_ATTINY_FIRMWARE_VERSION => {},
-                        v => {
+                        _ => {
                             error!("Mismatched attiny firmware version, expected {}, got {}", EXPECTED_ATTINY_FIRMWARE_VERSION, version);
                             exit_cleanly(&mut attiny_i2c_interface);
                             std::process::exit(1);
@@ -521,7 +539,6 @@ fn main() {
 
         let mut got_first_frame = false;
         let mut file_download: Option<Vec<u8>> = None;
-        let mut transfer_count = 0;
         let header_length = 18;
         let mut return_payload_buf = [0u8; 32 + 104];
 
@@ -549,7 +566,7 @@ fn main() {
                 Ok(config) => {
                     // NOTE: Defer this till a time we know the rp2040 isn't writing to flash memory.
                     if device_config != config {
-                        info!("Config updated, should update pi");
+                        info!("Config updated, should update rp2040");
                         device_config = config;
                     }
                     rp2040_needs_reset = true;
@@ -637,9 +654,6 @@ fn main() {
                             continue 'transfer;
                         }
 
-                        if transfer_type > 1 {
-                            transfer_count += 1;
-                        }
                         if transfer_type != CAMERA_RAW_FRAME_TRANSFER {
                             if transfer_type == CAMERA_BEGIN_FILE_TRANSFER {
                                 start = Instant::now();
@@ -667,7 +681,7 @@ fn main() {
                                 let crc = crc_check.checksum(&piece_with_length[0..1 + piece.len()]);
                                 LittleEndian::write_u16(&mut return_payload_buf[8..10], crc);
                                 //info!("Sending piece({}) {:?}", piece.len(), piece_with_length);
-                                &mut return_payload_buf[10..10 + piece.len() + 1].copy_from_slice(&piece_with_length);
+                                return_payload_buf[10..10 + piece.len() + 1].copy_from_slice(&piece_with_length);
                             }
                             // Always write the return buffer
                             spi.write(&return_payload_buf).unwrap();
@@ -697,14 +711,43 @@ fn main() {
                                         let _ = tx.send((None, Some(false)));
                                     }
                                     CAMERA_SEND_LOGGER_EVENT => {
-                                        info!("Got logger event {:?}", chunk);
                                         let event_kind = LittleEndian::read_u16(&chunk[0..2]);
                                         let event_timestamp = LittleEndian::read_u64(&chunk[2..2 + 8]);
-                                        // TODO: Depending on the event type there may be an additional payload
-                                        if let Some(time) = chrono::NaiveDateTime::from_timestamp_micros(event_timestamp as i64) {
-                                            info!("Event time {}", time);
+                                        let event_payload = LittleEndian::read_u64(&chunk[10..18]);
+                                        if let Ok(mut event_kind) = LoggerEventKind::try_from(event_kind) {
+                                            if let Some(time) = NaiveDateTime::from_timestamp_micros(event_timestamp as i64) {
+                                                if let LoggerEventKind::SetAlarm(alarm_time) = &mut event_kind {
+                                                    if NaiveDateTime::from_timestamp_micros(event_payload as i64).is_some() {
+                                                        *alarm_time = event_payload;
+                                                    } else {
+                                                        warn!("Wakeup alarm from event was invalid {}", event_payload);
+                                                    }
+                                                }
+                                                let payload_json = if let LoggerEventKind::SavedNewConfig = event_kind {
+                                                    // If we get saved new config, the rp2040 would have just been
+                                                    // restarted after the config change, so we can log the current
+                                                    // config in relation to that event.
+                                                    let json_inner = format!(r#""continuous-recorder": {}, "use-low-power-mode": {}, "start-recording": "{:?}", "stop-recording": "{:?}", "location": "({}, {}, {})""#,
+                                                                                         device_config.is_continuous_recorder(),
+                                                                                         device_config.use_low_power_mode(),
+                                                                                         device_config.recording_window().0,
+                                                                                         device_config.recording_window().1,
+                                                                                         device_config.lat_lng().0,
+                                                                                         device_config.lat_lng().1,
+                                                                                         device_config.location_altitude().unwrap_or(0.0));
+                                                    let json = String::from(format!("{{{}}}", json_inner));
+                                                    Some(json)
+                                                } else {
+                                                    None
+                                                };
+                                                info!("Got logger event {:?} at {}", event_kind, time);
+                                                let event = LoggerEvent::new(event_kind, event_timestamp);
+                                                event.log(&mut dbus_conn, payload_json);
+                                            } else {
+                                                warn!("Event had invalid timestamp {}", event_timestamp);
+                                            }
                                         } else {
-                                            warn!("Event had invalid timestamp {}", event_timestamp);
+                                            warn!("Unknown logger event kind {}", event_kind);
                                         }
                                     }
                                     CAMERA_BEGIN_FILE_TRANSFER => {

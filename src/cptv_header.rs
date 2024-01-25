@@ -68,6 +68,7 @@ impl Cptv2Header {
 }
 #[derive(Debug, Clone)]
 pub enum CptvHeader {
+    #[allow(unused)]
     UNINITIALISED,
     V2(Cptv2Header),
 }

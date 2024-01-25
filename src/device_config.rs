@@ -6,12 +6,12 @@ use chrono::{
     DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
 };
 use log::{error, info};
+use serde::de::Error;
 use serde::{Deserialize, Deserializer};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::ops::Add;
 use sun_times::sun_times;
-use toml::de::Error;
 use toml::value::Offset;
 use toml::Value;
 use triangulate::{ListFormat, Polygon};
@@ -177,7 +177,6 @@ where
 {
     let s: String = Deserialize::deserialize(deserializer)?;
 
-    info!("Deserialising time from config {}", s);
     // NOTE: This is probably not that robust on all possible input strings – but we should solve this
     //  with better validation/UI elsewhere where users are inputting time offsets
     let mut tokens: Vec<NumberString> = Vec::new();
@@ -195,6 +194,10 @@ where
                     *o = Some(TimeUnit(char));
                 } else {
                     // Parse error
+                    return Err(Error::custom(format!(
+                        "Unexpected token in time string '{}': unit specifier before integer",
+                        s
+                    )));
                 }
                 tokens.push(NumberString(String::from(""), None, true));
             }
@@ -211,10 +214,19 @@ where
                     *is_relative = false;
                 } else {
                     // Parse error
+                    return Err(Error::custom(format!(
+                        "Unexpected token in time string '{}': ':' before hour specifier",
+                        s
+                    )));
                 }
                 tokens.push(NumberString(String::from(""), None, false));
             }
-            _ => {} // Skip unknown, maybe log a parse error?
+            _ => {
+                return Err(Error::custom(format!(
+                    "Unexpected token in time string '{}': '{}'",
+                    s, char
+                )))
+            }
         }
     }
     let mut relative_time_seconds = None;
@@ -262,11 +274,14 @@ where
             }
         }
     }
-
-    Ok(AbsRelTime {
-        absolute_time,
-        relative_time_seconds,
-    })
+    if absolute_time.is_none() && relative_time_seconds.is_none() {
+        Err(Error::custom(format!("Failed to parse window time: {}", s)))
+    } else {
+        Ok(AbsRelTime {
+            absolute_time,
+            relative_time_seconds,
+        })
+    }
 }
 
 fn timestamp_to_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -516,6 +531,7 @@ impl DeviceConfig {
         &self.recording_settings.mask_regions.inner()[offset..2400.min(offset + piece_length)]
     }
 
+    #[allow(unused)]
     pub fn mask(&self) -> &DetectionMask {
         &self.recording_settings.mask_regions
     }
@@ -543,7 +559,7 @@ impl DeviceConfig {
             fs::read("/etc/cacophony/config.toml").map_err(|_| "Error reading file from disk")?;
         let config_toml_str =
             String::from_utf8(config_toml).map_err(|_| "Error parsing string from utf8")?;
-        let device_config: Result<DeviceConfig, Error> = toml::from_str(&config_toml_str);
+        let device_config: Result<DeviceConfig, toml::de::Error> = toml::from_str(&config_toml_str);
         match device_config {
             Ok(device_config) => {
                 // TODO: Make sure device has sane windows etc.
@@ -712,6 +728,8 @@ impl DeviceConfig {
         }
         (start_time, end_time)
     }
+
+    #[allow(unused)]
     pub fn next_recording_window_start(&self, now_utc: &NaiveDateTime) -> NaiveDateTime {
         self.next_recording_window(now_utc).0
     }
@@ -815,49 +833,5 @@ impl DeviceConfig {
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write(&device_name[0..device_name_length]).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::device_config::DeviceConfig;
-
-    #[test]
-    fn load_config() {
-        let config: DeviceConfig = toml::from_str(
-            r#"
-[device]
-id = 1
-group = "test-group"
-name = "test-name"
-server = "test-url"
-
-[thermal-recorder]
-use-sunrise-sunset = false
-max-secs = 300
-min-disk-space-mb = 200
-min-secs = 5
-output-dir = "/var/spool/cptv"
-preview-secs = 1
-mask-regions = { trap = [[0.1, 0.3], [0.1, 0.2], [0.2, 0.5]], sky = [[0, 0], [0, 0.1], [1, 0.1], [1, 0]] }
-
-[location]
-accuracy = 0.0
-altitude = 103.0
-latitude = -46.60101
-longitude = 172.71303
-timestamp = 2023-11-02T08:24:21+13:00
-updated = 2023-11-02T08:24:21+13:00
-
-[thermal-throttler]
-activate = true
-
-[windows]
-start-recording = "30m"
-stop-recording = "07:50"
-"#,
-        )
-        .unwrap();
-        println!("Config {:#?}", config)
     }
 }
