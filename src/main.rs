@@ -871,10 +871,6 @@ pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
 fn write_attiny_command(attiny_i2c: &mut I2c, command: u8, value: u8) -> Result<(), &'static str> {
     let mut payload = [command, value, 0x00, 0x00];
     let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&payload[0..=1]);
-    // info!(
-    //     "Writing attiny command {}, value {}, crc {}",
-    //     command, value, crc
-    // );
     BigEndian::write_u16(&mut payload[2..=3], crc);
     if attiny_i2c.write(&payload).is_err() {
         Err("Failed setting state on attiny")
@@ -896,17 +892,14 @@ fn read_attiny_reg(attiny_i2c: &mut I2c, command: u8) -> Result<u8, &'static str
     let mut payload = [command, 0x00, 0x00];
 
     let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&payload[0..1]);
-    // info!("Reading attiny command {}, crc {}", command, crc);
     let mut response = [0u8; 3];
     BigEndian::write_u16(&mut payload[1..=2], crc);
     if attiny_i2c.write_read(&payload, &mut response).is_err() {
         Err("Failed setting state on attiny")
     } else {
         let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
-        //info!("Got result {}, crc {}", response[0], crc);
         let received_crc = BigEndian::read_u16(&response[1..=2]);
         if received_crc != crc {
-            //error!("CRC mismatch {} vs {}", crc, received_crc);
             Err("CRC Mismatch")
         } else {
             Ok(response[0])
