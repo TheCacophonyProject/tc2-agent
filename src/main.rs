@@ -39,7 +39,7 @@ use crate::ExtTransferMessage::{
     BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo, CameraRawFrameTransfer,
     EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer, SendLoggerEvent,
 };
-use crc::{Crc, CRC_16_XMODEM};
+use crc::{Algorithm, Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -202,18 +202,8 @@ impl TryFrom<u8> for ExtTransferMessage {
     }
 }
 
-fn read_tc2_agent_state(attiny_i2c: &mut I2c) -> Option<u8> {
-    let mut attiny_recording_state = [0u8; 1];
-    if attiny_i2c.write(&[0x07]).is_err() {
-        error!("Failed writing command to attiny");
-        return None;
-    }
-    if attiny_i2c.read(&mut attiny_recording_state).is_err() {
-        error!("Failed reading agent state from attiny");
-        None
-    } else {
-        Some(attiny_recording_state[0])
-    }
+fn read_tc2_agent_state(attiny_i2c: &mut I2c) -> Result<u8, &'static str> {
+    read_attiny_reg(attiny_i2c, 0x07)
 }
 
 fn read_attiny_recording_flag(attiny_i2c: &mut I2c) -> bool {
@@ -224,26 +214,15 @@ fn safe_to_restart_rp2040(attiny_interface: &mut I2c) -> bool {
 }
 
 fn read_attiny_firmware_version(attiny_i2c: &mut I2c) -> Result<u8, &'static str> {
-    let mut attiny_firmware_version = [0u8; 1];
-    if attiny_i2c.write(&[0x01]).is_err() {
-        return Err("Failed writing command to attiny");
-    }
-    if attiny_i2c.read(&mut attiny_firmware_version).is_err() {
-        return Err("Failed reading firmware version from attiny");
-    }
-    Ok(attiny_firmware_version[0])
+    read_attiny_reg(attiny_i2c, 0x01)
 }
 
 fn set_attiny_tc2_agent_ready(attiny_i2c: &mut I2c) -> Result<(), &'static str> {
     let state = read_tc2_agent_state(attiny_i2c);
-    if let Some(state) = state {
-        if attiny_i2c.write(&[0x07, state | 0x02]).is_err() {
-            Err("Failed writing ready state to attiny")
-        } else {
-            Ok(())
-        }
+    if let Ok(state) = state {
+        write_attiny_command(attiny_i2c, 0x07, state | 0x02)
     } else {
-        Err("Failed reading ready state to attiny")
+        Err("Failed reading ready state from attiny")
     }
 }
 
@@ -859,7 +838,7 @@ fn main() {
                                     got_startup_info = false;
                                 }
                                 if !sent_reset_request {
-                                    sent_reset_request = false;
+                                    sent_reset_request = true;
                                     let _ = restart_tx.send(true);
                                 }
                             }
@@ -878,11 +857,66 @@ fn main() {
     }).unwrap().join();
 }
 
+pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
+    width: 16,
+    poly: 0x1021,
+    init: 0x1D0F,
+    refin: false,
+    refout: false,
+    xorout: 0x0000,
+    check: 0x0000,
+    residue: 0x0000,
+};
+
+fn write_attiny_command(attiny_i2c: &mut I2c, command: u8, value: u8) -> Result<(), &'static str> {
+    let mut payload = [command, value, 0x00, 0x00];
+    let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&payload[0..=1]);
+    // info!(
+    //     "Writing attiny command {}, value {}, crc {}",
+    //     command, value, crc
+    // );
+    BigEndian::write_u16(&mut payload[2..=3], crc);
+    if attiny_i2c.write(&payload).is_err() {
+        Err("Failed setting state on attiny")
+    } else {
+        // Check the state on the attiny is what we expected
+        if let Ok(val) = read_attiny_reg(attiny_i2c, command) {
+            if val != value {
+                Err("Failed setting state on attiny")
+            } else {
+                Ok(())
+            }
+        } else {
+            Err("Failed setting state on attiny")
+        }
+    }
+}
+
+fn read_attiny_reg(attiny_i2c: &mut I2c, command: u8) -> Result<u8, &'static str> {
+    let mut payload = [command, 0x00, 0x00];
+
+    let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&payload[0..1]);
+    // info!("Reading attiny command {}, crc {}", command, crc);
+    let mut response = [0u8; 3];
+    BigEndian::write_u16(&mut payload[1..=2], crc);
+    if attiny_i2c.write_read(&payload, &mut response).is_err() {
+        Err("Failed setting state on attiny")
+    } else {
+        let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
+        //info!("Got result {}, crc {}", response[0], crc);
+        let received_crc = BigEndian::read_u16(&response[1..=2]);
+        if received_crc != crc {
+            //error!("CRC mismatch {} vs {}", crc, received_crc);
+            Err("CRC Mismatch")
+        } else {
+            Ok(response[0])
+        }
+    }
+}
+
 fn exit_cleanly(attiny_i2c_interface: &mut Option<I2c>) {
     if let Some(attiny_i2c) = attiny_i2c_interface {
-        if attiny_i2c.write(&[0x07, 0x00]).is_err() {
-            error!("Failed clearing ready state on attiny");
-        }
+        let _ = write_attiny_command(attiny_i2c, 0x07, 0x00);
     }
 }
 

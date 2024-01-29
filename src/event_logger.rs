@@ -1,8 +1,3 @@
-use crate::event_logger::LoggerEventKind::{
-    EndedRecording, GotPowerOnTimeout, GotRpiPoweredDown, GotRpiPoweredOn, LostSync,
-    OffloadedRecording, Rp2040Sleep, SavedNewConfig, SetAlarm, StartedRecording,
-    StartedSendingFramesToRpi, ToldRpiToSleep, ToldRpiToWake, WouldDiscardAsFalsePositive,
-};
 use rustbus::{DuplexConn, MessageBuilder};
 
 #[derive(Debug)]
@@ -21,6 +16,11 @@ pub enum LoggerEventKind {
     SetAlarm(u64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
     GotPowerOnTimeout,
     WouldDiscardAsFalsePositive,
+    StartedGettingFrames,
+    FlashStorageNearlyFull,
+    Rp2040WokenByAlarm,
+    RtcCommError,
+    AttinyCommError,
 }
 
 impl Into<u16> for LoggerEventKind {
@@ -41,6 +41,11 @@ impl Into<u16> for LoggerEventKind {
             SetAlarm(_) => 12,
             GotPowerOnTimeout => 13,
             WouldDiscardAsFalsePositive => 14,
+            StartedGettingFrames => 15,
+            FlashStorageNearlyFull => 16,
+            Rp2040WokenByAlarm => 17,
+            RtcCommError => 18,
+            AttinyCommError => 19,
         }
     }
 }
@@ -49,6 +54,7 @@ impl TryFrom<u16> for LoggerEventKind {
     type Error = ();
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
+        use LoggerEventKind::*;
         match value {
             1 => Ok(Rp2040Sleep),
             2 => Ok(OffloadedRecording),
@@ -64,6 +70,11 @@ impl TryFrom<u16> for LoggerEventKind {
             12 => Ok(SetAlarm(0)),
             13 => Ok(GotPowerOnTimeout),
             14 => Ok(WouldDiscardAsFalsePositive),
+            15 => Ok(StartedGettingFrames),
+            16 => Ok(FlashStorageNearlyFull),
+            17 => Ok(Rp2040WokenByAlarm),
+            18 => Ok(RtcCommError),
+            19 => Ok(AttinyCommError),
             _ => Err(()),
         }
     }
@@ -87,16 +98,18 @@ impl LoggerEvent {
             .at("org.cacophony.Events")
             .build();
         // If the type is SavedNewConfig, maybe make the payload the config?
-        if let SetAlarm(alarm) = self.event {
+        if let LoggerEventKind::SetAlarm(alarm) = self.event {
             call.body
                 .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
                 .unwrap(); // Microseconds to nanoseconds
+            call.body.push_param("SetAlarm").unwrap();
         } else {
             call.body
                 .push_param(json_payload.unwrap_or(String::from("{}")))
                 .unwrap();
+            call.body.push_param(format!("{:?}", self.event)).unwrap();
         }
-        call.body.push_param(format!("{:?}", self.event)).unwrap();
+
         call.body.push_param(self.timestamp * 1000).unwrap(); // Microseconds to nanoseconds
         conn.send.send_message(&call).unwrap().write_all().unwrap();
     }
