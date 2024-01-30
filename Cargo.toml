@@ -44,6 +44,6 @@ depends = ""
 assets = [
   ["target/release/tc2-agent", "/usr/bin/", "755"], # Binary asset
   ["_releases/tc2-agent.service", "/etc/systemd/system/tc2-agent.service", "664"],
-  ["_releases/rp2040-firmware.elf", "/etc/cacophony/rp2040-firmware.elf", "664"],
+  ["_releases/tc2-firmware", "/etc/cacophony/rp2040-firmware.elf", "664"],
 ]
 maintainer-scripts = "_releases/scripts"
