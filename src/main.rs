@@ -49,7 +49,7 @@ use rustbus::{get_system_bus_path, DuplexConn};
 use simplelog::*;
 
 const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 9;
-const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 11;
+const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 12;
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 pub type Frame = [u8; FRAME_LENGTH];
