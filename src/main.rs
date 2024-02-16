@@ -26,6 +26,9 @@ use std::time::Instant;
 use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
+use std::process::Command;
+use std::io;
+use std::process;
 
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
 use crate::device_config::DeviceConfig;
@@ -441,27 +444,18 @@ fn main() {
                                     ms_elapsed = 0;
                                 },
                                 _ => {
-                                    const NUM_ATTEMPTS_BEFORE_RESET: usize = 10;
+                                    const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
                                     ms_elapsed += recv_timeout_ms;
-                                    if ms_elapsed > 5000 {
+                                    if ms_elapsed > 10000 {
                                         ms_elapsed = 0;
                                         reconnects += 1;
-                                        if reconnects == NUM_ATTEMPTS_BEFORE_RESET {
-                                            let date = chrono::Local::now();
-                                            warn!("Resetting rp2040 at {}", date.format("%Y-%m-%d--%H:%M:%S"));
-                                            reconnects = 0;
-                                            prev_frame_num = None;
-
-                                            if !run_pin.is_set_high() {
-                                                run_pin.set_high();
-                                                sleep(Duration::from_millis(1000));
+                                        if reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
+                                            let e = program_rp2040();
+                                            if e.is_err() {
+                                                warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
                                             }
-
-                                            run_pin.set_low();
-                                            sleep(Duration::from_millis(1000));
-                                            run_pin.set_high();
                                         } else {
-                                            info!("-- #{reconnects} waiting for frames from rp2040 (resetting rp2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_RESET - reconnects);
+                                            info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
                                         }
                                     }
                                 }
@@ -675,8 +669,13 @@ fn main() {
                                         info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{}", radiometry_enabled, firmware_version, lepton_serial_number);
                                         if firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION {
                                             exit_cleanly(&mut attiny_i2c_interface);
-                                            error!("Unsupported firmware version, expected {}, got {}", EXPECTED_RP2040_FIRMWARE_VERSION, firmware_version);
-                                            panic!("Exit");
+                                            info!("Unsupported firmware version, expected {}, got {}. Will reprogram RP2040.", EXPECTED_RP2040_FIRMWARE_VERSION, firmware_version);
+                                            let e = program_rp2040();
+                                            if e.is_err() {
+                                                warn!("Failed to reprogram rp2040: {}", e.unwrap_err());
+                                                panic!("Exit");
+                                            }
+                                            process::exit(0);
                                         }
                                         if device_config.use_low_power_mode() && !radiometry_enabled {
                                             exit_cleanly(&mut attiny_i2c_interface);
@@ -867,6 +866,20 @@ pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
     check: 0x0000,
     residue: 0x0000,
 };
+
+fn program_rp2040() -> io::Result<()> {
+    let status = Command::new("tc2-hat-rp2040")
+        .arg("--elf")
+        .arg("/etc/cacophony/rp2040-firmware.elf")
+        .status()?;
+
+    if !status.success() {
+        return Err(io::Error::new(io::ErrorKind::Other, "Command execution failed"));
+    }
+
+    println!("Updated RP2040 firmware.");
+    Ok(())
+}
 
 fn write_attiny_command(attiny_i2c: &mut I2c, command: u8, value: u8) -> Result<(), &'static str> {
     let mut payload = [command, value, 0x00, 0x00];
