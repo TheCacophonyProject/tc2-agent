@@ -36,8 +36,9 @@ use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
 use crate::utils::u8_slice_as_u16_slice;
 use crate::ExtTransferMessage::{
-    BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo, CameraRawFrameTransfer,
-    EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer, SendLoggerEvent,
+    AudioRawTransfer, BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo,
+    CameraRawFrameTransfer, EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer,
+    SendLoggerEvent,AudioRawTransferFinished
 };
 use crc::{Algorithm, Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
@@ -156,6 +157,62 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
     });
 }
 
+
+fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
+    let output_dir = String::from(output_dir);
+                info!("Saving Audio file with header ");
+                let recording_date_time =chrono::offset::Local::now();
+                if fs::metadata(&output_dir).is_err() {
+                    fs::create_dir(&output_dir)
+                        .expect(&format!("Failed to create output directory {}", output_dir));
+                }
+                let path: String = format!(
+                    "{}/{}.raw",
+                    output_dir,
+                    recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+                );
+                // If the file already exists, don't re-save it.
+                let is_existing_file = match fs::metadata(&path) {
+                    Ok(metadata) => metadata.len() as usize == audio_bytes.len(),
+                    Err(_) => false,
+                };
+                if !is_existing_file {
+                    match fs::write(&path, &audio_bytes) {
+                        Ok(()) => {
+                            info!("Saved Audio file {} bytes are {}", path,audio_bytes.len());
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed writing Audio file to storage at {}, reason: {}",
+                                path, e
+                            );
+                        }
+                    }
+
+                    // NOTE: For debug purposes, we may want to also save the CPTV file locally for inspection.
+                    // let path = format!(
+                    //     "{}/{}.cptv",
+                    //     "/home/pi",
+                    //     recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+                    // );
+                    // match fs::write(&path, &cptv_bytes) {
+                    //     Ok(()) => {
+                    //         info!("Saved CPTV file {}", path);
+                    //     }
+                    //     Err(e) => {
+                    //         error!(
+                    //             "Failed writing CPTV file to storage at {}, reason: {}",
+                    //             path, e
+                    //         );
+                    //     }
+                    // }
+                } else {
+                    error!("File {} already exists, discarding duplicate", path);
+                }
+            }
+
+
+
 const CAMERA_CONNECT_INFO: u8 = 0x1;
 
 const CAMERA_RAW_FRAME_TRANSFER: u8 = 0x2;
@@ -170,7 +227,8 @@ const CAMERA_BEGIN_AND_END_FILE_TRANSFER: u8 = 0x6;
 
 const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
 const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
-
+const AUDIO_RAW_TRANSFER: u8 = 0x9;
+const AUDIO_RAW_TRANSFER_FINISHED:u8 = 0xA;
 #[repr(u8)]
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ExtTransferMessage {
@@ -182,6 +240,8 @@ pub enum ExtTransferMessage {
     BeginAndEndFileTransfer = 0x6,
     GetMotionDetectionMask = 0x7,
     SendLoggerEvent = 0x8,
+    AudioRawTransfer = 0x9,
+    AudioRawTransferFinished= 0xA,
 }
 
 impl TryFrom<u8> for ExtTransferMessage {
@@ -197,6 +257,9 @@ impl TryFrom<u8> for ExtTransferMessage {
             0x6 => Ok(BeginAndEndFileTransfer),
             0x7 => Ok(GetMotionDetectionMask),
             0x8 => Ok(SendLoggerEvent),
+            0x9 => Ok(AudioRawTransfer),
+            0xA => Ok(AudioRawTransferFinished),
+
             _ => Err(()),
         }
     }
@@ -333,7 +396,6 @@ fn main() {
             run_pin.set_high();
             sleep(Duration::from_millis(1000));
         }
-
         pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
         let (tx, rx) = channel();
@@ -581,7 +643,6 @@ fn main() {
                         let header_slice = &raw_read_buffer[..header_length];
                         let transfer_type = header_slice[0];
                         let transfer_type_dup = header_slice[1];
-
                         let mut num_bytes = LittleEndian::read_u32(&header_slice[2..6]) as usize;
                         let num_bytes_dup = LittleEndian::read_u32(&header_slice[6..10]) as usize;
                         num_bytes = num_bytes.min(max_size);
@@ -589,6 +650,7 @@ fn main() {
                         let crc_from_remote_dup = LittleEndian::read_u16(&header_slice[12..14]);
                         let crc_from_remote_inv = LittleEndian::read_u16(&header_slice[14..16]);
                         let crc_from_remote_inv_dup = LittleEndian::read_u16(&header_slice[16..=17]);
+                        info!("Got transfer type {} {}",transfer_type,num_bytes);
 
                         let num_bytes_check = num_bytes == num_bytes_dup;
                         let header_crc_check = crc_from_remote == crc_from_remote_dup && crc_from_remote_inv_dup == crc_from_remote_inv && crc_from_remote_inv.not() == crc_from_remote;
@@ -607,13 +669,32 @@ fn main() {
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
                             if process_interrupted(&term, &mut attiny_i2c_interface) {
+                                info!("ENDING PROCESS");
                                 break 'transfer;
                             }
                             continue 'transfer;
                         }
+                        if transfer_type ==  AUDIO_RAW_TRANSFER_FINISHED    {
+                            LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
+                            LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
+                            spi.write(&return_payload_buf).unwrap();
+                            info!("ending audio transfer");
+                            let chunk = &raw_read_buffer[header_length..header_length + num_bytes];
+                            if let Some( file) = file_download.take() {
+                                // Continue current file transfer
+                                let megabytes_per_second = (file.len() + chunk.len()) as f32 / Instant::now().duration_since(start).as_secs_f32() / (1024.0 * 1024.0);
+                                info!("End file transfer, took {:?} for {} bytes, {}MB/s", Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
+                                part_count = 0;
+                                save_audio_file_to_disk(file, device_config.output_dir());
+                                let _ = tx.send((None, Some(false)));
+                            } else {
+                                warn!("Trying to end file with no open file");
+                            }
+                            continue 'transfer;
 
+                        }
                         if num_bytes == 0 {
-                            //warn!("zero-sized payload");
+                            // warn!("zero-sized payload");
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
@@ -622,7 +703,38 @@ fn main() {
                             }
                             continue 'transfer;
                         }
+                        if transfer_type ==  AUDIO_RAW_TRANSFER    {
+                          
+                            let chunk = &raw_read_buffer[header_length..header_length + num_bytes];
+                            LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
+                            LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
+                            spi.write(&return_payload_buf).unwrap();
+                            info!("Got audio raw transfer  {}", num_bytes);
+                            if let Some(file) = &mut file_download {
+                                info!("Continuing audio rec adding {} bytes to {}", chunk.len(),file.len());
+                                file.extend_from_slice(&chunk);
+                                let _ = tx.send((None, Some(true)));
+                                continue 'transfer;
+                            }
+                            info!("Begin audio file transfer");
+                            // Open new file transfer
 
+                            part_count += 1;
+                            // If we have to grow this Vec once it gets big it can be slow and interrupt the transfer.
+                            // TODO: Should really be able to recover from that though!
+                            let mut file = Vec::with_capacity(150_000_000);
+                            file.extend_from_slice(&chunk);
+                            file_download = Some(file);
+                            let _ = tx.send((None, Some(true)));
+
+                            LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
+                            LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
+                            spi.write(&return_payload_buf).unwrap();
+                            continue 'transfer;
+
+
+                        }
+                       
                         if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_SEND_LOGGER_EVENT {
                             warn!("unknown transfer type {}", transfer_type);
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
