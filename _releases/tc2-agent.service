@@ -6,7 +6,7 @@ After=multi-user.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/tc2-agent
-Restart=on-failure
+Restart=always
 RestartSec=5s
 
 # Give real-time priority
