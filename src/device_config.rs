@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 // Read camera config file
 use crate::detection_mask::DetectionMask;
-use byteorder::{LittleEndian, WriteBytesExt};
+use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use chrono::{
     DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
 };
@@ -418,6 +418,13 @@ impl Default for TimeWindow {
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
+struct AudioSettings {
+    is_audio_device: Option<bool>,
+
+}
+
+
+#[derive(Deserialize, Debug, PartialEq, Clone)]
 struct DeviceRegistration {
     id: Option<u32>,
     group: Option<String>,
@@ -463,6 +470,9 @@ struct ThermalThrottlerSettings {
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 pub struct DeviceConfig {
+
+    #[serde(rename = "audio")]
+    audio_info: Option<AudioSettings>,
     #[serde(rename = "windows", default)]
     recording_window: TimeWindow,
     #[serde(rename = "device")]
@@ -470,6 +480,7 @@ pub struct DeviceConfig {
     #[serde(rename = "thermal-recorder", default)]
     recording_settings: ThermalRecordingSettings,
     location: Option<LocationSettings>,
+    last_offload:Option<i64>,
 }
 
 impl DeviceConfig {
@@ -492,7 +503,7 @@ impl DeviceConfig {
     pub fn device_id(&self) -> u32 {
         self.device_info.as_ref().unwrap().id.unwrap()
     }
-
+    
     pub fn device_name(&self) -> &[u8] {
         self.device_info
             .as_ref()
@@ -554,6 +565,24 @@ impl DeviceConfig {
         self.recording_settings.use_low_power_mode
     }
 
+    pub fn update_last_offload(&mut self, timestamp:i64) ->Result<(), std::io::Error> {
+        self.last_offload = Some(timestamp);
+        fs::write("/etc/cacophony/.offload_time",&timestamp.to_le_bytes())
+    }
+
+    pub fn load_last_offload(&mut self) {
+        let offload_fs =
+        fs::read("/etc/cacophony/.offload_time");
+        // .map_err(|_| "Error reading file from disk")?;
+        let last_offload = match offload_fs{
+            Ok(file_data) =>          Some(LittleEndian::read_i64(&file_data[0..8])),
+                        _ => {
+                info!("Couldn't read offload info /etc/cacophony/.offload_time");
+                 None
+            }
+        };
+        self.last_offload = last_offload;
+    }
     pub fn load_from_fs() -> Result<DeviceConfig, &'static str> {
         let config_toml =
             fs::read("/etc/cacophony/config.toml").map_err(|_| "Error reading file from disk")?;
@@ -561,7 +590,7 @@ impl DeviceConfig {
             String::from_utf8(config_toml).map_err(|_| "Error parsing string from utf8")?;
         let device_config: Result<DeviceConfig, toml::de::Error> = toml::from_str(&config_toml_str);
         match device_config {
-            Ok(device_config) => {
+            Ok(mut device_config) => {
                 // TODO: Make sure device has sane windows etc.
                 if !device_config.has_location() {
                     error!(
@@ -583,7 +612,7 @@ impl DeviceConfig {
                 if !inside_recording_window {
                     device_config.print_next_recording_window(&Utc::now().naive_utc());
                 }
-
+                device_config.load_last_offload();
                 Ok(device_config)
             }
             Err(msg) => {
@@ -788,6 +817,13 @@ impl DeviceConfig {
         *date_time_utc >= start_time && *date_time_utc <= end_time
     }
 
+    fn is_audio_device(&self) -> Option<bool>{
+        if let Some(audio_info) = &self.audio_info{
+             return audio_info.is_audio_device
+        }
+          return None 
+        
+    }
     pub fn write_to_slice(&self, output: &mut [u8]) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
@@ -833,5 +869,11 @@ impl DeviceConfig {
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write(&device_name[0..device_name_length]).unwrap();
+
+
+        buf.write_u8(if self.is_audio_device().unwrap_or_default() { 1 } else { 0 })
+        .unwrap();
+        buf.write_i64::<LittleEndian>(self.last_offload.unwrap_or_default()).unwrap();
+
     }
 }
