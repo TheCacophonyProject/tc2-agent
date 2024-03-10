@@ -16,8 +16,11 @@ use rppal::{
     spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
 };
 use std::fs;
+use std::io;
 use std::ops::Not;
 use std::path::Path;
+use std::process;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, TryRecvError};
 use std::sync::Arc;
@@ -26,9 +29,6 @@ use std::time::Instant;
 use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
-use std::process::Command;
-use std::io;
-use std::process;
 
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
 use crate::device_config::DeviceConfig;
@@ -341,6 +341,8 @@ fn main() {
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
         let (tx, rx) = channel();
         let (restart_tx, restart_rx) = channel();
+        let cross_thread_signal = Arc::new(AtomicBool::new(false));
+        let cross_thread_signal_2 = cross_thread_signal.clone();
 
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
             // Spawn a thread which can output the frames, converted to rgb grayscale
@@ -350,10 +352,10 @@ fn main() {
             info!("Connecting to frame socket {}", address);
             let mut reconnects = 0;
             let mut prev_frame_num = None;
-
             loop {
                 info!("Entering frame-socket loop");
                 if let Ok(_) = restart_rx.try_recv() {
+                    cross_thread_signal_2.store(true, Ordering::Relaxed);
                     info!("Restarting rp2040");
                     if !run_pin.is_set_high() {
                         run_pin.set_high();
@@ -372,6 +374,7 @@ fn main() {
                         'send_loop: loop {
                             // Check if we need to reset rp2040 because of a config change
                             if let Ok(_) = restart_rx.try_recv() {
+                                cross_thread_signal_2.store(true, Ordering::Relaxed);
                                 loop {
                                     info!("Restarting rp2040");
                                     if !run_pin.is_set_high() {
@@ -840,6 +843,10 @@ fn main() {
                                     sent_reset_request = true;
                                     let _ = restart_tx.send(true);
                                 }
+                                if cross_thread_signal.load(Ordering::Relaxed) {
+                                    sent_reset_request = false;
+                                    cross_thread_signal.store(false, Ordering::Relaxed);
+                                }
                             }
                             FRAME_BUFFER.swap();
                             let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number.clone())), None));
@@ -874,7 +881,10 @@ fn program_rp2040() -> io::Result<()> {
         .status()?;
 
     if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "Command execution failed"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Command execution failed",
+        ));
     }
 
     println!("Updated RP2040 firmware.");
