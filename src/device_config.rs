@@ -420,7 +420,6 @@ impl Default for TimeWindow {
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 struct AudioSettings {
     is_audio_device: Option<bool>,
-
 }
 
 
@@ -820,9 +819,9 @@ impl DeviceConfig {
         if let Some(audio_info) = &self.audio_info{
              return audio_info.is_audio_device
         }
-          return None 
-        
+          return None  
     }
+    
     pub fn write_to_slice(&self, output: &mut [u8]) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
