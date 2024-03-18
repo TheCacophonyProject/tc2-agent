@@ -47,3 +47,4 @@ assets = [
   ["_releases/tc2-firmware", "/etc/cacophony/rp2040-firmware.elf", "664"],
 ]
 maintainer-scripts = "_releases/scripts"
+revision = ""
