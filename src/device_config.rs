@@ -817,7 +817,7 @@ impl DeviceConfig {
         *date_time_utc >= start_time && *date_time_utc <= end_time
     }
 
-    fn is_audio_device(&self) -> Option<bool>{
+    pub fn is_audio_device(&self) -> Option<bool>{
         if let Some(audio_info) = &self.audio_info{
              return audio_info.is_audio_device
         }

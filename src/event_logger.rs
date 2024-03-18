@@ -21,6 +21,7 @@ pub enum LoggerEventKind {
     Rp2040WokenByAlarm,
     RtcCommError,
     AttinyCommError,
+    Rp2040Woken,
 }
 
 impl Into<u16> for LoggerEventKind {
@@ -46,6 +47,7 @@ impl Into<u16> for LoggerEventKind {
             Rp2040WokenByAlarm => 17,
             RtcCommError => 18,
             AttinyCommError => 19,
+            Rp2040Woken => 20,
         }
     }
 }
@@ -75,6 +77,7 @@ impl TryFrom<u16> for LoggerEventKind {
             17 => Ok(Rp2040WokenByAlarm),
             18 => Ok(RtcCommError),
             19 => Ok(AttinyCommError),
+            20 => Ok(Rp2040Woken),
             _ => Err(()),
         }
     }

@@ -38,7 +38,7 @@ use crate::utils::{u8_slice_as_u16_slice};
 use crate::ExtTransferMessage::{
      BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo,
     CameraRawFrameTransfer, EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer,
-    SendLoggerEvent,FinishedFileTransfer,
+    SendLoggerEvent,
 };
 use crc::{Algorithm, Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
@@ -232,7 +232,6 @@ const CAMERA_BEGIN_AND_END_FILE_TRANSFER: u8 = 0x6;
 
 const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
 const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
-const FINISHED_FILE_TRANSFER: u8 = 0x9;
 #[repr(u8)]
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ExtTransferMessage {
@@ -244,7 +243,6 @@ pub enum ExtTransferMessage {
     BeginAndEndFileTransfer = 0x6,
     GetMotionDetectionMask = 0x7,
     SendLoggerEvent = 0x8,
-    FinishedFileTransfer = 0x9,
 }
 
 impl TryFrom<u8> for ExtTransferMessage {
@@ -260,7 +258,6 @@ impl TryFrom<u8> for ExtTransferMessage {
             0x6 => Ok(BeginAndEndFileTransfer),
             0x7 => Ok(GetMotionDetectionMask),
             0x8 => Ok(SendLoggerEvent),
-            0x9 => Ok(FinishedFileTransfer),
             _ => Err(()),
         }
     }
@@ -367,6 +364,7 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
 
     // We want real-time priority for all the work we do.
+    let frame_acquire = false;
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
@@ -401,7 +399,7 @@ fn main() {
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
         let (tx, rx) = channel();
         let (restart_tx, restart_rx) = channel();
-
+        if frame_acquire{
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
             // Spawn a thread which can output the frames, converted to rgb grayscale
             // This is printed out from within the spawned thread.
@@ -537,6 +535,7 @@ fn main() {
                 sleep(Duration::from_millis(1000));
             }
         });
+        }
         info!("Waiting to acquire frames from rp2040");
         // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
         let mut attiny_i2c_interface = None;
@@ -674,16 +673,6 @@ fn main() {
                             }
                             continue 'transfer;
                         }
-                        if transfer_type == FINISHED_FILE_TRANSFER{
-                            device_config.update_last_offload(chrono::Local::now().timestamp_millis());
-                            LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
-                            LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
-                            spi.write(&return_payload_buf).unwrap();
-                            if process_interrupted(&term, &mut attiny_i2c_interface) {
-                                break 'transfer;
-                            }
-                            continue 'transfer;
-                        }
                         if num_bytes == 0 {
                             // warn!("zero-sized payload");
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
@@ -719,6 +708,14 @@ fn main() {
 
                             if transfer_type == CAMERA_CONNECT_INFO {
                                 info!("Got camera connect info {:?}", chunk);
+                                let last_offload =  LittleEndian::read_i64(&chunk[12..20]);
+                                if last_offload !=0 {
+                                    info!("Updating last offload {}",last_offload);
+                                    let update_off =  device_config.update_last_offload(last_offload);
+                                    if update_off.is_err(){
+                                        warn!("Couldn't write last offload {}",update_off.err().unwrap());
+                                    }
+                                }
                                 // Write all the info we need about the device:
                                 device_config.write_to_slice(&mut return_payload_buf[8..]);
                                 info!("Sending camera device config to rp2040");
@@ -744,6 +741,7 @@ fn main() {
                                         radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 2;
                                         firmware_version = LittleEndian::read_u32(&chunk[4..8]);
                                         lepton_serial_number = format!("{}", LittleEndian::read_u32(&chunk[8..12]));
+
                                         got_startup_info = true;
                                         info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{}", radiometry_enabled, firmware_version, lepton_serial_number);
                                         if firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION {
@@ -751,9 +749,9 @@ fn main() {
                                             error!("Unsupported firmware version, expected {}, got {}", EXPECTED_RP2040_FIRMWARE_VERSION, firmware_version);
                                             panic!("Exit");
                                         }
-                                        if device_config.use_low_power_mode() && !radiometry_enabled {
+                                        if device_config.use_low_power_mode() && !radiometry_enabled && !device_config.is_audio_device().unwrap_or_default(){
                                             exit_cleanly(&mut attiny_i2c_interface);
-                                            error!("Low power mode is currently only supported on lepton sensors with radiometry, exiting.");
+                                            error!("Low power mode is currently only supported on lepton sensors with radiometry or audio device, exiting.");
                                             panic!("Exit");
                                         }
                                         // Terminate any existing file download.
@@ -854,7 +852,12 @@ fn main() {
                                             info!("End file transfer, took {:?} for {} bytes, {}MB/s", Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
                                             part_count = 0;
                                             file.extend_from_slice(&chunk);
-                                            save_audio_file_to_disk(file, device_config.output_dir());
+                                            let shebang = u8_slice_as_u16_slice(&file[0..2]);
+                                            if shebang[0] == AUDIO_SHEBANG{
+                                             save_audio_file_to_disk(file, device_config.output_dir());
+                                            }else{
+                                                save_cptv_file_to_disk(file, device_config.output_dir())
+                                            }
                                             let _ = tx.send((None, Some(false)));
                                         } else {
                                             warn!("Trying to end file with no open file");
@@ -913,6 +916,7 @@ fn main() {
                                 }
                                 if !sent_reset_request {
                                     sent_reset_request = true;
+                                    info!("RESETTING");
                                     let _ = restart_tx.send(true);
                                 }
                             }
