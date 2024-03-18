@@ -573,7 +573,6 @@ impl DeviceConfig {
     pub fn load_last_offload(&mut self) {
         let offload_fs =
         fs::read("/etc/cacophony/.offload_time");
-        // .map_err(|_| "Error reading file from disk")?;
         let last_offload = match offload_fs{
             Ok(file_data) =>          Some(LittleEndian::read_i64(&file_data[0..8])),
                         _ => {

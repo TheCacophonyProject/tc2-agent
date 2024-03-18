@@ -9,7 +9,7 @@ mod telemetry;
 mod utils;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
-use chrono::{DateTime, NaiveDateTime};
+use chrono::{ NaiveDateTime};
 use rppal::spi::BitOrder;
 use rppal::{
     gpio::{Gpio, Trigger},
@@ -37,7 +37,7 @@ use crate::event_logger::{LoggerEvent, LoggerEventKind};
 use crate::mode_config::ModeConfig;
 use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
-use crate::utils::{u8_slice_as_u16_slice};
+use crate::utils::u8_slice_as_u16_slice;
 use crate::ExtTransferMessage::{
      BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo,
     CameraRawFrameTransfer, EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer,
@@ -197,23 +197,6 @@ fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
                         }
                     }
 
-                    // NOTE: For debug purposes, we may want to also save the CPTV file locally for inspection.
-                    // let path = format!(
-                    //     "{}/{}.cptv",
-                    //     "/home/pi",
-                    //     recording_date_time.format("%Y-%m-%d--%H-%M-%S")
-                    // );
-                    // match fs::write(&path, &cptv_bytes) {
-                    //     Ok(()) => {
-                    //         info!("Saved CPTV file {}", path);
-                    //     }
-                    //     Err(e) => {
-                    //         error!(
-                    //             "Failed writing CPTV file to storage at {}, reason: {}",
-                    //             path, e
-                    //         );
-                    //     }
-                    // }
                 } else {
                     error!("File {} already exists, discarding duplicate", path);
                 }
@@ -666,7 +649,6 @@ fn main() {
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
                             if process_interrupted(&term, &mut attiny_i2c_interface) {
-                                info!("ENDING PROCESS");
                                 break 'transfer;
                             }
                             continue 'transfer;
