@@ -51,7 +51,7 @@ use rppal::i2c::I2c;
 use rustbus::connection::Timeout;
 use rustbus::{get_system_bus_path, DuplexConn};
 use simplelog::*;
-
+use std::io::Write;
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 10;
@@ -163,7 +163,69 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
 }
 
 
+fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
+    let mut header: [u8;44] = [0u8;44];
+    let mut cursor = 0;
+    for b in "RIFF".bytes(){
+        header[cursor] =b;
+        cursor+=1;
+    }
+
+    let file_size = audio_bytes.len() + 44;
+    for b in file_size.to_le_bytes(){
+        header[cursor] =b;
+        cursor+=1;
+    }
+    for b in "WAVEfmt".bytes(){
+        header[cursor] =b;
+        cursor+=1;
+    }
+    header[cursor]=32;
+    cursor +=1;
+    header[cursor] = 16;
+    cursor +=4;
+
+    // PCM
+    header[cursor]=1;
+    cursor+=2;
+
+    // channels
+    header[cursor] = 1;
+    cursor+=2;
+
+    let sr = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
+    // SR
+    for b in sr.to_le_bytes(){
+        header[cursor] =b;
+        cursor+=1;
+    }
+    let sr = sr*2;
+    for b in sr.to_le_bytes(){
+        header[cursor] =b;
+        cursor+=1;
+    }
+
+    
+    header[cursor] = 16/2;
+    cursor +=2;
+
+    for b in 16u16.to_le_bytes(){
+        header[cursor] =b;
+        cursor+=1;
+    }
+    for b in "data".bytes(){
+        header[cursor] =b;
+        cursor+=1;
+    }
+    for b in audio_bytes.len().to_le_bytes(){
+        header[cursor] =b;
+        cursor+=1;
+    }
+
+    return header
+}
 fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
+    let header = wav_header(&audio_bytes);
     let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
     let recording_date_time =
     NaiveDateTime::from_timestamp_millis(timestamp as i64 / 1000)
@@ -177,15 +239,32 @@ fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
                 let path: String = format!(
                     "{}/{}.pcm",
                     output_dir,
-                    recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+                    recording_date_time.format("%Y%m%d-%H%M%S")
                 );
                 // If the file already exists, don't re-save it.
                 let is_existing_file = match fs::metadata(&path) {
-                    Ok(metadata) => metadata.len() as usize == audio_bytes.len(),
+                    Ok(metadata) => metadata.len() as usize == audio_bytes.len()-12,
                     Err(_) => false,
                 };
                 if !is_existing_file {
-                    match fs::write(&path, &audio_bytes) {
+                    match fs::write(&path, &header) {
+                        Ok(()) => {
+                            info!("Saved Audio file header {} bytes are {}", path,header.len());
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed writing Audio file to storage at {}, reason: {}",
+                                path, e
+                            );
+                        }
+                    }
+
+                    let mut f = fs::OpenOptions::new()
+                        .append(true)
+                        .create(false) // Optionally create the file if it doesn't already exist
+                        .open(&path)
+                        .expect("Unable to open file");
+                    match f.write_all(&audio_bytes[12..]){
                         Ok(()) => {
                             info!("Saved Audio file {} bytes are {}", path,audio_bytes.len());
                         }
@@ -196,6 +275,7 @@ fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
                             );
                         }
                     }
+
 
                 } else {
                     error!("File {} already exists, discarding duplicate", path);
@@ -830,7 +910,6 @@ fn main() {
                                         if !file_download.is_some() {
                                             warn!("Trying to end file with no open file");
                                         }
-                                        info!("GOT END EVENT");
                                         if let Some(mut file) = file_download.take() {
                                             // Continue current file transfer
                                             let megabytes_per_second = (file.len() + chunk.len()) as f32 / Instant::now().duration_since(start).as_secs_f32() / (1024.0 * 1024.0);
