@@ -237,7 +237,7 @@ fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
                         .expect(&format!("Failed to create output directory {}", output_dir));
                 }
                 let path: String = format!(
-                    "{}/{}.pcm",
+                    "{}/{}.wav",
                     output_dir,
                     recording_date_time.format("%Y%m%d-%H%M%S")
                 );
