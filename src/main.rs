@@ -466,7 +466,7 @@ fn main() {
         let (tx, rx) = channel();
         let (restart_tx, restart_rx) = channel();
         let cross_thread_signal: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-        if frame_acquire{
+        if frame_acquire {
         let cross_thread_signal_2 = cross_thread_signal.clone();
 
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
@@ -597,7 +597,7 @@ fn main() {
             }
         });
         }
-        info!("Waiting to acquire frames from rp2040");
+        info!("Waiting to for messages from rp2040");
         // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
         let mut attiny_i2c_interface = None;
         if let Ok(mut attiny_i2c) = I2c::new() {
@@ -935,7 +935,12 @@ fn main() {
                                         part_count = 0;
                                         let mut file = Vec::new();
                                         file.extend_from_slice(&chunk);
-                                        save_cptv_file_to_disk(file, device_config.output_dir());
+                                        let shebang = u8_slice_as_u16_slice(&file[0..2]);
+                                        if shebang[0] == AUDIO_SHEBANG{
+                                            save_audio_file_to_disk(file, device_config.output_dir());
+                                        }else{
+                                            save_cptv_file_to_disk(file, device_config.output_dir())
+                                        }
                                         let _ = tx.send((None, Some(false)));
                                     }
                                     CAMERA_GET_MOTION_DETECTION_MASK => {
