@@ -922,7 +922,6 @@ fn dbus_attiny_command(
     call.body.push_param(1000i32).unwrap(); // Timeout ms
     let id = conn.send.send_message(&call).unwrap().write_all().unwrap();
     let mut attempts = 0;
-    let start = Instant::now();
     // Now wait for the reply that matches our call id
     loop {
         if let Ok(message) = conn
@@ -935,19 +934,19 @@ fn dbus_attiny_command(
                     if reply_id == id {
                         // Looks like the first 4 bytes are a u32 with the length of the following bytes
                         // which can be ignored.
-                        if is_read_command {
+                        return if is_read_command {
                             let response = &message.get_buf()[4..][0..3];
                             let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
                             let received_crc = BigEndian::read_u16(&response[1..=2]);
-                            return if received_crc != crc {
+                            if received_crc != crc {
                                 Err("CRC Mismatch")
                             } else {
                                 Ok(response[0])
-                            };
+                            }
                         } else {
                             // Check that the written value was actually written correctly.
                             let set_value = dbus_attiny_command(conn, command, None);
-                            return match set_value {
+                            match set_value {
                                 Ok(new_value) => {
                                     if new_value != value.unwrap() {
                                         Err("Failed setting state on attiny")
@@ -956,8 +955,8 @@ fn dbus_attiny_command(
                                     }
                                 }
                                 Err(e) => Err(e),
-                            };
-                        }
+                            }
+                        };
                     }
                 }
                 MessageType::Error => {
