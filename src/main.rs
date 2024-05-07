@@ -456,7 +456,7 @@ fn main() {
                                             let e = program_rp2040();
                                             if e.is_err() {
                                                 warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
-                                                panic!("Exit");
+                                                process::exit(1);
                                             }
                                             process::exit(0);
                                         } else {
