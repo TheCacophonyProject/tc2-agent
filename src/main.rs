@@ -455,7 +455,9 @@ fn main() {
                                             let e = program_rp2040();
                                             if e.is_err() {
                                                 warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
+                                                process::exit(1);
                                             }
+                                            process::exit(0);
                                         } else {
                                             info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
                                         }
