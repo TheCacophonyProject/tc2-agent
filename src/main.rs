@@ -244,20 +244,20 @@ fn main() {
     let device_config = DeviceConfig::load_from_fs();
     if device_config.is_err() {
         error!("Load config error: {}", device_config.err().unwrap());
-        std::process::exit(1);
+        process::exit(1);
     }
 
     let session_path = get_system_bus_path().unwrap_or_else(|e| {
         error!("Error getting system DBus: {}", e);
-        std::process::exit(1);
+        process::exit(1);
     });
     let mut dbus_conn = DuplexConn::connect_to_bus(session_path, true).unwrap_or_else(|e| {
         error!("Error connecting to system DBus: {}", e);
-        std::process::exit(1);
+        process::exit(1);
     });
     let _unique_name: String = dbus_conn.send_hello(Timeout::Infinite).unwrap_or_else(|e| {
         error!("Error getting handshake with system DBus: {}", e);
-        std::process::exit(1);
+        process::exit(1);
     });
 
     let mut current_config = device_config.unwrap();
@@ -551,9 +551,6 @@ fn main() {
                 }
             }
 
-            // // We might have to abandon using pin interrupt to trigger SPI, and just constantly poll for a pattern to align to.
-            // // Align our SPI reads to the start of the sequence 1, 2, 3, 4, 1, 2, 3, 4
-            // // Can it also be related to our DMA transfers?
             let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
             if let Ok(_pin_level) = poll_result {
                 if _pin_level.is_some() {
@@ -922,41 +919,59 @@ fn dbus_attiny_command(
     } else {
         call.body.push_param(0i32).unwrap(); // Receive nothing if this was a write.
     }
-    call.body.push_param(100i32).unwrap(); // Timeout ms
+    call.body.push_param(1000i32).unwrap(); // Timeout ms
     let id = conn.send.send_message(&call).unwrap().write_all().unwrap();
-    if is_read_command {
-        // Now wait for the reply that matches our call id
-        loop {
-            if let Ok(message) = conn.recv.get_next_message(Timeout::Infinite) {
-                if let MessageType::Reply = message.typ {
+    let mut attempts = 0;
+    let start = Instant::now();
+    // Now wait for the reply that matches our call id
+    loop {
+        if let Ok(message) = conn
+            .recv
+            .get_next_message(Timeout::Duration(Duration::from_millis(10)))
+        {
+            match message.typ {
+                MessageType::Reply => {
                     let reply_id = message.dynheader.response_serial.unwrap();
                     if reply_id == id {
                         // Looks like the first 4 bytes are a u32 with the length of the following bytes
                         // which can be ignored.
-                        let response = &message.get_buf()[4..][0..3];
-                        let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
-                        let received_crc = BigEndian::read_u16(&response[1..=2]);
-                        return if received_crc != crc {
-                            Err("CRC Mismatch")
+                        if is_read_command {
+                            let response = &message.get_buf()[4..][0..3];
+                            let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
+                            let received_crc = BigEndian::read_u16(&response[1..=2]);
+                            return if received_crc != crc {
+                                Err("CRC Mismatch")
+                            } else {
+                                Ok(response[0])
+                            };
                         } else {
-                            Ok(response[0])
-                        };
+                            // Check that the written value was actually written correctly.
+                            let set_value = dbus_attiny_command(conn, command, None);
+                            return match set_value {
+                                Ok(new_value) => {
+                                    if new_value != value.unwrap() {
+                                        Err("Failed setting state on attiny")
+                                    } else {
+                                        Ok(0)
+                                    }
+                                }
+                                Err(e) => Err(e),
+                            };
+                        }
                     }
                 }
+                MessageType::Error => {
+                    let reply_id = message.dynheader.response_serial.unwrap();
+                    if reply_id == id {
+                        return Err("Dbus error");
+                    }
+                }
+                _ => {}
             }
         }
-    } else {
-        // Check that the written value was actually written correctly.
-        let set_value = dbus_attiny_command(conn, command, None);
-        match set_value {
-            Ok(new_value) => {
-                return if new_value != value.unwrap() {
-                    Err("Failed setting state on attiny")
-                } else {
-                    Ok(0)
-                }
-            }
-            Err(e) => Err(e),
+        attempts += 1;
+        if attempts == 100 {
+            return Err("Timed out waiting for response from Dbus service");
         }
     }
 }
