@@ -12,10 +12,9 @@ fi
 
 TARGET_HOST=$1
 readonly TARGET_PATH=/home/pi/tc2-agent
-readonly SOURCE_PATH=./target/armv7-unknown-linux-musleabihf/release/tc2-agent
-readonly DEB_SOURCE_DIR=./target/armv7-unknown-linux-musleabihf/debian/
-readonly TARGET_ARCH=armv7-unknown-linux-musleabihf
-#readonly TARGET_ARCH=aarch64-unknown-linux-gnu # TODO Get it working with this target arch
+readonly SOURCE_PATH=./target/aarch64-unknown-linux-musl/release/tc2-agent
+readonly DEB_SOURCE_DIR=./target/aarch64-unknown-linux-musl/debian/
+readonly TARGET_ARCH=aarch64-unknown-linux-musl
 
 DEB_OPTION=false
 WIFI_OPTION=false
