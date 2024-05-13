@@ -171,7 +171,7 @@ fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
         cursor+=1;
     }
 
-    let file_size = audio_bytes.len() + 44;
+    let file_size = audio_bytes.len() + 36;
     for b in file_size.to_le_bytes(){
         header[cursor] =b;
         cursor+=1;
@@ -199,6 +199,7 @@ fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
         header[cursor] =b;
         cursor+=1;
     }
+
     let sr = sr*2;
     for b in sr.to_le_bytes(){
         header[cursor] =b;
@@ -221,7 +222,6 @@ fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
         header[cursor] =b;
         cursor+=1;
     }
-
     return header
 }
 fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
@@ -344,6 +344,19 @@ fn read_attiny_firmware_version(attiny_i2c: &mut I2c) -> Result<u8, &'static str
     read_attiny_reg(attiny_i2c, 0x01)
 }
 
+fn set_attiny_tc2_agent_test_audio_rec(attiny_i2c: &mut I2c) -> Result<(), &'static str> {
+    let state = read_tc2_agent_state(attiny_i2c);
+    if let Ok(state) = state {
+        if (state & 0x04 ==0x04){
+            Err("Already recording so not doing test rec")
+        }else{
+            write_attiny_command(attiny_i2c, 0x07, state | 0x08)
+        }
+    } else {
+        Err("Failed reading ready state from attiny")
+    }
+}
+
 fn set_attiny_tc2_agent_ready(attiny_i2c: &mut I2c) -> Result<(), &'static str> {
     let state = read_tc2_agent_state(attiny_i2c);
     if let Ok(state) = state {
@@ -384,6 +397,21 @@ fn main() {
         error!("Error getting handshake with system DBus: {}", e);
         std::process::exit(1);
     });
+
+    //set up dbus service
+    // let _ = thread::Builder::new().name("dbus-service".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
+
+
+    //     let agentService = AgentService { count: 0 };
+    //     let _conn = connection::Builder::session()?
+    //         .name("org.zbus.TC2Agent")?
+    //         .serve_at("/org/zbus/TC2Agent", agentService)?
+    //         .build()
+    //         .await?;
+
+    //     // Do other things or go to wait forever
+    //     pending::<()>().await;
+    // }
 
     let mut current_config = device_config.unwrap();
     let initial_config = current_config.clone();
@@ -431,6 +459,7 @@ fn main() {
 
     // We want real-time priority for all the work we do.
     let frame_acquire = false;
+    let mut take_test_audio = false;
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
@@ -680,6 +709,17 @@ fn main() {
                         TryRecvError::Disconnected => {
                             warn!("Disconnected from config file watcher channel");
                         },
+                    }
+                }
+            }
+            if take_test_audio && device_config.is_audio_device().unwrap_or_default(){
+                if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
+                    if set_attiny_tc2_agent_test_audio_rec( attiny_i2c_interface).is_ok() {
+                        info!("Set test rec");
+                        if !device_config.use_low_power_mode() || safe_to_restart_rp2040(attiny_i2c_interface) {
+                            // NOTE: Always reset rp2040 on startup if it's safe to do so.
+                            restart_tx.send(true);
+                        }   
                     }
                 }
             }

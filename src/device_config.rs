@@ -603,12 +603,13 @@ impl DeviceConfig {
                     std::process::exit(1);
                 }
                 info!("Got config {:?}", device_config);
-
-                let inside_recording_window =
-                    device_config.time_is_in_recording_window(&Utc::now().naive_utc());
-                info!("Inside recording window: {}", inside_recording_window);
-                if !inside_recording_window {
-                    device_config.print_next_recording_window(&Utc::now().naive_utc());
+                if device_config.is_audio_device().unwrap_or_default(){
+                    let inside_recording_window =
+                        device_config.time_is_in_recording_window(&Utc::now().naive_utc());
+                    info!("Inside recording window: {}", inside_recording_window);
+                    if !inside_recording_window {
+                        device_config.print_next_recording_window(&Utc::now().naive_utc());
+                    }
                 }
                 device_config.load_last_offload();
                 Ok(device_config)
@@ -826,7 +827,8 @@ impl DeviceConfig {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
-
+        buf.write_u8(if self.is_audio_device().unwrap_or_default() { 1 } else { 0 })
+        .unwrap();
         let (latitude, longitude) = self.lat_lng();
         buf.write_f32::<LittleEndian>(latitude).unwrap();
         buf.write_f32::<LittleEndian>(longitude).unwrap();
@@ -869,8 +871,7 @@ impl DeviceConfig {
         buf.write(&device_name[0..device_name_length]).unwrap();
 
 
-        buf.write_u8(if self.is_audio_device().unwrap_or_default() { 1 } else { 0 })
-        .unwrap();
+      
         buf.write_i64::<LittleEndian>(self.last_offload.unwrap_or_default()).unwrap();
 
     }
