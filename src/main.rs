@@ -171,7 +171,7 @@ fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
         cursor+=1;
     }
 
-    let file_size = audio_bytes.len() + 36;
+    let file_size = audio_bytes.len()-12 + 36;
     for b in file_size.to_le_bytes(){
         header[cursor] =b;
         cursor+=1;
@@ -218,7 +218,7 @@ fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
         header[cursor] =b;
         cursor+=1;
     }
-    for b in audio_bytes.len().to_le_bytes(){
+    for b in (audio_bytes.len()-12).to_le_bytes(){
         header[cursor] =b;
         cursor+=1;
     }
@@ -808,14 +808,6 @@ fn main() {
 
                             if transfer_type == CAMERA_CONNECT_INFO {
                                 info!("Got camera connect info {:?}", chunk);
-                                let last_offload =  LittleEndian::read_i64(&chunk[12..20]);
-                                if last_offload !=0 {
-                                    info!("Updating last offload {}",last_offload);
-                                    let update_off =  device_config.update_last_offload(last_offload);
-                                    if update_off.is_err(){
-                                        warn!("Couldn't write last offload {}",update_off.err().unwrap());
-                                    }
-                                }
                                 // Write all the info we need about the device:
                                 device_config.write_to_slice(&mut return_payload_buf[8..]);
                                 info!("Sending camera device config to rp2040");

@@ -479,7 +479,6 @@ pub struct DeviceConfig {
     #[serde(rename = "thermal-recorder", default)]
     recording_settings: ThermalRecordingSettings,
     location: Option<LocationSettings>,
-    last_offload:Option<i64>,
 }
 
 impl DeviceConfig {
@@ -564,23 +563,6 @@ impl DeviceConfig {
         self.recording_settings.use_low_power_mode
     }
 
-    pub fn update_last_offload(&mut self, timestamp:i64) ->Result<(), std::io::Error> {
-        self.last_offload = Some(timestamp);
-        fs::write("/etc/cacophony/.offload_time",&timestamp.to_le_bytes())
-    }
-
-    pub fn load_last_offload(&mut self) {
-        let offload_fs =
-        fs::read("/etc/cacophony/.offload_time");
-        let last_offload = match offload_fs{
-            Ok(file_data) =>          Some(LittleEndian::read_i64(&file_data[0..8])),
-                        _ => {
-                info!("Couldn't read offload info /etc/cacophony/.offload_time");
-                 None
-            }
-        };
-        self.last_offload = last_offload;
-    }
     pub fn load_from_fs() -> Result<DeviceConfig, &'static str> {
         let config_toml =
             fs::read("/etc/cacophony/config.toml").map_err(|_| "Error reading file from disk")?;
@@ -611,7 +593,6 @@ impl DeviceConfig {
                         device_config.print_next_recording_window(&Utc::now().naive_utc());
                     }
                 }
-                device_config.load_last_offload();
                 Ok(device_config)
             }
             Err(msg) => {
@@ -872,7 +853,6 @@ impl DeviceConfig {
 
 
       
-        buf.write_i64::<LittleEndian>(self.last_offload.unwrap_or_default()).unwrap();
 
     }
 }
