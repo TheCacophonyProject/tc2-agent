@@ -56,7 +56,7 @@ use rustbus::{get_system_bus_path, DuplexConn};
 use simplelog::*;
 use std::io::Write;
 const AUDIO_SHEBANG: u16 = 1;
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 10;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 11;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 12;
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
