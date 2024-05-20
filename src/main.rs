@@ -7,6 +7,7 @@ mod mode_config;
 mod socket_stream;
 mod telemetry;
 mod utils;
+mod service;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use chrono::{ NaiveDateTime};
@@ -21,7 +22,7 @@ use std::ops::Not;
 use std::path::Path;
 use std::process;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, TryRecvError};
 use std::sync::Arc;
 use std::thread::sleep;
@@ -29,7 +30,9 @@ use std::time::Instant;
 use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
+ use rustbus::connection::dispatch_conn::DispatchConn;
 
+ use crate::service::{AgentService};
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
 use crate::device_config::DeviceConfig;
 use crate::double_buffer::DoubleBuffer;
@@ -53,7 +56,6 @@ use rustbus::{get_system_bus_path, DuplexConn};
 use simplelog::*;
 use std::io::Write;
 const AUDIO_SHEBANG: u16 = 1;
-
 const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 10;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 12;
 const SEGMENT_LENGTH: usize = 9760;
@@ -366,6 +368,91 @@ fn set_attiny_tc2_agent_ready(attiny_i2c: &mut I2c) -> Result<(), &'static str> 
     }
 }
 
+use rustbus::connection::dispatch_conn::HandleEnvironment;
+use rustbus::connection::dispatch_conn::HandleResult;
+use rustbus::connection::dispatch_conn::Matches;
+use rustbus::message_builder::MarshalledMessage;
+
+
+
+// just to make the function definitions a bit shorter
+type MyHandleEnv<'a, 'b> = HandleEnvironment<&'b mut AgentService, ()>;
+
+use std::str;
+
+
+fn default_handler(
+    c: &mut &mut AgentService,
+    _matches: Matches,
+    msg: &MarshalledMessage,
+    _env: &mut MyHandleEnv,
+) -> HandleResult<()> {
+    Ok(None)
+}
+
+
+fn audio_handler(
+    c: &mut &mut AgentService,
+    _matches: Matches,
+    msg: &MarshalledMessage,
+    _env: &mut MyHandleEnv,
+) -> HandleResult<()> {
+    if msg.dynheader.member.as_ref().unwrap() == "testaudio"  {
+        let message;
+
+        if rp2040_state.load(Ordering::Relaxed)  & 0x08  ==0{
+            take_test_audio.store(true,Ordering::Relaxed);
+            message = "Asked for a test recording";
+        }else{
+            message= "Already making a test recording";
+        }
+        
+        let mut resp = msg.dynheader.make_response();
+        resp.body
+            .push_param(message)
+            .unwrap();
+        return Ok(Some(resp));
+    }
+    else if msg.dynheader.member.as_ref().unwrap() == "audiostatus" {
+            let status;
+            
+            let mut resp = msg.dynheader.make_response();
+
+            let state =  rp2040_state.load(Ordering::Relaxed);
+            if state & (0x08 |0x04) == (0x08 |0x04){
+                status = AudioStatus::TakingTestRecoding;
+            }else if state & 0x08 == 0x08{
+                status = AudioStatus::WaitingToRecord;
+            }else if take_test_audio.load(Ordering::Relaxed){
+                status = AudioStatus::WaitingToRecord;
+            }else{
+                status = AudioStatus::Ready;
+            }
+            
+            resp.body
+                .push_param(status as u8)
+                .unwrap();
+            Ok(Some(resp))
+    }else {
+        Ok(None)
+
+    }
+}
+pub enum AudioStatus {
+    Ready = 1,
+    WaitingToRecord = 2,
+    TakingTestRecoding = 3,
+}
+
+use lazy_static::lazy_static;
+
+
+lazy_static !{
+static ref take_test_audio:Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+}
+lazy_static !{
+static ref rp2040_state :Arc<AtomicU8>= Arc::new(AtomicU8::new(2));
+}
 fn main() {
     let log_config = ConfigBuilder::default()
         .set_time_level(LevelFilter::Off)
@@ -397,21 +484,36 @@ fn main() {
         error!("Error getting handshake with system DBus: {}", e);
         std::process::exit(1);
     });
+    
+
 
     //set up dbus service
-    // let _ = thread::Builder::new().name("dbus-service".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
+    let _ = thread::Builder::new().name("dbus-service".to_string()).spawn_with_priority(ThreadPriority::Max, move |_| {
+        let mut dbus_conn = DuplexConn::connect_to_bus(session_path, false).unwrap_or_else(|e| {
+            error!("Error connecting to system DBus: {}", e);
+            std::process::exit(1);
+        });
+        let name = dbus_conn.send_hello(rustbus::connection::Timeout::Infinite)
+        .unwrap();
+         dbus_conn.send
+        .send_message(&mut rustbus::standard_messages::request_name(
+            "org.cacophony.TC2Agent".into(),
+            rustbus::standard_messages::DBUS_NAME_FLAG_REPLACE_EXISTING,
+        ))
+        .unwrap()
+        .write_all()
+        .unwrap();
 
+        let mut ctx: AgentService= AgentService::new();
 
-    //     let agentService = AgentService { count: 0 };
-    //     let _conn = connection::Builder::session()?
-    //         .name("org.zbus.TC2Agent")?
-    //         .serve_at("/org/zbus/TC2Agent", agentService)?
-    //         .build()
-    //         .await?;
+        let dh = Box::new(default_handler);
 
-    //     // Do other things or go to wait forever
-    //     pending::<()>().await;
-    // }
+        let mut dpcon = DispatchConn::new(dbus_conn, &mut ctx, dh);
+        let th = Box::new(audio_handler);
+
+        dpcon.add_handler("/org/cacophony/TC2Agent", th);
+        dpcon.run().unwrap();
+    });
 
     let mut current_config = device_config.unwrap();
     let initial_config = current_config.clone();
@@ -458,8 +560,7 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
 
     // We want real-time priority for all the work we do.
-    let frame_acquire = false;
-    let mut take_test_audio = false;
+    let mut frame_acquire = initial_config.is_audio_device().unwrap_or_default();
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
@@ -495,7 +596,6 @@ fn main() {
         let (tx, rx) = channel();
         let (restart_tx, restart_rx) = channel();
         let cross_thread_signal: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-        if frame_acquire {
         let cross_thread_signal_2 = cross_thread_signal.clone();
 
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
@@ -503,14 +603,15 @@ fn main() {
             // This is printed out from within the spawned thread.
             assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
-            info!("Connecting to frame socket {}", address);
             let mut reconnects = 0;
             let mut prev_frame_num = None;
             loop {
-                info!("Entering frame-socket loop");
                 if let Ok(_) = restart_rx.try_recv() {
+                   if let Ok(config) = DeviceConfig::load_from_fs() {
+                        frame_acquire = config.is_audio_device().unwrap_or_default();
+                    }
                     cross_thread_signal_2.store(true, Ordering::Relaxed);
-                    info!("Restarting rp2040");
+                    info!("Restarting rp2040 frame");
                     if !run_pin.is_set_high() {
                         run_pin.set_high();
                         sleep(Duration::from_millis(1000));
@@ -520,112 +621,118 @@ fn main() {
                     sleep(Duration::from_millis(1000));
                     run_pin.set_high();
                 }
-                match SocketStream::from_address(&address, *&config.use_wifi) {
-                    Ok(mut stream) => {
-                        info!("Connected to {}, waiting for frames from rp2040", if config.use_wifi { &"tc2-frames server"} else { &"thermal-recorder unix socket"});
-                        let mut sent_header = false;
-                        let mut ms_elapsed = 0;
-                        'send_loop: loop {
-                            // Check if we need to reset rp2040 because of a config change
-                            if let Ok(_) = restart_rx.try_recv() {
-                                cross_thread_signal_2.store(true, Ordering::Relaxed);
-                                loop {
-                                    info!("Restarting rp2040");
-                                    if !run_pin.is_set_high() {
-                                        run_pin.set_high();
+                if frame_acquire {
+                    info!("Connecting to frame socket {}", address);
+
+                    info!("Entering frame-socket loop");
+
+                    match SocketStream::from_address(&address, *&config.use_wifi) {
+                        Ok(mut stream) => {
+                            info!("Connected to {}, waiting for frames from rp2040", if config.use_wifi { &"tc2-frames server"} else { &"thermal-recorder unix socket"});
+                            let mut sent_header = false;
+                            let mut ms_elapsed = 0;
+                            'send_loop: loop {
+                                // Check if we need to reset rp2040 because of a config change
+                                if let Ok(_) = restart_rx.try_recv() {
+                                    cross_thread_signal_2.store(true, Ordering::Relaxed);
+                                    loop {
+                                        info!("Restarting rp2040");
+                                        if !run_pin.is_set_high() {
+                                            run_pin.set_high();
+                                            sleep(Duration::from_millis(1000));
+                                        }
+
+                                        run_pin.set_low();
                                         sleep(Duration::from_millis(1000));
+                                        run_pin.set_high();
+                                        break;
                                     }
-
-                                    run_pin.set_low();
-                                    sleep(Duration::from_millis(1000));
-                                    run_pin.set_high();
-                                    break;
                                 }
-                            }
 
-                            let recv_timeout_ms = 10;
-                            let result = rx.recv_timeout(Duration::from_millis(recv_timeout_ms));
-                            match result {
-                                Ok((Some((radiometry_enabled, is_recording, firmware_version, camera_serial)), None)) => {
-                                    if !config.use_wifi && !sent_header {
-                                        // Send the header info here:
-                                        let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
-                                        let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
-                                        if let Err(_) = stream.write_all(header.as_bytes()) {
-                                            warn!("Failed sending header info");
+                                let recv_timeout_ms = 10;
+                                let result = rx.recv_timeout(Duration::from_millis(recv_timeout_ms));
+                                match result {
+                                    Ok((Some((radiometry_enabled, is_recording, firmware_version, camera_serial)), None)) => {
+                                        if !config.use_wifi && !sent_header {
+                                            // Send the header info here:
+                                            let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
+                                            let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
+                                            if let Err(_) = stream.write_all(header.as_bytes()) {
+                                                warn!("Failed sending header info");
+                                            }
+
+                                            // Clear existing
+                                            if let Err(_) = stream.write_all(b"clear") {
+                                                warn!("Failed clearing buffer");
+                                            }
+                                            let _ = stream.flush();
+                                            sent_header = true;
                                         }
 
-                                        // Clear existing
-                                        if let Err(_) = stream.write_all(b"clear") {
-                                            warn!("Failed clearing buffer");
+                                        if reconnects > 0 {
+                                            info!("Got frame connection");
+                                            prev_frame_num = None;
+                                            reconnects = 0;
                                         }
-                                        let _ = stream.flush();
-                                        sent_header = true;
-                                    }
-
-                                    if reconnects > 0 {
-                                        info!("Got frame connection");
-                                        prev_frame_num = None;
-                                        reconnects = 0;
-                                    }
-                                    let s = Instant::now();
-                                    let (telemetry, sent) = send_frame(&mut stream, is_recording);
-                                    let e = s.elapsed().as_secs_f32();
-                                    if e > 0.1 {
-                                        info!("socket send took {}s", e);
-                                    }
-                                    if !sent {
-                                        warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
-                                        let _ = stream.shutdown().is_ok();
-                                        break 'send_loop;
-                                    } else {
-                                        if let Some(telemetry) = telemetry {
-                                            if let Some(prev_frame_num) = prev_frame_num {
-                                                if !telemetry.ffc_in_progress {
-                                                    if telemetry.frame_num != prev_frame_num + 1 {
-                                                        // NOTE: Frames can be missed when the raspberry pi blocks the thread with the unix socket in `thermal-recorder`.
-                                                        // println!("====");
-                                                        // println!("Missed {} frames after {}s on", telemetry.frame_num - (prev_frame_num + 1), telemetry.msec_on as f32 / 1000.0);
+                                        let s = Instant::now();
+                                        let (telemetry, sent) = send_frame(&mut stream, is_recording);
+                                        let e = s.elapsed().as_secs_f32();
+                                        if e > 0.1 {
+                                            info!("socket send took {}s", e);
+                                        }
+                                        if !sent {
+                                            warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
+                                            let _ = stream.shutdown().is_ok();
+                                            break 'send_loop;
+                                        } else {
+                                            if let Some(telemetry) = telemetry {
+                                                if let Some(prev_frame_num) = prev_frame_num {
+                                                    if !telemetry.ffc_in_progress {
+                                                        if telemetry.frame_num != prev_frame_num + 1 {
+                                                            // NOTE: Frames can be missed when the raspberry pi blocks the thread with the unix socket in `thermal-recorder`.
+                                                            // println!("====");
+                                                            // println!("Missed {} frames after {}s on", telemetry.frame_num - (prev_frame_num + 1), telemetry.msec_on as f32 / 1000.0);
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            prev_frame_num = Some(telemetry.frame_num);
-                                            if telemetry.frame_num % 2700 == 0 {
-                                                info!("Got frame #{}", telemetry.frame_num);
+                                                prev_frame_num = Some(telemetry.frame_num);
+                                                if telemetry.frame_num % 2700 == 0 {
+                                                    info!("Got frame #{}", telemetry.frame_num);
+                                                }
                                             }
                                         }
-                                    }
-                                    ms_elapsed = 0;
-                                },
-                                Ok((None, Some(_transfer_in_progress))) => {
-                                    ms_elapsed = 0;
-                                },
-                                _ => {
-                                    const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
-                                    ms_elapsed += recv_timeout_ms;
-                                    if ms_elapsed > 10000 {
                                         ms_elapsed = 0;
-                                        reconnects += 1;
-                                        if reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
-                                            let e = program_rp2040();
-                                            if e.is_err() {
-                                                warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
+                                    },
+                                    Ok((None, Some(_transfer_in_progress))) => {
+                                        ms_elapsed = 0;
+                                    },
+                                    _ => {
+                                        const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
+                                        ms_elapsed += recv_timeout_ms;
+                                        if ms_elapsed > 10000 {
+                                            ms_elapsed = 0;
+                                            reconnects += 1;
+                                            if reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
+                                                let e = program_rp2040();
+                                                if e.is_err() {
+                                                    warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
+                                                }
+                                            } else {
+                                                info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
                                             }
-                                        } else {
-                                            info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
                                         }
                                     }
                                 }
                             }
                         }
+                        Err(e) => warn!("{} not found: {}", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"}, e.to_string())
                     }
-                    Err(e) => warn!("{} not found: {}", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"}, e.to_string())
                 }
                 // Wait 1 second between attempts to connect to the frame socket
                 sleep(Duration::from_millis(1000));
             }
         });
-        }
+        
         info!("Waiting to for messages from rp2040");
         // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
         let mut attiny_i2c_interface = None;
@@ -690,7 +797,7 @@ fn main() {
         let mut radiometry_enabled = false;
         let mut firmware_version = 0;
         let mut lepton_serial_number = String::from("");
-
+        let mut taking_test_recoding = false;
         'transfer: loop {
             // Check once per frame to see if the config file may have been changed
             let updated_config = config_rx.try_recv();
@@ -701,6 +808,7 @@ fn main() {
                         info!("Config updated, should update rp2040");
                         device_config = config;
                     }
+                    
                     rp2040_needs_reset = true;
                 }
                 Err(kind) => {
@@ -712,17 +820,39 @@ fn main() {
                     }
                 }
             }
-            if take_test_audio && device_config.is_audio_device().unwrap_or_default(){
-                if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
-                    if set_attiny_tc2_agent_test_audio_rec( attiny_i2c_interface).is_ok() {
-                        info!("Set test rec");
-                        if !device_config.use_low_power_mode() || safe_to_restart_rp2040(attiny_i2c_interface) {
-                            // NOTE: Always reset rp2040 on startup if it's safe to do so.
-                            restart_tx.send(true);
-                        }   
+
+            if  device_config.is_audio_device().unwrap_or_default(){
+                if taking_test_recoding{
+                    if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
+                        if let Ok(state) = read_tc2_agent_state(attiny_i2c_interface){
+                            info!("Recording setting state {}",state);
+                             rp2040_state.store(state,Ordering::Relaxed);
+                            if state  &(0x04 | 0x08) == 0{
+                                info!("Not recording anymore");
+                                taking_test_recoding = false;
+                            }
+                        }else{
+                            warn!("error reading tc2 agent state");
+                        }
+                    }
+                }
+                else if     take_test_audio.load(Ordering::Relaxed)
+                {
+                    take_test_audio.store(false,Ordering::Relaxed);
+                    if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
+                            if set_attiny_tc2_agent_test_audio_rec( attiny_i2c_interface).is_ok() {
+                                if !device_config.use_low_power_mode() || safe_to_restart_rp2040(attiny_i2c_interface) {
+                                    // NOTE: Always reset rp2040 on startup if it's safe to do so.
+                                    let _ = restart_tx.send(true);
+                                    taking_test_recoding = true;
+                                    info!("Telling rp2040 to take test recording and restarting");
+                                }   
+                            }
+                        
                     }
                 }
             }
+        
 
             // // We might have to abandon using pin interrupt to trigger SPI, and just constantly poll for a pattern to align to.
             // // Align our SPI reads to the start of the sequence 1, 2, 3, 4, 1, 2, 3, 4

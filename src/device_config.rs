@@ -418,8 +418,9 @@ impl Default for TimeWindow {
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
+
 struct AudioSettings {
-    is_audio_device: Option<bool>,
+    enabled: Option<bool>,
 }
 
 
@@ -470,7 +471,7 @@ struct ThermalThrottlerSettings {
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 pub struct DeviceConfig {
 
-    #[serde(rename = "audio")]
+    #[serde(rename = "audio-recording")]
     audio_info: Option<AudioSettings>,
     #[serde(rename = "windows", default)]
     recording_window: TimeWindow,
@@ -799,7 +800,7 @@ impl DeviceConfig {
 
     pub fn is_audio_device(&self) -> Option<bool>{
         if let Some(audio_info) = &self.audio_info{
-             return audio_info.is_audio_device
+             return audio_info.enabled
         }
           return None  
     }
