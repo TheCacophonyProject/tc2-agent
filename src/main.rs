@@ -560,7 +560,7 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
 
     // We want real-time priority for all the work we do.
-    let mut frame_acquire = initial_config.is_audio_device().unwrap_or_default();
+    let mut frame_acquire = !initial_config.is_audio_device().unwrap_or_default();
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
@@ -608,7 +608,7 @@ fn main() {
             loop {
                 if let Ok(_) = restart_rx.try_recv() {
                    if let Ok(config) = DeviceConfig::load_from_fs() {
-                        frame_acquire = config.is_audio_device().unwrap_or_default();
+                        frame_acquire = !config.is_audio_device().unwrap_or_default();
                     }
                     cross_thread_signal_2.store(true, Ordering::Relaxed);
                     info!("Restarting rp2040 frame");
@@ -825,10 +825,8 @@ fn main() {
                 if taking_test_recoding{
                     if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
                         if let Ok(state) = read_tc2_agent_state(attiny_i2c_interface){
-                            info!("Recording setting state {}",state);
                              rp2040_state.store(state,Ordering::Relaxed);
                             if state  &(0x04 | 0x08) == 0{
-                                info!("Not recording anymore");
                                 taking_test_recoding = false;
                             }
                         }else{
