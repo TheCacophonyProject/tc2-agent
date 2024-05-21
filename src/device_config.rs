@@ -571,7 +571,7 @@ impl DeviceConfig {
             String::from_utf8(config_toml).map_err(|_| "Error parsing string from utf8")?;
         let device_config: Result<DeviceConfig, toml::de::Error> = toml::from_str(&config_toml_str);
         match device_config {
-            Ok(mut device_config) => {
+            Ok(device_config) => {
                 // TODO: Make sure device has sane windows etc.
                 if !device_config.has_location() {
                     error!(
