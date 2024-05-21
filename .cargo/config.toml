@@ -1,5 +1,5 @@
 [build]
-target = "aarch64-unknown-linux-musl"
+target = "armv7-unknown-linux-musleabihf"
 
-[target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-gnu-gcc"
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-gnueabihf-ld"

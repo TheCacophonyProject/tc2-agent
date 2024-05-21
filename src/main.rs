@@ -351,7 +351,7 @@ fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn)  -> Result<(), &'s
         if (state & 0x04 ==0x04){
             Err("Already recording so not doing test rec")
         }else{
-            dbus_write_attiny_command(con, 0x07, state | 0x08)
+            dbus_write_attiny_command(conn, 0x07, state | 0x08).map(|_| ())
         }
     } else {
         Err("Failed reading ready state from attiny")
@@ -399,8 +399,8 @@ fn audio_handler(
     if msg.dynheader.member.as_ref().unwrap() == "testaudio"  {
         let message;
 
-        if rp2040_state.load(Ordering::Relaxed)  & 0x08  ==0{
-            take_test_audio.store(true,Ordering::Relaxed);
+        if RP2040_STATE.load(Ordering::Relaxed)  & 0x08  ==0{
+            TAKE_TEST_AUDIO.store(true,Ordering::Relaxed);
             message = "Asked for a test recording";
         }else{
             message= "Already making a test recording";
@@ -417,12 +417,12 @@ fn audio_handler(
             
             let mut resp = msg.dynheader.make_response();
 
-            let state =  rp2040_state.load(Ordering::Relaxed);
+            let state =  RP2040_STATE.load(Ordering::Relaxed);
             if state & (0x08 |0x04) == (0x08 |0x04){
                 status = AudioStatus::TakingTestRecoding;
             }else if state & 0x08 == 0x08{
                 status = AudioStatus::WaitingToRecord;
-            }else if take_test_audio.load(Ordering::Relaxed){
+            }else if TAKE_TEST_AUDIO.load(Ordering::Relaxed){
                 status = AudioStatus::WaitingToRecord;
             }else{
                 status = AudioStatus::Ready;
@@ -447,10 +447,10 @@ use lazy_static::lazy_static;
 
 
 lazy_static !{
-static ref take_test_audio:Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+static ref TAKE_TEST_AUDIO:Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
 lazy_static !{
-static ref rp2040_state :Arc<AtomicU8>= Arc::new(AtomicU8::new(2));
+static ref RP2040_STATE :Arc<AtomicU8>= Arc::new(AtomicU8::new(2));
 }
 fn main() {
     let log_config = ConfigBuilder::default()
@@ -699,18 +699,28 @@ fn main() {
                                                     info!("Got frame #{}", telemetry.frame_num);
                                                 }
                                             }
-                                        }
+                                        }   
                                         ms_elapsed = 0;
-                                        reconnects += 1;
-                                        if reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
-                                            let e = program_rp2040();
-                                            if e.is_err() {
-                                                warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
-                                                process::exit(1);
+                                    },
+                                    Ok((None, Some(_transfer_in_progress))) => {
+                                        ms_elapsed = 0;
+                                    },
+                                    _ => {
+                                        const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
+                                        ms_elapsed += recv_timeout_ms;
+                                        if ms_elapsed > 10000 {
+                                            ms_elapsed = 0;
+                                            reconnects += 1;
+                                            if reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
+                                                let e = program_rp2040();
+                                                if e.is_err() {
+                                                    warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
+                                                    process::exit(1);
+                                                }
+                                                process::exit(0);
+                                            } else {
+                                                info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
                                             }
-                                            process::exit(0);
-                                        } else {
-                                            info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
                                         }
                                     }
                                 }
@@ -806,31 +816,27 @@ fn main() {
 
             if  device_config.is_audio_device().unwrap_or_default(){
                 if taking_test_recoding{
-                    if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
-                        if let Ok(state) = read_tc2_agent_state(attiny_i2c_interface){
-                             rp2040_state.store(state,Ordering::Relaxed);
+                        if let Ok(state) = read_tc2_agent_state(&mut dbus_conn){
+                             RP2040_STATE.store(state,Ordering::Relaxed);
                             if state  &(0x04 | 0x08) == 0{
                                 taking_test_recoding = false;
                             }
                         }else{
                             warn!("error reading tc2 agent state");
                         }
-                    }
+                    
                 }
-                else if     take_test_audio.load(Ordering::Relaxed)
+                else if TAKE_TEST_AUDIO.load(Ordering::Relaxed)
                 {
-                    take_test_audio.store(false,Ordering::Relaxed);
-                    if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
-                            if set_attiny_tc2_agent_test_audio_rec( attiny_i2c_interface).is_ok() {
-                                if !device_config.use_low_power_mode() || safe_to_restart_rp2040(attiny_i2c_interface) {
+                    TAKE_TEST_AUDIO.store(false,Ordering::Relaxed);
+                            if set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn).is_ok() {
+                                if !device_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
                                     // NOTE: Always reset rp2040 on startup if it's safe to do so.
                                     let _ = restart_tx.send(true);
                                     taking_test_recoding = true;
                                     info!("Telling rp2040 to take test recording and restarting");
                                 }   
                             }
-                        
-                    }
                 }
             }
             
@@ -954,7 +960,7 @@ fn main() {
                                             process::exit(0);
                                         }
                                         if device_config.use_low_power_mode() && !radiometry_enabled && !device_config.is_audio_device().unwrap_or_default(){
-                                            exit_cleanly(&mut attiny_i2c_interface);
+                                            exit_cleanly(&mut dbus_conn);
                                             error!("Low power mode is currently only supported on lepton sensors with radiometry or audio device, exiting.");
                                             panic!("Exit");
                                         }

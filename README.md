@@ -6,7 +6,7 @@ Gathered frames are then output to either a unix domain socket on the Raspberry 
 
 ### Install dependencies 
 `rustup target add armv7-unknown-linux-musleabihf`
-
+`rustup target add aarch64-unknown-linux-musl`
 ### Build and deploy
 1. Edit `deploy.sh` to specify the name of your development raspberry pi on your local network.
 2. Run `deploy.sh`
