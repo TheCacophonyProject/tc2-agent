@@ -14,9 +14,9 @@ bmp = "0.5.0"
 rppal = "0.17.0"
 chrono = "0.4.31"
 byteorder = "1.4.3"
-thread-priority = "0.15.1"
+thread-priority = "1.1.0"
 argh = "0.1.10"
-mdns-sd = "0.10.3"
+mdns-sd = "0.11.0"
 crc = "3.0.1"
 log = "0.4.19"
 simplelog = "0.12.1"
@@ -25,14 +25,14 @@ nom = "7.1.3"
 serde = { version = "1.0.183", features = ["derive"] }
 toml = "0.8.8"
 notify = { version = "6.1.1", default-features = false }
-chrono-tz = "0.8.3"
+chrono-tz = "0.9.0"
 signal-hook = "0.3.17"
 sun-times = "0.2.0"
 triangulate = "0.2.0"
 rustbus = "0.19.3"
 lazy_static = "1.4.0"
 
-[target.armv7-unknown-linux-musleabihf]
+[target.aarch64-unknown-linux-musl]
 # applies to target-specific builds
 
 # rPi3
@@ -43,9 +43,9 @@ name = "tc2-agent"
 maintainer = "Cacophony Developers <coredev@cacophony.org.nz>"
 depends = ""
 assets = [
-  ["target/release/tc2-agent", "/usr/bin/", "755"], # Binary asset
-  ["_releases/tc2-agent.service", "/etc/systemd/system/tc2-agent.service", "664"],
-  ["_releases/tc2-firmware", "/etc/cacophony/rp2040-firmware.elf", "664"],
+    ["target/release/tc2-agent", "/usr/bin/", "755"], # Binary asset
+    ["_releases/tc2-agent.service", "/etc/systemd/system/tc2-agent.service", "664"],
+    ["_releases/tc2-firmware", "/etc/cacophony/rp2040-firmware.elf", "664"],
 ]
 maintainer-scripts = "_releases/scripts"
 revision = ""

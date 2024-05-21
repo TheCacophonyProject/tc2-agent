@@ -50,9 +50,8 @@ use crc::{Algorithm, Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use rppal::i2c::I2c;
 use rustbus::connection::Timeout;
-use rustbus::{get_system_bus_path, DuplexConn};
+use rustbus::{get_system_bus_path, DuplexConn, MessageBuilder, MessageType};
 use simplelog::*;
 use std::io::Write;
 const AUDIO_SHEBANG: u16 = 1;
@@ -331,38 +330,38 @@ impl TryFrom<u8> for ExtTransferMessage {
     }
 }
 
-fn read_tc2_agent_state(attiny_i2c: &mut I2c) -> Result<u8, &'static str> {
-    read_attiny_reg(attiny_i2c, 0x07)
+fn read_tc2_agent_state(conn: &mut DuplexConn) -> Result<u8, &'static str> {
+    dbus_read_attiny_command(conn, 0x07)
 }
 
-fn read_attiny_recording_flag(attiny_i2c: &mut I2c) -> bool {
-    read_tc2_agent_state(attiny_i2c).map_or(false, |x| x & 0x04 == 0x04)
+fn read_attiny_recording_flag(conn: &mut DuplexConn) -> bool {
+    read_tc2_agent_state(conn).map_or(false, |x| x & 0x04 == 0x04)
 }
-fn safe_to_restart_rp2040(attiny_interface: &mut I2c) -> bool {
-    !read_attiny_recording_flag(attiny_interface)
-}
-
-fn read_attiny_firmware_version(attiny_i2c: &mut I2c) -> Result<u8, &'static str> {
-    read_attiny_reg(attiny_i2c, 0x01)
+fn safe_to_restart_rp2040(conn: &mut DuplexConn) -> bool {
+    !read_attiny_recording_flag(conn)
 }
 
-fn set_attiny_tc2_agent_test_audio_rec(attiny_i2c: &mut I2c) -> Result<(), &'static str> {
-    let state = read_tc2_agent_state(attiny_i2c);
+fn read_attiny_firmware_version(conn: &mut DuplexConn) -> Result<u8, &'static str> {
+    dbus_read_attiny_command(conn, 0x01)
+}
+
+fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn)  -> Result<(), &'static str> {
+    let state = read_tc2_agent_state(conn);
     if let Ok(state) = state {
         if (state & 0x04 ==0x04){
             Err("Already recording so not doing test rec")
         }else{
-            write_attiny_command(attiny_i2c, 0x07, state | 0x08)
+            dbus_write_attiny_command(con, 0x07, state | 0x08)
         }
     } else {
         Err("Failed reading ready state from attiny")
     }
 }
 
-fn set_attiny_tc2_agent_ready(attiny_i2c: &mut I2c) -> Result<(), &'static str> {
-    let state = read_tc2_agent_state(attiny_i2c);
+fn set_attiny_tc2_agent_ready(conn: &mut DuplexConn) -> Result<(), &'static str> {
+    let state = read_tc2_agent_state(conn);
     if let Ok(state) = state {
-        write_attiny_command(attiny_i2c, 0x07, state | 0x02)
+        dbus_write_attiny_command(conn, 0x07, state | 0x02).map(|_| ())
     } else {
         Err("Failed reading ready state from attiny")
     }
@@ -469,20 +468,20 @@ fn main() {
     let device_config = DeviceConfig::load_from_fs();
     if device_config.is_err() {
         error!("Load config error: {}", device_config.err().unwrap());
-        std::process::exit(1);
+        process::exit(1);
     }
 
     let session_path = get_system_bus_path().unwrap_or_else(|e| {
         error!("Error getting system DBus: {}", e);
-        std::process::exit(1);
+        process::exit(1);
     });
     let mut dbus_conn = DuplexConn::connect_to_bus(session_path, true).unwrap_or_else(|e| {
         error!("Error connecting to system DBus: {}", e);
-        std::process::exit(1);
+        process::exit(1);
     });
     let _unique_name: String = dbus_conn.send_hello(Timeout::Infinite).unwrap_or_else(|e| {
         error!("Error getting handshake with system DBus: {}", e);
-        std::process::exit(1);
+        process::exit(1);
     });
     
 
@@ -536,7 +535,7 @@ fn main() {
                         }
                         Err(msg) => {
                             error!("Load config error: {}", msg);
-                            std::process::exit(1);
+                            process::exit(1);
                         }
                     }
                 }
@@ -702,24 +701,16 @@ fn main() {
                                             }
                                         }
                                         ms_elapsed = 0;
-                                    },
-                                    Ok((None, Some(_transfer_in_progress))) => {
-                                        ms_elapsed = 0;
-                                    },
-                                    _ => {
-                                        const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
-                                        ms_elapsed += recv_timeout_ms;
-                                        if ms_elapsed > 10000 {
-                                            ms_elapsed = 0;
-                                            reconnects += 1;
-                                            if reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
-                                                let e = program_rp2040();
-                                                if e.is_err() {
-                                                    warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
-                                                }
-                                            } else {
-                                                info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
+                                        reconnects += 1;
+                                        if reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
+                                            let e = program_rp2040();
+                                            if e.is_err() {
+                                                warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
+                                                process::exit(1);
                                             }
+                                            process::exit(0);
+                                        } else {
+                                            info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
                                         }
                                     }
                                 }
@@ -735,45 +726,37 @@ fn main() {
         
         info!("Waiting to for messages from rp2040");
         // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
-        let mut attiny_i2c_interface = None;
-        if let Ok(mut attiny_i2c) = I2c::new() {
-            if attiny_i2c.set_slave_address(0x25).is_ok() {
-                match set_attiny_tc2_agent_ready(&mut attiny_i2c) {
-                    Ok(_) => attiny_i2c_interface = Some(attiny_i2c),
-                    Err(msg) => {
-                        error!("{}", msg);
-                        std::process::exit(1);
-                    }
-                }
-                let version = read_attiny_firmware_version(attiny_i2c_interface.as_mut().unwrap());
-                match version {
-                    Ok(version) => match version {
-                        EXPECTED_ATTINY_FIRMWARE_VERSION => {},
-                        _ => {
-                            error!("Mismatched attiny firmware version, expected {}, got {}", EXPECTED_ATTINY_FIRMWARE_VERSION, version);
-                            exit_cleanly(&mut attiny_i2c_interface);
-                            std::process::exit(1);
-                        }
-                    },
-                    Err(msg) => {
-                        error!("{}", msg);
-                        exit_cleanly(&mut attiny_i2c_interface);
-                        std::process::exit(1);
-                    }
-                }
+        //let mut dbus_conn = Some(dbus_conn);
 
-                if let Some(ref mut attiny_i2c_interface) = attiny_i2c_interface {
-                    if !initial_config.use_low_power_mode() || safe_to_restart_rp2040(attiny_i2c_interface) {
-                        // NOTE: Always reset rp2040 on startup if it's safe to do so.
-                        let _ = restart_tx.send(true);
-                    }
-                }
-
+        match set_attiny_tc2_agent_ready(&mut dbus_conn) {
+            Ok(_) => {},
+            Err(msg) => {
+                error!("{}", msg);
+                process::exit(1);
             }
-        } else {
-            error!("Error communicating to attiny");
-            std::process::exit(1);
         }
+        let version = read_attiny_firmware_version(&mut dbus_conn);
+        match version {
+            Ok(version) => match version {
+                EXPECTED_ATTINY_FIRMWARE_VERSION => {},
+                _ => {
+                    error!("Mismatched attiny firmware version, expected {}, got {}", EXPECTED_ATTINY_FIRMWARE_VERSION, version);
+                    exit_cleanly(&mut dbus_conn);
+                    process::exit(1);
+                }
+            },
+            Err(msg) => {
+                error!("{}", msg);
+                exit_cleanly(&mut dbus_conn);
+                process::exit(1);
+            }
+        }
+
+        if !initial_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
+            // NOTE: Always reset rp2040 on startup if it's safe to do so.
+            let _ = restart_tx.send(true);
+        }
+
 
         let mut got_first_frame = false;
         let mut file_download: Option<Vec<u8>> = None;
@@ -850,11 +833,7 @@ fn main() {
                     }
                 }
             }
-        
-
-            // // We might have to abandon using pin interrupt to trigger SPI, and just constantly poll for a pattern to align to.
-            // // Align our SPI reads to the start of the sequence 1, 2, 3, 4, 1, 2, 3, 4
-            // // Can it also be related to our DMA transfers?
+            
             let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
             if let Ok(_pin_level) = poll_result {
                 if _pin_level.is_some() {
@@ -896,7 +875,7 @@ fn main() {
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
-                            if process_interrupted(&term, &mut attiny_i2c_interface) {
+                            if process_interrupted(&term, &mut dbus_conn) {
                                 break 'transfer;
                             }
                             continue 'transfer;
@@ -906,7 +885,7 @@ fn main() {
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
-                            if process_interrupted(&term, &mut attiny_i2c_interface) {
+                            if process_interrupted(&term, &mut dbus_conn) {
                                 break 'transfer;
                             }
                             continue 'transfer;
@@ -918,7 +897,7 @@ fn main() {
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                             LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                             spi.write(&return_payload_buf).unwrap();
-                            if process_interrupted(&term, &mut attiny_i2c_interface) {
+                            if process_interrupted(&term, &mut dbus_conn) {
                                 break 'transfer;
                             }
                             continue 'transfer;
@@ -965,7 +944,7 @@ fn main() {
                                         got_startup_info = true;
                                         info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{}", radiometry_enabled, firmware_version, lepton_serial_number);
                                         if firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION {
-                                            exit_cleanly(&mut attiny_i2c_interface);
+                                            exit_cleanly(&mut dbus_conn);
                                             info!("Unsupported firmware version, expected {}, got {}. Will reprogram RP2040.", EXPECTED_RP2040_FIRMWARE_VERSION, firmware_version);
                                             let e = program_rp2040();
                                             if e.is_err() {
@@ -1055,12 +1034,10 @@ fn main() {
                                         } else {
                                             warn!("Trying to continue file with no open file");
                                             if !got_startup_info {
-                                                if let Some(ref mut attiny_i2c_interface) = &mut attiny_i2c_interface {
-                                                    if safe_to_restart_rp2040(attiny_i2c_interface) {
-                                                        let date = chrono::Local::now();
-                                                        error!("1) Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
-                                                        let _ = restart_tx.send(true);
-                                                    }
+                                                if safe_to_restart_rp2040(&mut dbus_conn) {
+                                                    let date = chrono::Local::now();
+                                                    error!("1) Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                                    let _ = restart_tx.send(true);
                                                 }
                                             }
                                         }
@@ -1158,7 +1135,7 @@ fn main() {
                     }
                 }
             }
-            if process_interrupted(&term, &mut attiny_i2c_interface) {
+            if process_interrupted(&term, &mut dbus_conn) {
                 break 'transfer;
             }
         }
@@ -1191,59 +1168,113 @@ fn program_rp2040() -> io::Result<()> {
         ));
     }
 
-    println!("Updated RP2040 firmware.");
+    info!("Updated RP2040 firmware.");
     Ok(())
 }
 
-fn write_attiny_command(attiny_i2c: &mut I2c, command: u8, value: u8) -> Result<(), &'static str> {
-    let mut payload = [command, value, 0x00, 0x00];
-    let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&payload[0..=1]);
-    BigEndian::write_u16(&mut payload[2..=3], crc);
-    if attiny_i2c.write(&payload).is_err() {
-        Err("Failed setting state on attiny")
+fn dbus_read_attiny_command(conn: &mut DuplexConn, command: u8) -> Result<u8, &'static str> {
+    dbus_attiny_command(conn, command, None)
+}
+
+fn dbus_write_attiny_command(
+    conn: &mut DuplexConn,
+    command: u8,
+    value: u8,
+) -> Result<u8, &'static str> {
+    dbus_attiny_command(conn, command, Some(value))
+}
+
+fn dbus_attiny_command(
+    conn: &mut DuplexConn,
+    command: u8,
+    value: Option<u8>,
+) -> Result<u8, &'static str> {
+    let is_read_command = value.is_none();
+    let mut payload: Vec<u8> = vec![command];
+    if let Some(value) = value {
+        payload.push(value);
+    }
+    let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&payload);
+    payload.push(0);
+    payload.push(0);
+    let len = payload.len();
+    BigEndian::write_u16(&mut payload[len - 2..], crc);
+    let mut call = MessageBuilder::new()
+        .call("Tx")
+        .with_interface("org.cacophony.i2c")
+        .on("/org/cacophony/i2c")
+        .at("org.cacophony.i2c")
+        .build();
+    call.body.push_param(0x25u8).unwrap();
+    call.body.push_param(payload).unwrap();
+    if is_read_command {
+        call.body.push_param(3i32).unwrap(); // Num bytes to receive including CRC validation code
     } else {
-        // Check the state on the attiny is what we expected
-        if let Ok(val) = read_attiny_reg(attiny_i2c, command) {
-            if val != value {
-                Err("Failed setting state on attiny")
-            } else {
-                Ok(())
+        call.body.push_param(0i32).unwrap(); // Receive nothing if this was a write.
+    }
+    call.body.push_param(1000i32).unwrap(); // Timeout ms
+    let id = conn.send.send_message(&call).unwrap().write_all().unwrap();
+    let mut attempts = 0;
+    // Now wait for the reply that matches our call id
+    loop {
+        if let Ok(message) = conn
+            .recv
+            .get_next_message(Timeout::Duration(Duration::from_millis(10)))
+        {
+            match message.typ {
+                MessageType::Reply => {
+                    let reply_id = message.dynheader.response_serial.unwrap();
+                    if reply_id == id {
+                        // Looks like the first 4 bytes are a u32 with the length of the following bytes
+                        // which can be ignored.
+                        return if is_read_command {
+                            let response = &message.get_buf()[4..][0..3];
+                            let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
+                            let received_crc = BigEndian::read_u16(&response[1..=2]);
+                            if received_crc != crc {
+                                Err("CRC Mismatch")
+                            } else {
+                                Ok(response[0])
+                            }
+                        } else {
+                            // Check that the written value was actually written correctly.
+                            let set_value = dbus_attiny_command(conn, command, None);
+                            match set_value {
+                                Ok(new_value) => {
+                                    if new_value != value.unwrap() {
+                                        Err("Failed setting state on attiny")
+                                    } else {
+                                        Ok(0)
+                                    }
+                                }
+                                Err(e) => Err(e),
+                            }
+                        };
+                    }
+                }
+                MessageType::Error => {
+                    let reply_id = message.dynheader.response_serial.unwrap();
+                    if reply_id == id {
+                        return Err("Dbus error");
+                    }
+                }
+                _ => {}
             }
-        } else {
-            Err("Failed setting state on attiny")
+        }
+        attempts += 1;
+        if attempts == 100 {
+            return Err("Timed out waiting for response from Dbus service");
         }
     }
 }
-
-fn read_attiny_reg(attiny_i2c: &mut I2c, command: u8) -> Result<u8, &'static str> {
-    let mut payload = [command, 0x00, 0x00];
-
-    let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&payload[0..1]);
-    let mut response = [0u8; 3];
-    BigEndian::write_u16(&mut payload[1..=2], crc);
-    if attiny_i2c.write_read(&payload, &mut response).is_err() {
-        Err("Failed setting state on attiny")
-    } else {
-        let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
-        let received_crc = BigEndian::read_u16(&response[1..=2]);
-        if received_crc != crc {
-            Err("CRC Mismatch")
-        } else {
-            Ok(response[0])
-        }
-    }
+fn exit_cleanly(conn: &mut DuplexConn) {
+    let _ = dbus_write_attiny_command(conn, 0x07, 0x00);
 }
 
-fn exit_cleanly(attiny_i2c_interface: &mut Option<I2c>) {
-    if let Some(attiny_i2c) = attiny_i2c_interface {
-        let _ = write_attiny_command(attiny_i2c, 0x07, 0x00);
-    }
-}
-
-fn process_interrupted(term: &Arc<AtomicBool>, attiny_i2c_interface: &mut Option<I2c>) -> bool {
+fn process_interrupted(term: &Arc<AtomicBool>, conn: &mut DuplexConn) -> bool {
     if term.load(Ordering::Relaxed) {
         // We got terminated - before we exit, clean up the tc2-agent ready state register
-        exit_cleanly(attiny_i2c_interface);
+        exit_cleanly(conn);
         true
     } else {
         false
