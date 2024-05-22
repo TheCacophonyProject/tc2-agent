@@ -822,6 +822,7 @@ fn main() {
             }
 
             if  device_config.is_audio_device().unwrap_or_default(){
+                
                 if taking_test_recoding{
                         if let Ok(state) = read_tc2_agent_state(&mut dbus_conn){
                              RP2040_STATE.store(state,Ordering::Relaxed);
@@ -844,6 +845,17 @@ fn main() {
                                     info!("Telling rp2040 to take test recording and restarting");
                                 }   
                             }
+                }else{
+                    let date = chrono::Local::now();
+                   if rp2040_needs_reset {
+                        error!("3) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                        rp2040_needs_reset = false;
+                        got_startup_info = false;
+                    }
+                    if cross_thread_signal.load(Ordering::Relaxed) {
+                        sent_reset_request = false;
+                        cross_thread_signal.store(false, Ordering::Relaxed);
+                    }
                 }
             }
             
@@ -1146,8 +1158,11 @@ fn main() {
                             let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number.clone())), None));
                         }
                     }
+
+               
                 }
             }
+            
             if process_interrupted(&term, &mut dbus_conn) {
                 break 'transfer;
             }
