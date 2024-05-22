@@ -171,16 +171,17 @@ fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
         header[cursor] =b;
         cursor+=1;
     }
-
-    let file_size = audio_bytes.len()-12 + 36;
+    let file_size = (audio_bytes.len()-12 + 36) as u32;
     for b in file_size.to_le_bytes(){
         header[cursor] =b;
         cursor+=1;
     }
+
     for b in "WAVEfmt".bytes(){
         header[cursor] =b;
         cursor+=1;
     }
+
     header[cursor]=32;
     cursor +=1;
     header[cursor] = 16;
@@ -215,11 +216,13 @@ fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
         header[cursor] =b;
         cursor+=1;
     }
+
     for b in "data".bytes(){
         header[cursor] =b;
         cursor+=1;
     }
-    for b in (audio_bytes.len()-12).to_le_bytes(){
+
+    for b in ((audio_bytes.len()-12) as u32).to_le_bytes(){
         header[cursor] =b;
         cursor+=1;
     }
