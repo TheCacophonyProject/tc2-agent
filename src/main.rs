@@ -845,7 +845,8 @@ fn main() {
                                     info!("Telling rp2040 to take test recording and restarting");
                                 }   
                             }
-                }else{
+                }
+                if !frame_acquire{
                     let date = chrono::Local::now();
                    if rp2040_needs_reset {
                         error!("3) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
@@ -1080,7 +1081,7 @@ fn main() {
                                             file.extend_from_slice(&chunk);
                                             let shebang = u8_slice_as_u16_slice(&file[0..2]);
                                             if shebang[0] == AUDIO_SHEBANG{
-                                             save_audio_file_to_disk(file, device_config.output_dir());
+                                                save_audio_file_to_disk(file, device_config.output_dir());
                                             }else{
                                                 save_cptv_file_to_disk(file, device_config.output_dir())
                                             }
