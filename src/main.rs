@@ -227,62 +227,65 @@ fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
 }
 
 fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
-    let header = wav_header(&audio_bytes);
-    let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
-    let recording_date_time =
-    NaiveDateTime::from_timestamp_millis(timestamp as i64 / 1000)
-        .unwrap_or(chrono::Local::now().naive_local());
     let output_dir = String::from(output_dir);
-                info!("Saving Audio file with header ");
-                if fs::metadata(&output_dir).is_err() {
-                    fs::create_dir(&output_dir)
-                        .expect(&format!("Failed to create output directory {}", output_dir));
-                }
-                let path: String = format!(
-                    "{}/{}.wav",
-                    output_dir,
-                    recording_date_time.format("%Y%m%d-%H%M%S")
-                );
-                // If the file already exists, don't re-save it.
-                let is_existing_file = match fs::metadata(&path) {
-                    Ok(metadata) => metadata.len() as usize == audio_bytes.len()-12,
-                    Err(_) => false,
-                };
-                if !is_existing_file {
-                    match fs::write(&path, &header) {
-                        Ok(()) => {
-                            info!("Saved Audio file header {} bytes are {}", path,header.len());
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed writing Audio file to storage at {}, reason: {}",
-                                path, e
-                            );
-                        }
-                    }
 
-                    let mut f = fs::OpenOptions::new()
-                        .append(true)
-                        .create(false) 
-                        .open(&path)
-                        .expect("Unable to open file");
-                    match f.write_all(&audio_bytes[12..]){
-                        Ok(()) => {
-                            info!("Saved Audio file {} bytes are {}", path,audio_bytes.len());
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed writing Audio file to storage at {}, reason: {}",
-                                path, e
-                            );
-                        }
-                    }
-
-
-                } else {
-                    error!("File {} already exists, discarding duplicate", path);
-                }
+    thread::spawn(move || {
+        let header = wav_header(&audio_bytes);
+        let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
+        let recording_date_time =
+        NaiveDateTime::from_timestamp_millis(timestamp as i64 / 1000)
+            .unwrap_or(chrono::Local::now().naive_local());
+            info!("Saving Audio file with header ");
+            if fs::metadata(&output_dir).is_err() {
+                fs::create_dir(&output_dir)
+                    .expect(&format!("Failed to create output directory {}", output_dir));
             }
+            let path: String = format!(
+                "{}/{}.wav",
+                output_dir,
+                recording_date_time.format("%Y%m%d-%H%M%S")
+            );
+            // If the file already exists, don't re-save it.
+            let is_existing_file = match fs::metadata(&path) {
+                Ok(metadata) => metadata.len() as usize == audio_bytes.len()-12,
+                Err(_) => false,
+            };
+            if !is_existing_file {
+                match fs::write(&path, &header) {
+                    Ok(()) => {
+                        info!("Saved Audio file header {} bytes are {}", path,header.len());
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed writing Audio file to storage at {}, reason: {}",
+                            path, e
+                        );
+                    }
+                }
+
+                let mut f = fs::OpenOptions::new()
+                    .append(true)
+                    .create(false) 
+                    .open(&path)
+                    .expect("Unable to open file");
+                match f.write_all(&audio_bytes[12..]){
+                    Ok(()) => {
+                        info!("Saved Audio file {} bytes are {}", path,audio_bytes.len());
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed writing Audio file to storage at {}, reason: {}",
+                            path, e
+                        );
+                    }
+                }
+
+
+            } else {
+                error!("File {} already exists, discarding duplicate", path);
+            }
+        });
+    }
 
 
 
