@@ -803,6 +803,7 @@ fn main() {
         let mut firmware_version = 0;
         let mut lepton_serial_number = String::from("");
         let mut taking_test_recoding = false;
+        let mut last_state_read = Instant::now();
         'transfer: loop {
             // Check once per frame to see if the config file may have been changed
             let updated_config = config_rx.try_recv();
@@ -828,9 +829,10 @@ fn main() {
 
             if  device_config.is_audio_device().unwrap_or_default(){
                 
-                if taking_test_recoding{
+                if taking_test_recoding && (Instant::now() - last_state_read).as_millis() > 1000{
                         if let Ok(state) = read_tc2_agent_state(&mut dbus_conn){
                              RP2040_STATE.store(state,Ordering::Relaxed);
+                             last_state_read = Instant::now();
                             if state  &(0x04 | 0x08) == 0{
                                 taking_test_recoding = false;
                             }
@@ -849,6 +851,7 @@ fn main() {
                             info!("Telling rp2040 to take test recording and restarting");
                         } 
                         RP2040_STATE.store(state,Ordering::Relaxed);
+                        last_state_read = Instant::now();
                     }
                     TAKE_TEST_AUDIO.store(false,Ordering::Relaxed);
                 }
