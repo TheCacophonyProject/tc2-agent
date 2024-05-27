@@ -1012,6 +1012,12 @@ fn main() {
                                                     } else {
                                                         warn!("Wakeup alarm from event was invalid {}", event_payload);
                                                     }
+                                                }else  if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm_time) = &mut event_kind {
+                                                    if NaiveDateTime::from_timestamp_micros(event_payload as i64).is_some() {
+                                                        *alarm_time = event_payload;
+                                                    } else {
+                                                        warn!("Missed alarm from event was invalid {}", event_payload);
+                                                    }
                                                 }
                                                 let payload_json = if let LoggerEventKind::SavedNewConfig = event_kind {
                                                     // If we get saved new config, the rp2040 would have just been
