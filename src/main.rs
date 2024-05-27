@@ -352,13 +352,18 @@ fn read_attiny_firmware_version(conn: &mut DuplexConn) -> Result<u8, &'static st
     dbus_read_attiny_command(conn, 0x01)
 }
 
-fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn)  -> Result<(), &'static str> {
+fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn)  -> Result<u8, &'static str> {
     let state = read_tc2_agent_state(conn);
     if let Ok(state) = state {
         if (state & 0x04 ==0x04){
             Err("Already recording so not doing test rec")
         }else{
-            dbus_write_attiny_command(conn, 0x07, state | 0x08).map(|_| ())
+            let res = dbus_write_attiny_command(conn, 0x07, state | 0x08);
+            if res.is_ok(){
+                Ok(state | 0x08)
+            }else{
+                Err(res.unwrap_err())
+            }
         }
     } else {
         Err("Failed reading ready state from attiny")
@@ -433,7 +438,7 @@ fn audio_handler(
             }else{
                 status = AudioStatus::Ready;
             }
-            
+
             resp.body
                 .push_param(status as u8)
                 .unwrap();
@@ -836,15 +841,16 @@ fn main() {
                 }
                 else if TAKE_TEST_AUDIO.load(Ordering::Relaxed)
                 {
+                    if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
+                        if !device_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
+                            // NOTE: Always reset rp2040 on startup if it's safe to do so.
+                            let _ = restart_tx.send(true);
+                            taking_test_recoding = true;
+                            info!("Telling rp2040 to take test recording and restarting");
+                        } 
+                        RP2040_STATE.store(state,Ordering::Relaxed);
+                    }
                     TAKE_TEST_AUDIO.store(false,Ordering::Relaxed);
-                            if set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn).is_ok() {
-                                if !device_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
-                                    // NOTE: Always reset rp2040 on startup if it's safe to do so.
-                                    let _ = restart_tx.send(true);
-                                    taking_test_recoding = true;
-                                    info!("Telling rp2040 to take test recording and restarting");
-                                }   
-                            }
                 }
                 if !frame_acquire{
                     let date = chrono::Local::now();
