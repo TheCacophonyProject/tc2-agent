@@ -23,7 +23,7 @@ script:
   - if [ -n "$TRAVIS_TAG" ]; then sed -i "s/version = \"0.0.0-snapshot\"/version = \"${TRAVIS_TAG#v}\"/g" Cargo.toml; fi
   - cargo install cargo-deb
   - cargo build --release --target=armv7-unknown-linux-musleabihf
-  - wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v0.1.6/tc2-firmware
+  - wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v0.1.7/tc2-firmware
   - cargo deb --target=armv7-unknown-linux-musleabihf --output tc2-agent_${TRAVIS_TAG#v}_armhf.deb
 
 deploy:
