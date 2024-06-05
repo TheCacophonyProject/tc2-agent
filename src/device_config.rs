@@ -15,6 +15,7 @@ use sun_times::sun_times;
 use toml::value::Offset;
 use toml::Value;
 use triangulate::{ListFormat, Polygon};
+use std::str::FromStr;
 
 fn default_constant_recorder() -> bool {
     false
@@ -56,6 +57,82 @@ fn default_recording_stop_time() -> AbsRelTime {
     AbsRelTime {
         relative_time_seconds: Some(60 * 30),
         absolute_time: None,
+    }
+}
+
+
+#[derive(Deserialize, Debug, PartialEq, Clone)]
+pub enum AudioMode {
+    AudioOnly = 0,
+    AudioOrThermal = 1,
+    AudioAndThermal = 2,
+}
+
+
+
+// impl PartialEq for AudioMode {
+//     fn eq(&self, other: &Self) -> bool {
+//         matches!(self, other)
+//     }
+// }
+
+// impl Clone for AudioMode {
+//     fn clone(&self) -> AudioMode {
+//         match self {
+//             AudioMode::AudioAndThermal=> AudioMode::AudioAndThermal,
+//             AudioMode::AudioOnly=> AudioMode::AudioOnly,
+//             AudioMode::AudioOrThermal=> AudioMode::AudioOrThermal,
+
+//         }
+//     }
+// }
+
+// impl std::fmt::Debug for AudioMode {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         f.debug_struct("AudioMode")
+//          .finish()
+//     }
+// }
+
+impl Into<u8> for AudioMode {
+    fn into(self) -> u8 {
+        use AudioMode::*;
+        match self {
+            AudioOnly => 0,
+            AudioOrThermal => 1,
+            AudioAndThermal => 2,
+        }
+    }
+}
+
+
+impl FromStr for AudioMode {
+
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<AudioMode, Self::Err> {
+        match input {
+            "AudioOnly"  => Ok(AudioMode::AudioOnly),
+            "AudioOrThermal"  => Ok(AudioMode::AudioOrThermal),
+            "AudioAndThermal"  => Ok(AudioMode::AudioAndThermal),
+            _      => Err(()),
+        }
+    }
+}
+
+
+impl TryFrom<u8> for AudioMode {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        use AudioMode::*;
+
+        match value {
+            0 => Ok(AudioOnly),
+            1 => Ok(AudioOrThermal),
+            2 => Ok(AudioAndThermal),
+            _ => Err(()),
+        }
     }
 }
 
@@ -418,11 +495,46 @@ impl Default for TimeWindow {
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
+pub struct AudioSettings {
+    #[serde( default = "default_audio_enabled")]
+    pub enabled: bool,
+    
+    #[serde(rename = "audio-mode", default = "default_audio_mode",        deserialize_with = "deserialize_audio_mode",
+)]
+    pub audio_mode: AudioMode,
 
-struct AudioSettings {
-    enabled: Option<bool>,
 }
 
+fn default_audio_enabled() -> bool {
+    false
+}
+fn default_audio_mode() -> AudioMode {
+    AudioMode::AudioOnly
+}
+
+
+fn deserialize_audio_mode<'de, D>(deserializer: D) -> Result<AudioMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let audio_mode_raw: String = Deserialize::deserialize(deserializer)?;
+    if let Ok(mode) = AudioMode::from_str(&audio_mode_raw){
+        Ok(mode)
+    }else{
+        Err(Error::custom(format!("Failed to parse audio mode: {}", audio_mode_raw)))
+    }
+
+}
+
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        AudioSettings {
+            enabled: default_audio_enabled(),
+            audio_mode: default_audio_mode(),
+        }
+    }
+}
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 struct DeviceRegistration {
@@ -470,9 +582,8 @@ struct ThermalThrottlerSettings {
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 pub struct DeviceConfig {
-
     #[serde(rename = "audio-recording")]
-    audio_info: Option<AudioSettings>,
+    pub audio_info: AudioSettings,
     #[serde(rename = "windows", default)]
     recording_window: TimeWindow,
     #[serde(rename = "device")]
@@ -586,7 +697,7 @@ impl DeviceConfig {
                     std::process::exit(1);
                 }
                 info!("Got config {:?}", device_config);
-                if device_config.is_audio_device().unwrap_or_default(){
+                if device_config.audio_info.enabled{
                     let inside_recording_window =
                         device_config.time_is_in_recording_window(&Utc::now().naive_utc());
                     info!("Inside recording window: {}", inside_recording_window);
@@ -798,18 +909,16 @@ impl DeviceConfig {
         *date_time_utc >= start_time && *date_time_utc <= end_time
     }
 
-    pub fn is_audio_device(&self) -> Option<bool>{
-        if let Some(audio_info) = &self.audio_info{
-             return audio_info.enabled
-        }
-          return None  
-    }
-    
+
+
     pub fn write_to_slice(&self, output: &mut [u8]) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
-        buf.write_u8(if self.is_audio_device().unwrap_or_default() { 1 } else { 0 })
+        buf.write_u8(if self.audio_info.enabled { 1 } else { 0 })
+        .unwrap();
+        let audio_mode:u8 =  self.audio_info.audio_mode.clone().into();
+        buf.write_u8(audio_mode)
         .unwrap();
         let (latitude, longitude) = self.lat_lng();
         buf.write_f32::<LittleEndian>(latitude).unwrap();
