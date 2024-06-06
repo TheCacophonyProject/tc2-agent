@@ -667,7 +667,6 @@ fn main() {
                             let result = rx.recv_timeout(Duration::from_millis(recv_timeout_ms));
                             match result {
                                 Ok((Some((radiometry_enabled, is_recording, firmware_version, camera_serial)), None,None)) => {
-                                    info!("HEADER");
                                     if !config.use_wifi && !sent_header {
                                         // Send the header info here:
                                         let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
