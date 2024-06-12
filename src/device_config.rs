@@ -586,7 +586,7 @@ impl DeviceConfig {
                     std::process::exit(1);
                 }
                 info!("Got config {:?}", device_config);
-                if device_config.is_audio_device().unwrap_or_default(){
+                if !device_config.is_audio_device().unwrap_or_default(){
                     let inside_recording_window =
                         device_config.time_is_in_recording_window(&Utc::now().naive_utc());
                     info!("Inside recording window: {}", inside_recording_window);
@@ -851,9 +851,5 @@ impl DeviceConfig {
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write(&device_name[0..device_name_length]).unwrap();
-
-
-      
-
     }
 }

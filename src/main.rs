@@ -387,8 +387,6 @@ use rustbus::message_builder::MarshalledMessage;
 
 
 // TC2-Agent dbus audio service
-
-// just to make the function definitions a bit shorter
 type MyHandleEnv<'a, 'b> = HandleEnvironment<&'b mut AgentService, ()>;
 
 fn default_handler(
@@ -844,7 +842,7 @@ fn main() {
                 else if TAKE_TEST_AUDIO.load(Ordering::Relaxed)
                 {
                     if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
-                        if !device_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
+                        if safe_to_restart_rp2040(&mut dbus_conn) {
                             // NOTE: Always reset rp2040 on startup if it's safe to do so.
                             let _ = restart_tx.send(true);
                             taking_test_recoding = true;
@@ -925,8 +923,7 @@ fn main() {
                             }
                             continue 'transfer;
                         }
-                       
-                       
+                                              
                         if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_SEND_LOGGER_EVENT {
                             warn!("unknown transfer type {}", transfer_type);
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
@@ -1095,7 +1092,7 @@ fn main() {
                                             part_count = 0;
                                             file.extend_from_slice(&chunk);
                                             let shebang = u8_slice_as_u16_slice(&file[0..2]);
-                                            if shebang[0] == AUDIO_SHEBANG{
+                                            if true || shebang[0] == AUDIO_SHEBANG{
                                                 save_audio_file_to_disk(file, device_config.output_dir());
                                             }else{
                                                 save_cptv_file_to_disk(file, device_config.output_dir())
