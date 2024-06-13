@@ -570,7 +570,7 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term)).unwrap();
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
 
-    let mut frame_acquire = !initial_config.audio_info.enabled;
+    let mut frame_acquire = !initial_config.is_audio_device();
 
     // We want real-time priority for all the work we do.
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
@@ -1343,19 +1343,5 @@ fn process_interrupted(term: &Arc<AtomicBool>, conn: &mut DuplexConn) -> bool {
         true
     } else {
         false
-    }
-}
-
-
-fn should_receive_frames(device_config: &DeviceConfig)-> bool{
-    if !device_config.audio_info.enabled{
-        return true;
-    }
-    match device_config.audio_info.audio_mode{
-        AudioMode::AudioOnly => false,
-        AudioMode::AudioOrThermal => device_config.time_is_in_recording_window( &chrono::Local::now().naive_local()),
-
-        AudioMode::AudioAndThermal => device_config.time_is_in_recording_window( &chrono::Local::now().naive_local()),
-        _ => false
     }
 }
