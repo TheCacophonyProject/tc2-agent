@@ -586,7 +586,7 @@ impl DeviceConfig {
                     std::process::exit(1);
                 }
                 info!("Got config {:?}", device_config);
-                if !device_config.is_audio_device().unwrap_or_default(){
+                if !device_config.is_audio_device(){
                     let inside_recording_window =
                         device_config.time_is_in_recording_window(&Utc::now().naive_utc());
                     info!("Inside recording window: {}", inside_recording_window);
@@ -798,18 +798,18 @@ impl DeviceConfig {
         *date_time_utc >= start_time && *date_time_utc <= end_time
     }
 
-    pub fn is_audio_device(&self) -> Option<bool>{
+    pub fn is_audio_device(&self) -> bool{
         if let Some(audio_info) = &self.audio_info{
-             return audio_info.enabled
+             return audio_info.enabled.unwrap_or_default()
         }
-          return None  
+          return false
     }
     
     pub fn write_to_slice(&self, output: &mut [u8]) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
-        buf.write_u8(if self.is_audio_device().unwrap_or_default() { 1 } else { 0 })
+        buf.write_u8(if self.is_audio_device() { 1 } else { 0 })
         .unwrap();
         let (latitude, longitude) = self.lat_lng();
         buf.write_f32::<LittleEndian>(latitude).unwrap();

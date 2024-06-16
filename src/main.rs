@@ -511,7 +511,7 @@ fn main() {
         .write_all()
         .unwrap();
 
-        let mut ctx: AgentService= AgentService::new();
+        let mut ctx: AgentService= AgentService{};
 
         let dh = Box::new(default_handler);
 
@@ -566,7 +566,7 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term)).unwrap();
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
 
-    let mut frame_acquire = !initial_config.is_audio_device().unwrap_or_default();
+    let mut frame_acquire = !initial_config.is_audio_device();
 
     // We want real-time priority for all the work we do.
     let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
@@ -605,7 +605,7 @@ fn main() {
         let (restart_tx, restart_rx) = channel();
         let cross_thread_signal: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let cross_thread_signal_2 = cross_thread_signal.clone();
-
+        
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
             // Spawn a thread which can output the frames, converted to rgb grayscale
             // This is printed out from within the spawned thread.
@@ -614,10 +614,8 @@ fn main() {
             let mut reconnects = 0;
             let mut prev_frame_num = None;
             loop {
-                if let Ok(_) = restart_rx.try_recv() {
-                   if let Ok(config) = DeviceConfig::load_from_fs() {
-                        frame_acquire = !config.is_audio_device().unwrap_or_default();
-                    }
+                if let Ok((_,is_audio)) = restart_rx.try_recv() {
+                    frame_acquire =is_audio;
                     cross_thread_signal_2.store(true, Ordering::Relaxed);
                     info!("Restarting rp2040");
                     if !run_pin.is_set_high() {
@@ -639,10 +637,9 @@ fn main() {
                             let mut ms_elapsed = 0;
                             'send_loop: loop {
                                 // Check if we need to reset rp2040 because of a config change
-                                if let Ok(_) = restart_rx.try_recv() {
-                                    if let Ok(config) = DeviceConfig::load_from_fs() {
-                                        frame_acquire = !config.is_audio_device().unwrap_or_default();
-                                    }
+                                if let Ok((_,is_audio)) = restart_rx.try_recv() {
+                                    frame_acquire = is_audio;
+
                                     cross_thread_signal_2.store(true, Ordering::Relaxed);
                                     loop {
                                         info!("Restarting rp2040");
@@ -743,7 +740,7 @@ fn main() {
                 sleep(Duration::from_millis(1000));
             }
         });
-        
+
         info!("Waiting to for messages from rp2040");
         // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
         //let mut dbus_conn = Some(dbus_conn);
@@ -774,7 +771,7 @@ fn main() {
 
         if !initial_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
             // NOTE: Always reset rp2040 on startup if it's safe to do so.
-            let _ = restart_tx.send(true);
+            let _ = restart_tx.send((true,initial_config.is_audio_device()));
         }
 
 
@@ -825,7 +822,7 @@ fn main() {
                 }
             }
 
-            if  device_config.is_audio_device().unwrap_or_default(){
+            if  device_config.is_audio_device(){
                 
                 if taking_test_recoding && (Instant::now() - last_state_read).as_millis() > 1000{
                         if let Ok(state) = read_tc2_agent_state(&mut dbus_conn){
@@ -844,7 +841,7 @@ fn main() {
                     if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
                         if safe_to_restart_rp2040(&mut dbus_conn) {
                             // NOTE: Always reset rp2040 on startup if it's safe to do so.
-                            let _ = restart_tx.send(true);
+                            let _ = restart_tx.send((true,true));
                             taking_test_recoding = true;
                             info!("Telling rp2040 to take test recording and restarting");
                         } 
@@ -853,18 +850,17 @@ fn main() {
                     }
                     TAKE_TEST_AUDIO.store(false,Ordering::Relaxed);
                 }
-                if !frame_acquire{
+                if rp2040_needs_reset {
                     let date = chrono::Local::now();
-                   if rp2040_needs_reset {
-                        error!("3) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
-                        rp2040_needs_reset = false;
-                        got_startup_info = false;
-                    }
-                    if cross_thread_signal.load(Ordering::Relaxed) {
-                        sent_reset_request = false;
-                        cross_thread_signal.store(false, Ordering::Relaxed);
-                    }
+                    error!("3) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                    rp2040_needs_reset = false;
+                    got_startup_info = false;
                 }
+                if cross_thread_signal.load(Ordering::Relaxed) {
+                    sent_reset_request = false;
+                    cross_thread_signal.store(false, Ordering::Relaxed);
+                }
+                
             }
             
             let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
@@ -985,7 +981,7 @@ fn main() {
                                             }
                                             process::exit(0);
                                         }
-                                        if device_config.use_low_power_mode() && !radiometry_enabled && !device_config.is_audio_device().unwrap_or_default(){
+                                        if device_config.use_low_power_mode() && !radiometry_enabled && !device_config.is_audio_device(){
                                             exit_cleanly(&mut dbus_conn);
                                             error!("Low power mode is currently only supported on lepton sensors with radiometry or audio device, exiting.");
                                             panic!("Exit");
@@ -1075,7 +1071,7 @@ fn main() {
                                                 if safe_to_restart_rp2040(&mut dbus_conn) {
                                                     let date = chrono::Local::now();
                                                     error!("1) Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
-                                                    let _ = restart_tx.send(true);
+                                                    let _ = restart_tx.send((true,device_config.is_audio_device()));
                                                 }
                                             }
                                         }
@@ -1091,8 +1087,8 @@ fn main() {
                                             info!("End file transfer, took {:?} for {} bytes, {}MB/s", Instant::now().duration_since(start), file.len() + chunk.len(), megabytes_per_second);
                                             part_count = 0;
                                             file.extend_from_slice(&chunk);
-                                            let shebang = u8_slice_as_u16_slice(&file[0..2]);
-                                            if true || shebang[0] == AUDIO_SHEBANG{
+                                            let shebang =LittleEndian::read_u16(&file[0..2]);
+                                            if true || shebang == AUDIO_SHEBANG{
                                                 save_audio_file_to_disk(file, device_config.output_dir());
                                             }else{
                                                 save_cptv_file_to_disk(file, device_config.output_dir())
@@ -1160,7 +1156,7 @@ fn main() {
                                 }
                                 if !sent_reset_request {
                                     sent_reset_request = true;
-                                    let _ = restart_tx.send(true);
+                                    let _ = restart_tx.send((true,device_config.is_audio_device()));
                                 }
                                 if cross_thread_signal.load(Ordering::Relaxed) {
                                     sent_reset_request = false;
