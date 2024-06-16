@@ -4,18 +4,19 @@ mod device_config;
 mod double_buffer;
 mod event_logger;
 mod mode_config;
+mod service;
 mod socket_stream;
 mod telemetry;
 mod utils;
-mod service;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
-use chrono::{ NaiveDateTime};
+use chrono::NaiveDateTime;
 use rppal::spi::BitOrder;
 use rppal::{
     gpio::{Gpio, Trigger},
     spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
 };
+use rustbus::connection::dispatch_conn::DispatchConn;
 use std::fs;
 use std::io;
 use std::ops::Not;
@@ -30,21 +31,19 @@ use std::time::Instant;
 use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
- use rustbus::connection::dispatch_conn::DispatchConn;
 
- use crate::service::{AgentService};
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
 use crate::device_config::DeviceConfig;
 use crate::double_buffer::DoubleBuffer;
 use crate::event_logger::{LoggerEvent, LoggerEventKind};
 use crate::mode_config::ModeConfig;
+use crate::service::AgentService;
 use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
 use crate::utils::u8_slice_as_u16_slice;
 use crate::ExtTransferMessage::{
-     BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo,
-    CameraRawFrameTransfer, EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer,
-    SendLoggerEvent,
+    BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo, CameraRawFrameTransfer,
+    EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer, SendLoggerEvent,
 };
 use crc::{Algorithm, Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
@@ -163,70 +162,68 @@ fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
     });
 }
 
-
-fn wav_header(audio_bytes: &Vec<u8>) -> [u8;44]{
-    let mut header: [u8;44] = [0u8;44];
+fn wav_header(audio_bytes: &Vec<u8>) -> [u8; 44] {
+    let mut header: [u8; 44] = [0u8; 44];
     let mut cursor = 0;
-    for b in "RIFF".bytes(){
-        header[cursor] =b;
-        cursor+=1;
+    for b in "RIFF".bytes() {
+        header[cursor] = b;
+        cursor += 1;
     }
-    let file_size = (audio_bytes.len()-12 + 36) as u32;
-    for b in file_size.to_le_bytes(){
-        header[cursor] =b;
-        cursor+=1;
-    }
-
-    for b in "WAVEfmt".bytes(){
-        header[cursor] =b;
-        cursor+=1;
+    let file_size = (audio_bytes.len() - 12 + 36) as u32;
+    for b in file_size.to_le_bytes() {
+        header[cursor] = b;
+        cursor += 1;
     }
 
-    header[cursor]=32;
-    cursor +=1;
+    for b in "WAVEfmt".bytes() {
+        header[cursor] = b;
+        cursor += 1;
+    }
+
+    header[cursor] = 32;
+    cursor += 1;
     header[cursor] = 16;
-    cursor +=4;
+    cursor += 4;
 
     // PCM
-    header[cursor]=1;
-    cursor+=2;
+    header[cursor] = 1;
+    cursor += 2;
 
     // channels
     header[cursor] = 1;
-    cursor+=2;
+    cursor += 2;
 
     let sr = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
     // SR
-    for b in sr.to_le_bytes(){
-        header[cursor] =b;
-        cursor+=1;
+    for b in sr.to_le_bytes() {
+        header[cursor] = b;
+        cursor += 1;
     }
 
-    let sr = sr*2;
-    for b in sr.to_le_bytes(){
-        header[cursor] =b;
-        cursor+=1;
+    let sr = sr * 2;
+    for b in sr.to_le_bytes() {
+        header[cursor] = b;
+        cursor += 1;
     }
 
-    
-    header[cursor] = 16/2;
-    cursor +=2;
+    header[cursor] = 16 / 2;
+    cursor += 2;
 
-    for b in 16u16.to_le_bytes(){
-        header[cursor] =b;
-        cursor+=1;
+    for b in 16u16.to_le_bytes() {
+        header[cursor] = b;
+        cursor += 1;
     }
 
-    for b in "data".bytes(){
-        header[cursor] =b;
-        cursor+=1;
+    for b in "data".bytes() {
+        header[cursor] = b;
+        cursor += 1;
     }
 
-    for b in ((audio_bytes.len()-12) as u32).to_le_bytes(){
-        header[cursor] =b;
-        cursor+=1;
+    for b in ((audio_bytes.len() - 12) as u32).to_le_bytes() {
+        header[cursor] = b;
+        cursor += 1;
     }
-    return header
+    return header;
 }
 
 fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
@@ -235,62 +232,61 @@ fn save_audio_file_to_disk(audio_bytes: Vec<u8>, output_dir: &str) {
     thread::spawn(move || {
         let header = wav_header(&audio_bytes);
         let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
-        let recording_date_time =
-        NaiveDateTime::from_timestamp_millis(timestamp as i64 / 1000)
+        let recording_date_time = NaiveDateTime::from_timestamp_millis(timestamp as i64 / 1000)
             .unwrap_or(chrono::Local::now().naive_local());
-            info!("Saving Audio file with header ");
-            if fs::metadata(&output_dir).is_err() {
-                fs::create_dir(&output_dir)
-                    .expect(&format!("Failed to create output directory {}", output_dir));
-            }
-            let path: String = format!(
-                "{}/{}.wav",
-                output_dir,
-                recording_date_time.format("%Y%m%d-%H%M%S")
-            );
-            // If the file already exists, don't re-save it.
-            let is_existing_file = match fs::metadata(&path) {
-                Ok(metadata) => metadata.len() as usize == audio_bytes.len()-12,
-                Err(_) => false,
-            };
-            if !is_existing_file {
-                match fs::write(&path, &header) {
-                    Ok(()) => {
-                        info!("Saved Audio file header {} bytes are {}", path,header.len());
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed writing Audio file to storage at {}, reason: {}",
-                            path, e
-                        );
-                    }
+        info!("Saving Audio file with header ");
+        if fs::metadata(&output_dir).is_err() {
+            fs::create_dir(&output_dir)
+                .expect(&format!("Failed to create output directory {}", output_dir));
+        }
+        let path: String = format!(
+            "{}/{}.wav",
+            output_dir,
+            recording_date_time.format("%Y%m%d-%H%M%S")
+        );
+        // If the file already exists, don't re-save it.
+        let is_existing_file = match fs::metadata(&path) {
+            Ok(metadata) => metadata.len() as usize == audio_bytes.len() - 12,
+            Err(_) => false,
+        };
+        if !is_existing_file {
+            match fs::write(&path, &header) {
+                Ok(()) => {
+                    info!(
+                        "Saved Audio file header {} bytes are {}",
+                        path,
+                        header.len()
+                    );
                 }
-
-                let mut f = fs::OpenOptions::new()
-                    .append(true)
-                    .create(false) 
-                    .open(&path)
-                    .expect("Unable to open file");
-                match f.write_all(&audio_bytes[12..]){
-                    Ok(()) => {
-                        info!("Saved Audio file {} bytes are {}", path,audio_bytes.len());
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed writing Audio file to storage at {}, reason: {}",
-                            path, e
-                        );
-                    }
+                Err(e) => {
+                    error!(
+                        "Failed writing Audio file to storage at {}, reason: {}",
+                        path, e
+                    );
                 }
-
-
-            } else {
-                error!("File {} already exists, discarding duplicate", path);
             }
-        });
-    }
 
-
+            let mut f = fs::OpenOptions::new()
+                .append(true)
+                .create(false)
+                .open(&path)
+                .expect("Unable to open file");
+            match f.write_all(&audio_bytes[12..]) {
+                Ok(()) => {
+                    info!("Saved Audio file {} bytes are {}", path, audio_bytes.len());
+                }
+                Err(e) => {
+                    error!(
+                        "Failed writing Audio file to storage at {}, reason: {}",
+                        path, e
+                    );
+                }
+            }
+        } else {
+            error!("File {} already exists, discarding duplicate", path);
+        }
+    });
+}
 
 const CAMERA_CONNECT_INFO: u8 = 0x1;
 
@@ -352,16 +348,16 @@ fn read_attiny_firmware_version(conn: &mut DuplexConn) -> Result<u8, &'static st
     dbus_read_attiny_command(conn, 0x01)
 }
 
-fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn)  -> Result<u8, &'static str> {
+fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn) -> Result<u8, &'static str> {
     let state = read_tc2_agent_state(conn);
     if let Ok(state) = state {
-        if (state & 0x04 ==0x04){
+        if (state & 0x04 == 0x04) {
             Err("Already recording so not doing test rec")
-        }else{
+        } else {
             let res = dbus_write_attiny_command(conn, 0x07, state | 0x08);
-            if res.is_ok(){
+            if res.is_ok() {
                 Ok(state | 0x08)
-            }else{
+            } else {
                 Err(res.unwrap_err())
             }
         }
@@ -384,8 +380,6 @@ use rustbus::connection::dispatch_conn::HandleResult;
 use rustbus::connection::dispatch_conn::Matches;
 use rustbus::message_builder::MarshalledMessage;
 
-
-
 // TC2-Agent dbus audio service
 type MyHandleEnv<'a, 'b> = HandleEnvironment<&'b mut AgentService, ()>;
 
@@ -398,52 +392,45 @@ fn default_handler(
     Ok(None)
 }
 
-
 fn audio_handler(
     c: &mut &mut AgentService,
     _matches: Matches,
     msg: &MarshalledMessage,
     _env: &mut MyHandleEnv,
 ) -> HandleResult<()> {
-    if msg.dynheader.member.as_ref().unwrap() == "testaudio"  {
+    if msg.dynheader.member.as_ref().unwrap() == "testaudio" {
         let message;
 
-        if RP2040_STATE.load(Ordering::Relaxed)  & 0x08  ==0{
-            TAKE_TEST_AUDIO.store(true,Ordering::Relaxed);
+        if RP2040_STATE.load(Ordering::Relaxed) & 0x08 == 0 {
+            TAKE_TEST_AUDIO.store(true, Ordering::Relaxed);
             message = "Asked for a test recording";
-        }else{
-            message= "Already making a test recording";
+        } else {
+            message = "Already making a test recording";
         }
-        
+
         let mut resp = msg.dynheader.make_response();
-        resp.body
-            .push_param(message)
-            .unwrap();
+        resp.body.push_param(message).unwrap();
         return Ok(Some(resp));
-    }
-    else if msg.dynheader.member.as_ref().unwrap() == "audiostatus" {
-            let status;
-            
-            let mut resp = msg.dynheader.make_response();
+    } else if msg.dynheader.member.as_ref().unwrap() == "audiostatus" {
+        let status;
 
-            let state =  RP2040_STATE.load(Ordering::Relaxed);
-            if state & (0x08 |0x04) == (0x08 |0x04){
-                status = AudioStatus::TakingTestRecoding;
-            }else if state & 0x08 == 0x08{
-                status = AudioStatus::WaitingToRecord;
-            }else if TAKE_TEST_AUDIO.load(Ordering::Relaxed){
-                status = AudioStatus::WaitingToRecord;
-            }else{
-                status = AudioStatus::Ready;
-            }
+        let mut resp = msg.dynheader.make_response();
 
-            resp.body
-                .push_param(status as u8)
-                .unwrap();
-            Ok(Some(resp))
-    }else {
+        let state = RP2040_STATE.load(Ordering::Relaxed);
+        if state & (0x08 | 0x04) == (0x08 | 0x04) {
+            status = AudioStatus::TakingTestRecoding;
+        } else if state & 0x08 == 0x08 {
+            status = AudioStatus::WaitingToRecord;
+        } else if TAKE_TEST_AUDIO.load(Ordering::Relaxed) {
+            status = AudioStatus::WaitingToRecord;
+        } else {
+            status = AudioStatus::Ready;
+        }
+
+        resp.body.push_param(status as u8).unwrap();
+        Ok(Some(resp))
+    } else {
         Ok(None)
-
     }
 }
 pub enum AudioStatus {
@@ -454,12 +441,11 @@ pub enum AudioStatus {
 
 use lazy_static::lazy_static;
 
-
-lazy_static !{
-static ref TAKE_TEST_AUDIO:Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+lazy_static! {
+    static ref TAKE_TEST_AUDIO: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
-lazy_static !{
-static ref RP2040_STATE :Arc<AtomicU8>= Arc::new(AtomicU8::new(2));
+lazy_static! {
+    static ref RP2040_STATE: Arc<AtomicU8> = Arc::new(AtomicU8::new(2));
 }
 
 fn main() {
@@ -493,34 +479,39 @@ fn main() {
         error!("Error getting handshake with system DBus: {}", e);
         process::exit(1);
     });
-    
+
     //set up dbus service
-    let _ = thread::Builder::new().name("dbus-service".to_string()).spawn_with_priority(ThreadPriority::Max, move |_| {
-        let mut dbus_conn = DuplexConn::connect_to_bus(session_path, false).unwrap_or_else(|e| {
-            error!("Error connecting to system DBus: {}", e);
-            std::process::exit(1);
+    let _ = thread::Builder::new()
+        .name("dbus-service".to_string())
+        .spawn_with_priority(ThreadPriority::Max, move |_| {
+            let mut dbus_conn =
+                DuplexConn::connect_to_bus(session_path, false).unwrap_or_else(|e| {
+                    error!("Error connecting to system DBus: {}", e);
+                    std::process::exit(1);
+                });
+            let name = dbus_conn
+                .send_hello(rustbus::connection::Timeout::Infinite)
+                .unwrap();
+            dbus_conn
+                .send
+                .send_message(&mut rustbus::standard_messages::request_name(
+                    "org.cacophony.TC2Agent".into(),
+                    rustbus::standard_messages::DBUS_NAME_FLAG_REPLACE_EXISTING,
+                ))
+                .unwrap()
+                .write_all()
+                .unwrap();
+
+            let mut ctx: AgentService = AgentService {};
+
+            let dh = Box::new(default_handler);
+
+            let mut dpcon = DispatchConn::new(dbus_conn, &mut ctx, dh);
+            let th = Box::new(audio_handler);
+
+            dpcon.add_handler("/org/cacophony/TC2Agent", th);
+            dpcon.run().unwrap();
         });
-        let name = dbus_conn.send_hello(rustbus::connection::Timeout::Infinite)
-        .unwrap();
-         dbus_conn.send
-        .send_message(&mut rustbus::standard_messages::request_name(
-            "org.cacophony.TC2Agent".into(),
-            rustbus::standard_messages::DBUS_NAME_FLAG_REPLACE_EXISTING,
-        ))
-        .unwrap()
-        .write_all()
-        .unwrap();
-
-        let mut ctx: AgentService= AgentService{};
-
-        let dh = Box::new(default_handler);
-
-        let mut dpcon = DispatchConn::new(dbus_conn, &mut ctx, dh);
-        let th = Box::new(audio_handler);
-
-        dpcon.add_handler("/org/cacophony/TC2Agent", th);
-        dpcon.run().unwrap();
-    });
 
     let mut current_config = device_config.unwrap();
     let initial_config = current_config.clone();
@@ -823,7 +814,6 @@ fn main() {
             }
 
             if  device_config.is_audio_device(){
-                
                 if taking_test_recoding && (Instant::now() - last_state_read).as_millis() > 1000{
                         if let Ok(state) = read_tc2_agent_state(&mut dbus_conn){
                              RP2040_STATE.store(state,Ordering::Relaxed);

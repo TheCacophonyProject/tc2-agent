@@ -1,2 +1,1 @@
-
-pub struct AgentService ;
+pub struct AgentService;
