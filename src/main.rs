@@ -351,7 +351,7 @@ fn read_attiny_firmware_version(conn: &mut DuplexConn) -> Result<u8, &'static st
 fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn) -> Result<u8, &'static str> {
     let state = read_tc2_agent_state(conn);
     if let Ok(state) = state {
-        if (state & 0x04 == 0x04) {
+        if (state & 0x04) == 0x04 {
             Err("Already recording so not doing test rec")
         } else {
             let res = dbus_write_attiny_command(conn, 0x07, state | 0x08);
@@ -384,7 +384,7 @@ use rustbus::message_builder::MarshalledMessage;
 type MyHandleEnv<'a, 'b> = HandleEnvironment<&'b mut AgentService, ()>;
 
 fn default_handler(
-    c: &mut &mut AgentService,
+    _c: &mut &mut AgentService,
     _matches: Matches,
     _msg: &MarshalledMessage,
     _env: &mut MyHandleEnv,
@@ -393,7 +393,7 @@ fn default_handler(
 }
 
 fn audio_handler(
-    c: &mut &mut AgentService,
+    _c: &mut &mut AgentService,
     _matches: Matches,
     msg: &MarshalledMessage,
     _env: &mut MyHandleEnv,
@@ -489,9 +489,12 @@ fn main() {
                     error!("Error connecting to system DBus: {}", e);
                     std::process::exit(1);
                 });
-            let name = dbus_conn
+            let _name = dbus_conn
                 .send_hello(rustbus::connection::Timeout::Infinite)
-                .unwrap();
+                .unwrap_or_else(|e| {
+                    error!("Error getting handshake with system DBus: {}", e);
+                    process::exit(1);
+                });
             dbus_conn
                 .send
                 .send_message(&mut rustbus::standard_messages::request_name(
@@ -596,7 +599,6 @@ fn main() {
         let (restart_tx, restart_rx) = channel();
         let cross_thread_signal: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let cross_thread_signal_2 = cross_thread_signal.clone();
-        
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
             // Spawn a thread which can output the frames, converted to rgb grayscale
             // This is printed out from within the spawned thread.
@@ -774,7 +776,6 @@ fn main() {
         // This sequence is used to synchronise the return payload start on the rp2040, since
         // it seems to have a fair bit of slop/offsetting.
         return_payload_buf[0..4].copy_from_slice(&[1, 2, 3, 4]);
-
         let mut part_count = 0;
         let mut start = Instant::now();
         let crc_check = Crc::<u16>::new(&CRC_16_XMODEM);
@@ -800,7 +801,6 @@ fn main() {
                         info!("Config updated, should update rp2040");
                         device_config = config;
                     }
-                    
                     rp2040_needs_reset = true;
                 }
                 Err(kind) => {
@@ -820,7 +820,6 @@ fn main() {
                        test_audio_state_thread = None;
                     }
                 }
-             
                 else if TAKE_TEST_AUDIO.load(Ordering::Relaxed)
                 {
                     if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
@@ -852,9 +851,8 @@ fn main() {
                                     }
                                 }
                             }
-                                
                             }));
-                        } 
+                        }
                         RP2040_STATE.store(state,Ordering::Relaxed);
                     }
                     TAKE_TEST_AUDIO.store(false,Ordering::Relaxed);
@@ -868,9 +866,8 @@ fn main() {
                 if cross_thread_signal.load(Ordering::Relaxed) {
                     sent_reset_request = false;
                     cross_thread_signal.store(false, Ordering::Relaxed);
-                }                
+                }
             }
-            
             let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
             if let Ok(_pin_level) = poll_result {
                 if _pin_level.is_some() {
@@ -927,7 +924,6 @@ fn main() {
                             }
                             continue 'transfer;
                         }
-                                              
                         if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_SEND_LOGGER_EVENT {
                             warn!("unknown transfer type {}", transfer_type);
                             LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
@@ -1175,10 +1171,8 @@ fn main() {
                             let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number.clone())), None));
                         }
                     }
-
-               
                 }
-            }            
+            }
             if process_interrupted(&term, &mut dbus_conn) {
                 break 'transfer;
             }

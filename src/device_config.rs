@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 // Read camera config file
 use crate::detection_mask::DetectionMask;
-use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{
     DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
 };
