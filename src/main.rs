@@ -839,17 +839,17 @@ fn main() {
                                 if _unique_name.is_err(){
                                     error!("Error getting handshake with system DBus: {}", _unique_name.err().unwrap());
                                 }else{
-                                loop{
-                                    if let Ok(state) = read_tc2_agent_state(&mut thread_dbus){
-                                         RP2040_STATE.store(state,Ordering::Relaxed);
-                                        if state  &(0x04 | 0x08) == 0{
-                                            break;
+                                    loop{
+                                        if let Ok(state) = read_tc2_agent_state(&mut thread_dbus){
+                                            RP2040_STATE.store(state,Ordering::Relaxed);
+                                            if state  &(0x04 | 0x08) == 0{
+                                                break;
+                                            }
+                                        }else{
+                                            warn!("error reading tc2 agent state");
                                         }
-                                    }else{
-                                        warn!("error reading tc2 agent state");
+                                        sleep(Duration::from_millis(1000));
                                     }
-                                    sleep(Duration::from_millis(1000));
-                                }
                                 }
                             }
                                 
