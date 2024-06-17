@@ -1,10 +1,1 @@
-
-pub struct AgentService {
-}
-
-
-impl AgentService {
-    pub fn new() -> AgentService{
-        AgentService{}
-    }
-}
+pub struct AgentService;

@@ -106,12 +106,12 @@ impl LoggerEvent {
                 .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
                 .unwrap(); // Microseconds to nanoseconds
             call.body.push_param("SetAlarm").unwrap();
-        }else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm) = self.event {
-                call.body
-                    .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
-                    .unwrap(); // Microseconds to nanoseconds
-                call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
-            } else {
+        } else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm) = self.event {
+            call.body
+                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
+                .unwrap(); // Microseconds to nanoseconds
+            call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
+        } else {
             call.body
                 .push_param(json_payload.unwrap_or(String::from("{}")))
                 .unwrap();

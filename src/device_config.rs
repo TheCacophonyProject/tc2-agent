@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 // Read camera config file
 use crate::detection_mask::DetectionMask;
-use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{
     DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
 };
@@ -11,11 +11,11 @@ use serde::{Deserialize, Deserializer};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::ops::Add;
+use std::str::FromStr;
 use sun_times::sun_times;
 use toml::value::Offset;
 use toml::Value;
 use triangulate::{ListFormat, Polygon};
-use std::str::FromStr;
 
 fn default_constant_recorder() -> bool {
     false
@@ -70,28 +70,24 @@ pub enum AudioMode {
 }
 
 impl Into<u8> for AudioMode {
-       fn into(self) -> u8 {
+    fn into(self) -> u8 {
         self as u8
-    
     }
 }
 
-
 impl FromStr for AudioMode {
-
     type Err = ();
 
     fn from_str(input: &str) -> Result<AudioMode, Self::Err> {
         match input {
             "Disabled" => Ok(AudioMode::Disabled),
-            "AudioOnly"  => Ok(AudioMode::AudioOnly),
-            "AudioOrThermal"  => Ok(AudioMode::AudioOrThermal),
-            "AudioAndThermal"  => Ok(AudioMode::AudioAndThermal),
-            _      => Err(()),
+            "AudioOnly" => Ok(AudioMode::AudioOnly),
+            "AudioOrThermal" => Ok(AudioMode::AudioOrThermal),
+            "AudioAndThermal" => Ok(AudioMode::AudioAndThermal),
+            _ => Err(()),
         }
     }
 }
-
 
 impl TryFrom<u8> for AudioMode {
     type Error = ();
@@ -468,31 +464,32 @@ impl Default for TimeWindow {
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 pub struct AudioSettings {
-    
-    #[serde(rename = "audio-mode", default = "default_audio_mode",        deserialize_with = "deserialize_audio_mode",
-)]
+    #[serde(
+        rename = "audio-mode",
+        default = "default_audio_mode",
+        deserialize_with = "deserialize_audio_mode"
+    )]
     pub audio_mode: AudioMode,
-
 }
 
 fn default_audio_mode() -> AudioMode {
     AudioMode::Disabled
 }
 
-
 fn deserialize_audio_mode<'de, D>(deserializer: D) -> Result<AudioMode, D::Error>
 where
     D: Deserializer<'de>,
 {
     let audio_mode_raw: String = Deserialize::deserialize(deserializer)?;
-    if let Ok(mode) = AudioMode::from_str(&audio_mode_raw){
+    if let Ok(mode) = AudioMode::from_str(&audio_mode_raw) {
         Ok(mode)
-    }else{
-        Err(Error::custom(format!("Failed to parse audio mode: {}", audio_mode_raw)))
+    } else {
+        Err(Error::custom(format!(
+            "Failed to parse audio mode: {}",
+            audio_mode_raw
+        )))
     }
-
 }
-
 
 impl Default for AudioSettings {
     fn default() -> Self {
@@ -560,9 +557,13 @@ pub struct DeviceConfig {
 }
 
 impl DeviceConfig {
-    pub fn is_audio_device(&self)-> bool{
-        info!("Is audio device {:?} {}",self.audio_info.audio_mode,(self.audio_info.audio_mode!= AudioMode::Disabled));
-        return self.audio_info.audio_mode!= AudioMode::Disabled;
+    pub fn is_audio_device(&self) -> bool {
+        info!(
+            "Is audio device {:?} {}",
+            self.audio_info.audio_mode,
+            (self.audio_info.audio_mode != AudioMode::Disabled)
+        );
+        return self.audio_info.audio_mode != AudioMode::Disabled;
     }
     pub fn has_location(&self) -> bool {
         if let Some(location_settings) = &self.location {
@@ -583,7 +584,7 @@ impl DeviceConfig {
     pub fn device_id(&self) -> u32 {
         self.device_info.as_ref().unwrap().id.unwrap()
     }
-    
+
     pub fn device_name(&self) -> &[u8] {
         self.device_info
             .as_ref()
@@ -667,7 +668,7 @@ impl DeviceConfig {
                     std::process::exit(1);
                 }
                 info!("Got config {:?}", device_config);
-                if device_config.audio_info.audio_mode != AudioMode::AudioOnly{
+                if device_config.audio_info.audio_mode != AudioMode::AudioOnly {
                     let inside_recording_window =
                         device_config.time_is_in_recording_window(&Utc::now().naive_utc());
                     info!("Inside recording window: {}", inside_recording_window);
@@ -879,15 +880,12 @@ impl DeviceConfig {
         *date_time_utc >= start_time && *date_time_utc <= end_time
     }
 
-
-
     pub fn write_to_slice(&self, output: &mut [u8]) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
-        let audio_mode:u8 =  self.audio_info.audio_mode.clone().into();
-        buf.write_u8(audio_mode)
-        .unwrap();
+        let audio_mode: u8 = self.audio_info.audio_mode.clone().into();
+        buf.write_u8(audio_mode).unwrap();
         let (latitude, longitude) = self.lat_lng();
         buf.write_f32::<LittleEndian>(latitude).unwrap();
         buf.write_f32::<LittleEndian>(longitude).unwrap();
@@ -928,9 +926,5 @@ impl DeviceConfig {
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write(&device_name[0..device_name_length]).unwrap();
-
-
-      
-
     }
 }
