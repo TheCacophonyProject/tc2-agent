@@ -697,7 +697,7 @@ fn main() {
                                                     info!("Got frame #{}", telemetry.frame_num);
                                                 }
                                             }
-                                        }   
+                                        }
                                         ms_elapsed = 0;
                                     },
                                     Ok((None, Some(_transfer_in_progress))) => {
@@ -789,7 +789,7 @@ fn main() {
         let mut firmware_version = 0;
         let mut lepton_serial_number = String::from("");
         let mut taking_test_recoding = false;
-        let mut last_state_read = Instant::now();
+        let mut test_audio_state_thread:Option<thread::JoinHandle<()>> = None;
         'transfer: loop {
             // Check once per frame to see if the config file may have been changed
             let updated_config = config_rx.try_recv();
@@ -814,18 +814,13 @@ fn main() {
             }
 
             if  device_config.is_audio_device(){
-                if taking_test_recoding && (Instant::now() - last_state_read).as_millis() > 1000{
-                        if let Ok(state) = read_tc2_agent_state(&mut dbus_conn){
-                             RP2040_STATE.store(state,Ordering::Relaxed);
-                             last_state_read = Instant::now();
-                            if state  &(0x04 | 0x08) == 0{
-                                taking_test_recoding = false;
-                            }
-                        }else{
-                            warn!("error reading tc2 agent state");
-                        }
-                    
+                if taking_test_recoding {
+                    if test_audio_state_thread.is_none() || (test_audio_state_thread.is_some() && test_audio_state_thread.as_mut().unwrap().is_finished()){
+                        taking_test_recoding = false;
+                       test_audio_state_thread = None;
+                    }
                 }
+             
                 else if TAKE_TEST_AUDIO.load(Ordering::Relaxed)
                 {
                     if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
@@ -834,9 +829,33 @@ fn main() {
                             let _ = restart_tx.send((true,true));
                             taking_test_recoding = true;
                             info!("Telling rp2040 to take test recording and restarting");
+                            test_audio_state_thread = Some(thread::spawn(move || {
+                                let thread_dbus = DuplexConn::connect_to_bus(session_path, true);
+                                if thread_dbus.is_err(){
+                                    error!("Error connecting to system DBus: {}", thread_dbus.err().unwrap());
+                                }else{
+                                   let  mut thread_dbus = thread_dbus.unwrap();
+                                let _unique_name = thread_dbus.send_hello(Timeout::Infinite);
+                                if _unique_name.is_err(){
+                                    error!("Error getting handshake with system DBus: {}", _unique_name.err().unwrap());
+                                }else{
+                                loop{
+                                    if let Ok(state) = read_tc2_agent_state(&mut thread_dbus){
+                                         RP2040_STATE.store(state,Ordering::Relaxed);
+                                        if state  &(0x04 | 0x08) == 0{
+                                            break;
+                                        }
+                                    }else{
+                                        warn!("error reading tc2 agent state");
+                                    }
+                                    sleep(Duration::from_millis(1000));
+                                }
+                                }
+                            }
+                                
+                            }));
                         } 
                         RP2040_STATE.store(state,Ordering::Relaxed);
-                        last_state_read = Instant::now();
                     }
                     TAKE_TEST_AUDIO.store(false,Ordering::Relaxed);
                 }
@@ -849,8 +868,7 @@ fn main() {
                 if cross_thread_signal.load(Ordering::Relaxed) {
                     sent_reset_request = false;
                     cross_thread_signal.store(false, Ordering::Relaxed);
-                }
-                
+                }                
             }
             
             let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
@@ -1160,8 +1178,7 @@ fn main() {
 
                
                 }
-            }
-            
+            }            
             if process_interrupted(&term, &mut dbus_conn) {
                 break 'transfer;
             }
