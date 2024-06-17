@@ -418,6 +418,12 @@ impl Default for TimeWindow {
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
+
+struct AudioSettings {
+    enabled: Option<bool>,
+}
+
+#[derive(Deserialize, Debug, PartialEq, Clone)]
 struct DeviceRegistration {
     id: Option<u32>,
     group: Option<String>,
@@ -463,6 +469,8 @@ struct ThermalThrottlerSettings {
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 pub struct DeviceConfig {
+    #[serde(rename = "audio-recording")]
+    audio_info: Option<AudioSettings>,
     #[serde(rename = "windows", default)]
     recording_window: TimeWindow,
     #[serde(rename = "device")]
@@ -576,14 +584,14 @@ impl DeviceConfig {
                     std::process::exit(1);
                 }
                 info!("Got config {:?}", device_config);
-
-                let inside_recording_window =
-                    device_config.time_is_in_recording_window(&Utc::now().naive_utc());
-                info!("Inside recording window: {}", inside_recording_window);
-                if !inside_recording_window {
-                    device_config.print_next_recording_window(&Utc::now().naive_utc());
+                if !device_config.is_audio_device() {
+                    let inside_recording_window =
+                        device_config.time_is_in_recording_window(&Utc::now().naive_utc());
+                    info!("Inside recording window: {}", inside_recording_window);
+                    if !inside_recording_window {
+                        device_config.print_next_recording_window(&Utc::now().naive_utc());
+                    }
                 }
-
                 Ok(device_config)
             }
             Err(msg) => {
@@ -788,11 +796,19 @@ impl DeviceConfig {
         *date_time_utc >= start_time && *date_time_utc <= end_time
     }
 
+    pub fn is_audio_device(&self) -> bool {
+        if let Some(audio_info) = &self.audio_info {
+            return audio_info.enabled.unwrap_or_default();
+        }
+        return false;
+    }
+
     pub fn write_to_slice(&self, output: &mut [u8]) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
-
+        buf.write_u8(if self.is_audio_device() { 1 } else { 0 })
+            .unwrap();
         let (latitude, longitude) = self.lat_lng();
         buf.write_f32::<LittleEndian>(latitude).unwrap();
         buf.write_f32::<LittleEndian>(longitude).unwrap();

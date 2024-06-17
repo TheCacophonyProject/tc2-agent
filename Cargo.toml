@@ -30,6 +30,7 @@ signal-hook = "0.3.17"
 sun-times = "0.2.0"
 triangulate = "0.2.0"
 rustbus = "0.19.3"
+lazy_static = "1.4.0"
 
 [target.aarch64-unknown-linux-musl]
 # applies to target-specific builds
@@ -44,6 +45,7 @@ depends = ""
 assets = [
     ["target/release/tc2-agent", "/usr/bin/", "755"], # Binary asset
     ["_releases/tc2-agent.service", "/etc/systemd/system/tc2-agent.service", "664"],
+    ["_releases/org.cacophony.TC2Agent.conf", "/etc/dbus-1/system.d/org.cacophony.TC2Agent.conf", "664"],
     ["_releases/tc2-firmware", "/etc/cacophony/rp2040-firmware.elf", "664"],
 ]
 maintainer-scripts = "_releases/scripts"

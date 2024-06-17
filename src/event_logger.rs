@@ -21,6 +21,7 @@ pub enum LoggerEventKind {
     Rp2040WokenByAlarm,
     RtcCommError,
     AttinyCommError,
+    Rp2040MissedAudioAlarm(u64),
 }
 
 impl Into<u16> for LoggerEventKind {
@@ -46,6 +47,7 @@ impl Into<u16> for LoggerEventKind {
             Rp2040WokenByAlarm => 17,
             RtcCommError => 18,
             AttinyCommError => 19,
+            Rp2040MissedAudioAlarm(_) => 20,
         }
     }
 }
@@ -75,6 +77,7 @@ impl TryFrom<u16> for LoggerEventKind {
             17 => Ok(Rp2040WokenByAlarm),
             18 => Ok(RtcCommError),
             19 => Ok(AttinyCommError),
+            20 => Ok(Rp2040MissedAudioAlarm(0)),
             _ => Err(()),
         }
     }
@@ -103,6 +106,11 @@ impl LoggerEvent {
                 .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
                 .unwrap(); // Microseconds to nanoseconds
             call.body.push_param("SetAlarm").unwrap();
+        } else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm) = self.event {
+            call.body
+                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
+                .unwrap(); // Microseconds to nanoseconds
+            call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
         } else {
             call.body
                 .push_param(json_payload.unwrap_or(String::from("{}")))
