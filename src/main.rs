@@ -636,9 +636,6 @@ fn main() {
                         'send_loop: loop {
                             // Check if we need to reset rp2040 because of a config change
                             if let Ok(_) = restart_rx.try_recv() {
-                                // if let Ok(config) = DeviceConfig::load_from_fs() {
-                                //     frame_acquire = !config.audio_info.enabled;
-                                // }
                                 cross_thread_signal_2.store(true, Ordering::Relaxed);
                                 loop {
                                     info!("Restarting rp2040");
