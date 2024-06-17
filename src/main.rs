@@ -597,7 +597,9 @@ fn main() {
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
         let (tx, rx) = channel();
         let (restart_tx, restart_rx) = channel();
-        let cross_thread_signal: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+
+        // Used to indicate that a reset request was received and processed by the frame-socket thread.
+        let cross_thread_signal = Arc::new(AtomicBool::new(false));
         let cross_thread_signal_2 = cross_thread_signal.clone();
         let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
             // Spawn a thread which can output the frames, converted to rgb grayscale
@@ -1128,25 +1130,20 @@ fn main() {
                             // Frame
                             let mut frame = [0u8; FRAME_LENGTH];
                             BigEndian::write_u16_into(u8_slice_as_u16_slice(&raw_read_buffer[header_length..header_length + FRAME_LENGTH]), &mut frame);
-
-                            // let mask = device_config.mask();
-                            // for y in 0..120 {
-                            //     for x in 0..160 {
-                            //         let idx = y * 160 + x;
-                            //         if mask.is_masked_at_index(idx) {
-                            //             u8_slice_as_u16_slice_mut(&mut frame)[idx] = 10;
-                            //         }
-                            //     }
-                            // }
-
                             let back = FRAME_BUFFER.get_back().lock().unwrap();
                             back.replace(Some(frame));
                             if !got_first_frame {
                                 got_first_frame = true;
                                 info!("Got first frame from rp2040, got startup info {}", got_startup_info);
                             }
-                            let is_recording = crc_from_remote == 1;
-                            if !is_recording && (rp2040_needs_reset || !got_startup_info) {
+                            let is_recording = crc_from_remote == 1 && !device_config.use_low_power_mode();
+                            if !is_recording && (rp2040_needs_reset || !got_startup_info || firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION) {
+                                if firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION {
+                                    got_startup_info = false;
+                                    sent_reset_request = false;
+                                    rp2040_needs_reset = true;
+                                }
+
                                 let date = chrono::Local::now();
                                 if !got_startup_info {
                                     error!("2) Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
@@ -1163,9 +1160,10 @@ fn main() {
                                     sent_reset_request = false;
                                     cross_thread_signal.store(false, Ordering::Relaxed);
                                 }
+                            } else {
+                                FRAME_BUFFER.swap();
+                                let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number.clone())), None));
                             }
-                            FRAME_BUFFER.swap();
-                            let _ = tx.send((Some((radiometry_enabled, is_recording, firmware_version, lepton_serial_number.clone())), None));
                         }
                     }
                 }
