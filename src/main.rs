@@ -563,7 +563,7 @@ fn main() {
     let mut frame_acquire = !initial_config.is_audio_device();
 
     // We want real-time priority for all the work we do.
-    let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
+    let handle = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
         // 65K buffer that we won't fully use at the moment.
@@ -1174,7 +1174,12 @@ fn main() {
         }
         info!("Exiting gracefully");
         Ok::<(), Error>(())
-    }).unwrap().join();
+    }).unwrap();
+
+    if let Err(e) = handle.join() {
+        eprintln!("Thread panicked: {:?}", e);
+        std::process::exit(1);
+    }
 }
 
 pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
