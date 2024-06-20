@@ -448,6 +448,8 @@ lazy_static! {
     static ref RP2040_STATE: Arc<AtomicU8> = Arc::new(AtomicU8::new(2));
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn main() {
     let log_config = ConfigBuilder::default()
         .set_time_level(LevelFilter::Off)
@@ -459,7 +461,11 @@ fn main() {
         ColorChoice::Auto,
     )
     .unwrap();
-    println!("\n=========\nStarting thermal camera 2 agent, run with --help to see options.\n");
+
+    println!(
+        "\n=========\nStarting thermal camera 2 agent {}, run with --help to see options.\n",
+        VERSION
+    );
     let config: ModeConfig = argh::from_env();
     let device_config = DeviceConfig::load_from_fs();
     if device_config.is_err() {
