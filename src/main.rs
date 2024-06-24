@@ -17,6 +17,7 @@ use rppal::{
     spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
 };
 use rustbus::connection::dispatch_conn::DispatchConn;
+
 use std::fs;
 use std::io;
 use std::ops::Not;
@@ -56,8 +57,11 @@ use std::io::Write;
 use std::sync::mpsc::{Sender, Receiver};
 
 const AUDIO_SHEBANG: u16 = 1;
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 11;
-const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 12;
+
+const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 12;
+const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
+
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 pub type Frame = [u8; FRAME_LENGTH];
@@ -450,6 +454,8 @@ lazy_static! {
     static ref RP2040_STATE: Arc<AtomicU8> = Arc::new(AtomicU8::new(2));
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn main() {
     let log_config = ConfigBuilder::default()
         .set_time_level(LevelFilter::Off)
@@ -461,7 +467,11 @@ fn main() {
         ColorChoice::Auto,
     )
     .unwrap();
-    println!("\n=========\nStarting thermal camera 2 agent, run with --help to see options.\n");
+
+    println!(
+        "\n=========\nStarting thermal camera 2 agent {}, run with --help to see options.\n",
+        VERSION
+    );
     let config: ModeConfig = argh::from_env();
     let device_config = DeviceConfig::load_from_fs();
     if device_config.is_err() {
@@ -565,7 +575,7 @@ fn main() {
     let mut frame_acquire = !initial_config.is_audio_device();
 
     // We want real-time priority for all the work we do.
-    let _ = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
+    let handle = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
 
         // 65K buffer that we won't fully use at the moment.
@@ -1195,7 +1205,12 @@ fn main() {
         }
         info!("Exiting gracefully");
         Ok::<(), Error>(())
-    }).unwrap().join();
+    }).unwrap();
+
+    if let Err(e) = handle.join() {
+        eprintln!("Thread panicked: {:?}", e);
+        std::process::exit(1);
+    }
 }
 
 pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
@@ -1210,6 +1225,15 @@ pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
 };
 
 fn program_rp2040() -> io::Result<()> {
+    let bytes = std::fs::read("/etc/cacophony/rp2040-firmware.elf")
+        .expect("firmware file should exist at /etc/cacophony/rp2040-firmware.elf"); // Vec<u8>
+    let hash = sha256::digest(&bytes);
+    if hash != EXPECTED_RP2040_FIRMWARE_HASH {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "rp2040-firmware.elf does not match expected hash has it been modified?",
+        ));
+    }
     let status = Command::new("tc2-hat-rp2040")
         .arg("--elf")
         .arg("/etc/cacophony/rp2040-firmware.elf")

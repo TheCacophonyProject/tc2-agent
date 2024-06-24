@@ -31,6 +31,7 @@ sun-times = "0.2.0"
 triangulate = "0.2.0"
 rustbus = "0.19.3"
 lazy_static = "1.4.0"
+sha256 = "1.5.0"
 
 [target.aarch64-unknown-linux-musl]
 # applies to target-specific builds

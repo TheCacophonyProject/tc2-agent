@@ -11,10 +11,11 @@ if [[ $# -lt 1 ]]; then
 fi
 
 TARGET_HOST=$1
+readonly TARGET_ARCH=armv7-unknown-linux-musleabihf
 readonly TARGET_PATH=/home/pi/tc2-agent
-readonly SOURCE_PATH=./target/aarch64-unknown-linux-musl/release/tc2-agent
-readonly DEB_SOURCE_DIR=./target/aarch64-unknown-linux-musl/debian/
-readonly TARGET_ARCH=aarch64-unknown-linux-musl
+readonly SOURCE_PATH=./target/${TARGET_ARCH}/release/tc2-agent
+readonly DEB_SOURCE_DIR=./target/${TARGET_ARCH}/debian/
+
 
 DEB_OPTION=false
 WIFI_OPTION=false
