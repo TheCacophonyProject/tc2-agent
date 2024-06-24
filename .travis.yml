@@ -1,13 +1,10 @@
 language: rust
 rust:
   - stable
-
+  
 os: linux
 dist: focal
-env:
-  global:
-    - FIRMWARE_VERSION_MAJOR=1
-    - FIRMWARE_VERSION_MINOR=10
+
 addons:
   apt:
     packages:
@@ -15,6 +12,10 @@ addons:
       - libc6-armhf-cross
       - libc6-dev-armhf-cross
       - binutils-arm-linux-gnueabihf
+
+env:
+  global:
+    - RP2040_FIRMWARE_VERSION=0.1.10
 
 before_script:
   - rustup target add armv7-unknown-linux-musleabihf
@@ -26,8 +27,8 @@ script:
   - if [ -n "$TRAVIS_TAG" ]; then sed -i "s/version = \"0.0.0-snapshot\"/version = \"${TRAVIS_TAG#v}\"/g" Cargo.toml; fi
   - cargo install cargo-deb
   - cargo build --release --target=armv7-unknown-linux-musleabihf
-  - wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v0.${FIRMWARE_VERSION_MAJOR}.${FIRMWARE_VERSION_MINOR}/tc2-firmware
-  - wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v0.${FIRMWARE_VERSION_MAJOR}.${FIRMWARE_VERSION_MINOR}/tc2-firmware.sha256
+  - wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
+  - wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware.sha256
   - cargo deb --target=armv7-unknown-linux-musleabihf --output tc2-agent_${TRAVIS_TAG#v}_armhf.deb
 
 deploy:

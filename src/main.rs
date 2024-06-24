@@ -57,9 +57,9 @@ use std::io::Write;
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 12;
+const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 11;
-const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 12;
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 pub type Frame = [u8; FRAME_LENGTH];
