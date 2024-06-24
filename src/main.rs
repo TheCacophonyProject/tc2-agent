@@ -54,6 +54,9 @@ use rustbus::{get_system_bus_path, DuplexConn, MessageBuilder, MessageType};
 use simplelog::*;
 use std::io::Write;
 const AUDIO_SHEBANG: u16 = 1;
+
+const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
+
 const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 11;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 12;
 const SEGMENT_LENGTH: usize = 9760;
@@ -466,6 +469,7 @@ fn main() {
         "\n=========\nStarting thermal camera 2 agent {}, run with --help to see options.\n",
         VERSION
     );
+    println!("Hash is {}", EXPECTED_RP2040_FIRMWARE_HASH);
     let config: ModeConfig = argh::from_env();
     let device_config = DeviceConfig::load_from_fs();
     if device_config.is_err() {
