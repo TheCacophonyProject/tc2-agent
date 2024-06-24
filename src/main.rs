@@ -1204,7 +1204,8 @@ pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
 };
 
 fn program_rp2040() -> io::Result<()> {
-    let bytes = std::fs::read("/etc/cacophony/rp2040-firmware.elf").unwrap(); // Vec<u8>
+    let bytes = std::fs::read("/etc/cacophony/rp2040-firmware.elf")
+        .expect("firmware file should exist at /etc/cacophony/rp2040-firmware.elf"); // Vec<u8>
     let hash = sha256::digest(&bytes);
     if hash != EXPECTED_RP2040_FIRMWARE_HASH {
         return Err(io::Error::new(
