@@ -17,6 +17,7 @@ use rppal::{
     spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
 };
 use rustbus::connection::dispatch_conn::DispatchConn;
+
 use std::fs;
 use std::io;
 use std::ops::Not;
@@ -469,7 +470,6 @@ fn main() {
         "\n=========\nStarting thermal camera 2 agent {}, run with --help to see options.\n",
         VERSION
     );
-    println!("Hash is {}", EXPECTED_RP2040_FIRMWARE_HASH);
     let config: ModeConfig = argh::from_env();
     let device_config = DeviceConfig::load_from_fs();
     if device_config.is_err() {
@@ -1204,6 +1204,14 @@ pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
 };
 
 fn program_rp2040() -> io::Result<()> {
+    let bytes = std::fs::read("/etc/cacophony/rp2040-firmware.elf").unwrap(); // Vec<u8>
+    let hash = sha256::digest(&bytes);
+    if hash != EXPECTED_RP2040_FIRMWARE_HASH {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "rp2040-firmware.elf does not match expected hash has it been modified?",
+        ));
+    }
     let status = Command::new("tc2-hat-rp2040")
         .arg("--elf")
         .arg("/etc/cacophony/rp2040-firmware.elf")
