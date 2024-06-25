@@ -620,7 +620,7 @@ fn main() {
             let mut prev_frame_num = None;
             loop {
                 if let Ok((_,is_audio)) = restart_rx.try_recv() {
-                    frame_acquire =is_audio;
+                    frame_acquire = !is_audio;
                     cross_thread_signal_2.store(true, Ordering::Relaxed);
                     info!("Restarting rp2040");
                     if !run_pin.is_set_high() {
@@ -643,7 +643,7 @@ fn main() {
                             'send_loop: loop {
                                 // Check if we need to reset rp2040 because of a config change
                                 if let Ok((_,is_audio)) = restart_rx.try_recv() {
-                                    frame_acquire = is_audio;
+                                    frame_acquire = !is_audio;
 
                                     cross_thread_signal_2.store(true, Ordering::Relaxed);
                                     loop {
