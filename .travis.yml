@@ -15,7 +15,7 @@ addons:
 
 env:
   global:
-    - RP2040_FIRMWARE_VERSION=0.2.0
+    - RP2040_FIRMWARE_VERSION=0.2.1
 
 before_script:
   - rustup target add aarch64-unknown-linux-musl

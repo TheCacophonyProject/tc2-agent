@@ -17,6 +17,7 @@ use rppal::{
     spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
 };
 use rustbus::connection::dispatch_conn::DispatchConn;
+
 use std::fs;
 use std::io;
 use std::ops::Not;
@@ -54,8 +55,11 @@ use rustbus::{get_system_bus_path, DuplexConn, MessageBuilder, MessageType};
 use simplelog::*;
 use std::io::Write;
 const AUDIO_SHEBANG: u16 = 1;
+
+const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
 const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 12;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
+
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 pub type Frame = [u8; FRAME_LENGTH];
@@ -1200,6 +1204,15 @@ pub const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
 };
 
 fn program_rp2040() -> io::Result<()> {
+    let bytes = std::fs::read("/etc/cacophony/rp2040-firmware.elf")
+        .expect("firmware file should exist at /etc/cacophony/rp2040-firmware.elf"); // Vec<u8>
+    let hash = sha256::digest(&bytes);
+    if hash != EXPECTED_RP2040_FIRMWARE_HASH {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "rp2040-firmware.elf does not match expected hash has it been modified?",
+        ));
+    }
     let status = Command::new("tc2-hat-rp2040")
         .arg("--elf")
         .arg("/etc/cacophony/rp2040-firmware.elf")
