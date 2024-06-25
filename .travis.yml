@@ -8,33 +8,34 @@ dist: focal
 addons:
   apt:
     packages:
-      - gcc-arm-linux-gnueabihf
-      - libc6-armhf-cross
-      - libc6-dev-armhf-cross
-      - binutils-arm-linux-gnueabihf
+      - gcc-aarch64-linux-gnu
+      - libc6-arm64-cross
+      - libc6-dev-arm64-cross
+      - binutils-aarch64-linux-gnu
 
 env:
   global:
     - RP2040_FIRMWARE_VERSION=0.2.0
 
 before_script:
-  - rustup target add armv7-unknown-linux-musleabihf
+  - rustup target add aarch64-unknown-linux-musl
   - |
-    echo "[target.armv7-unknown-linux-musleabihf]" > ~/.cargo/config
-    echo "linker = \"arm-linux-gnueabihf-gcc\"" >> ~/.cargo/config
+    echo "[target.aarch64-unknown-linux-musl]" > ~/.cargo/config
+    echo "linker = \"aarch64-linux-gnu-gcc\"" >> ~/.cargo/config
+
 
 script:
   - if [ -n "$TRAVIS_TAG" ]; then sed -i "s/version = \"0.0.0-snapshot\"/version = \"${TRAVIS_TAG#v}\"/g" Cargo.toml; fi
   - cargo install cargo-deb
-  - cargo build --release --target=armv7-unknown-linux-musleabihf
+  - cargo build --release --target=aarch64-unknown-linux-musl
   - wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
-  - cargo deb --target=armv7-unknown-linux-musleabihf --output tc2-agent_${TRAVIS_TAG#v}_armhf.deb
+  - cargo deb --target=aarch64-unknown-linux-musl --output tc2-agent_${TRAVIS_TAG#v}_arm64.deb
 
 deploy:
   provider: releases
   token: $GITHUB_TOKEN
   file:
-    - "tc2-agent_${TRAVIS_TAG#v}_armhf.deb"
+    - "tc2-agent_${TRAVIS_TAG#v}_arm64.deb"
   skip_cleanup: true
   on:
     tags: true
