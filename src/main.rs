@@ -606,7 +606,7 @@ fn main() {
         pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
         let (tx, rx) = channel();
-        let (restart_tx, restart_rx) = channel();
+        let (restart_tx, restart_rx) = channel::<(bool, bool)>();
 
         // Used to indicate that a reset request was received and processed by the frame-socket thread.
         let cross_thread_signal = Arc::new(AtomicBool::new(false));
