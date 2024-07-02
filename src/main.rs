@@ -1207,10 +1207,14 @@ fn program_rp2040() -> io::Result<()> {
     let bytes = std::fs::read("/etc/cacophony/rp2040-firmware.elf")
         .expect("firmware file should exist at /etc/cacophony/rp2040-firmware.elf"); // Vec<u8>
     let hash = sha256::digest(&bytes);
-    if hash != EXPECTED_RP2040_FIRMWARE_HASH {
+    let expected_hash = EXPECTED_RP2040_FIRMWARE_HASH.trim();
+    if hash != expected_hash {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "rp2040-firmware.elf does not match expected hash has it been modified?",
+            format!(
+                "rp2040-firmware.elf does not match expected hash. Expected: '{}', Calculated: '{}'",
+                expected_hash, hash
+            ),
         ));
     }
     let status = Command::new("tc2-hat-rp2040")

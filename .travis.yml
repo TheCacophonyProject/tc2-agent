@@ -29,6 +29,7 @@ script:
   - cargo install cargo-deb
   - cargo build --release --target=aarch64-unknown-linux-musl
   - wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
+  - wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware.sha256
   - cargo deb --target=aarch64-unknown-linux-musl --output tc2-agent_${TRAVIS_TAG#v}_arm64.deb
 
 deploy:
