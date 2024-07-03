@@ -22,6 +22,9 @@ pub enum LoggerEventKind {
     RtcCommError,
     AttinyCommError,
     Rp2040MissedAudioAlarm(u64),
+    AudioRecordingFailed,
+    RTCTime(u64),
+    StartedAudioRecording,
 }
 
 impl Into<u16> for LoggerEventKind {
@@ -48,6 +51,9 @@ impl Into<u16> for LoggerEventKind {
             RtcCommError => 18,
             AttinyCommError => 19,
             Rp2040MissedAudioAlarm(_) => 20,
+            AudioRecordingFailed => 21,
+            RTCTime(_) => 22,
+            StartedAudioRecording => 23,
         }
     }
 }
@@ -78,6 +84,9 @@ impl TryFrom<u16> for LoggerEventKind {
             18 => Ok(RtcCommError),
             19 => Ok(AttinyCommError),
             20 => Ok(Rp2040MissedAudioAlarm(0)),
+            21 => Ok(AudioRecordingFailed),
+            22 => Ok(RTCTime(0)),
+            23 => Ok(StartedAudioRecording),
             _ => Err(()),
         }
     }
@@ -107,6 +116,11 @@ impl LoggerEvent {
                 .unwrap(); // Microseconds to nanoseconds
             call.body.push_param("SetAlarm").unwrap();
         } else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm) = self.event {
+            call.body
+                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
+                .unwrap(); // Microseconds to nanoseconds
+            call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
+        } else if let LoggerEventKind::RTCTime(alarm) = self.event {
             call.body
                 .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
                 .unwrap(); // Microseconds to nanoseconds
