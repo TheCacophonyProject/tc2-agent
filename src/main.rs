@@ -64,7 +64,7 @@ const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 pub type Frame = [u8; FRAME_LENGTH];
 pub static FRAME_BUFFER: DoubleBuffer = DoubleBuffer::new();
-fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetry>, bool) {
+fn get_frame( is_recording: bool) -> Option<[u8;39040]> {
     let fb = { FRAME_BUFFER.get_front().lock().unwrap().take() };
     if let Some(mut fb) = fb {
         if is_recording {
@@ -73,32 +73,18 @@ fn send_frame(stream: &mut SocketStream, is_recording: bool) -> (Option<Telemetr
         } else {
             fb[638] = 0;
         }
-
-        // Make sure there are no zero/bad pixels:
-        //let pixels = u8_slice_as_u16_slice(&fb[640..]);
-        //let pos = pixels.iter().position(|&px| px == 0);
-        // let mut found_bad_pixels = false;
-        // if let Some(pos) = pos {
-        //     let y = pos / 160;
-        //     let x = pos - (y * 160);
-        //     info!("Zero px found at ({}, {}) not sending", x, y);
-        //     //found_bad_pixels = true;
-        // }
-        // Make sure each frame number is ascending correctly.
-        let telemetry = read_telemetry(&fb);
-        //info!("Got frame {:?}", telemetry.frame_num);
-        if !telemetry.ffc_in_progress {
-            //  && !found_bad_pixels
-            if let Err(_) = stream.write_all(&fb) {
-                return (None, false);
-            }
-            (Some(telemetry), stream.flush().is_ok())
-        } else {
-            (Some(telemetry), true)
-        }
-    } else {
-        return (None, true);
+        return Some(fb)
     }
+    return None
+}
+    fn send_frame(fb: [u8;39040],stream: &mut SocketStream) ->bool {
+   
+            if let Err(_) = stream.write_all(&fb) {
+                return  false;
+            }
+          stream.flush().is_ok()
+   
+  
 }
 
 fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
@@ -603,6 +589,7 @@ fn main() {
         spi.set_ss_polarity(Polarity::ActiveLow).unwrap();
 
         let address = get_socket_address(&config);
+        let management_address = "/var/spool/managementd";
 
         // For some reason when running periph.io host.ini function, needed to use the I2C in the attiny-controller,
         // it 'holds/exports' some of the GPIO pins, so we manually 'release/unexport' them with the following.
@@ -632,7 +619,14 @@ fn main() {
 
             let mut reconnects = 0;
             let mut prev_frame_num = None;
-            loop {
+            println!("Connection to thermal");
+            let         thermal_sock=  SocketStream::from_address(&address, *&config.use_wifi);
+            println!("Connection to management");
+
+            let                management_sock=  SocketStream::from_address(&management_address, *&config.use_wifi);
+            println!("Connected ? {}",management_sock.is_ok());
+            let mut sockets = [ thermal_sock, management_sock];
+                        loop {
                 if let Ok((_,is_audio)) = restart_rx.try_recv() {
                     frame_acquire = !is_audio;
                     cross_thread_signal_2.store(true, Ordering::Relaxed);
@@ -647,14 +641,26 @@ fn main() {
                     run_pin.set_high();
                 }
                 if frame_acquire {
+              
                     info!("Connecting to frame socket {}", address);
-
-                    match SocketStream::from_address(&address, *&config.use_wifi) {
-                        Ok(mut stream) => {
-                            info!("Connected to {}, waiting for frames from rp2040", if config.use_wifi { &"tc2-frames server"} else { &"thermal-recorder unix socket"});
                             let mut sent_header = false;
                             let mut ms_elapsed = 0;
                             'send_loop: loop {
+                                if sockets[0].is_err(){
+                                    sockets[0]=  SocketStream::from_address(&address, *&config.use_wifi);
+                                    if sockets[1].is_ok(){
+                                        println!("Connected to thermal");
+                                        }
+                                   }
+                                   if sockets[1].is_err(){
+                                    // println!("Connection to management");
+
+                                    sockets[1]=  SocketStream::from_address(&management_address, *&config.use_wifi);
+                                    if sockets[1].is_ok(){
+                                    println!("Connected to management");
+                                    }
+            
+                                   }
                                 // Check if we need to reset rp2040 because of a config change
                                 if let Ok((_,is_audio)) = restart_rx.try_recv() {
                                     frame_acquire = !is_audio;
@@ -682,16 +688,23 @@ fn main() {
                                             // Send the header info here:
                                             let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
                                             let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
-                                            if let Err(_) = stream.write_all(header.as_bytes()) {
-                                                warn!("Failed sending header info");
-                                            }
+                                           for stream in sockets.iter_mut(){
+                                                if stream.is_ok(){
+                                                    let stream = stream.as_mut().ok().unwrap();
+                                                    if let Err(_) = stream.write_all(header.as_bytes()) {
+                                                        warn!("Failed sending header info");
+                                                    }
 
-                                            // Clear existing
-                                            if let Err(_) = stream.write_all(b"clear") {
-                                                warn!("Failed clearing buffer");
+                                                    // Clear existing
+                                                    if let Err(_) = stream.write_all(b"clear") {
+                                                        warn!("Failed clearing buffer");
+                                                    }
+                                                    let _ = stream.flush();
+                                                    info!("SENT header");
+                                                }
                                             }
-                                            let _ = stream.flush();
                                             sent_header = true;
+
                                         }
 
                                         if reconnects > 0 {
@@ -700,16 +713,33 @@ fn main() {
                                             reconnects = 0;
                                         }
                                         let s = Instant::now();
-                                        let (telemetry, sent) = send_frame(&mut stream, is_recording);
+                                        let mut telemetry:Option<Telemetry> = None;
+                                        let frame_data = get_frame(is_recording);
+                                        if let Some(fb) = frame_data{
+                                            telemetry = Some(read_telemetry(&fb));
+                                            let stream = &mut sockets[1];
+                                            // for stream in sockets.iter_mut(){
+
+                                                if stream.is_ok(){
+                                                    let stream = stream.as_mut().ok().unwrap();
+
+                                                let sent = send_frame( fb,stream);
+                                                    if !sent {
+                                                        warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
+                                                        let _ = stream.shutdown().is_ok();
+                                                    }
+                                                }
+                                            }
+                                        // }
                                         let e = s.elapsed().as_secs_f32();
                                         if e > 0.1 {
                                             info!("socket send took {}s", e);
                                         }
-                                        if !sent {
-                                            warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
-                                            let _ = stream.shutdown().is_ok();
-                                            break 'send_loop;
-                                        } else {
+                                        // if !sent {
+                                        //     warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
+                                        //     let _ = stream.shutdown().is_ok();
+                                        //     break 'send_loop;
+                                        // } else {
                                             if let Some(telemetry) = telemetry {
                                                 if let Some(prev_frame_num) = prev_frame_num {
                                                     if !telemetry.ffc_in_progress {
@@ -725,7 +755,7 @@ fn main() {
                                                     info!("Got frame #{}", telemetry.frame_num);
                                                 }
                                             }
-                                        }
+                                        // }
                                         ms_elapsed = 0;
                                     },
                                     Ok((None, Some(_transfer_in_progress))) => {
@@ -750,10 +780,7 @@ fn main() {
                                         }
                                     }
                                 }
-                            }
-                        }
-                        Err(e) => warn!("{} not found: {}", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"}, e.to_string())
-                    }
+                            }                               
                 }
                 // Wait 1 second between attempts to connect to the frame socket
                 sleep(Duration::from_millis(1000));
@@ -1115,7 +1142,7 @@ fn main() {
                                             part_count = 0;
                                             file.extend_from_slice(&chunk);
                                             let shebang =LittleEndian::read_u16(&file[0..2]);
-                                            if true || shebang == AUDIO_SHEBANG{
+                                            if shebang == AUDIO_SHEBANG{
                                                 save_audio_file_to_disk(file, device_config.output_dir());
                                             }else{
                                                 save_cptv_file_to_disk(file, device_config.output_dir())
