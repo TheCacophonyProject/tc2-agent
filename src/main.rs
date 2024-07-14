@@ -1115,7 +1115,7 @@ fn main() {
                                             part_count = 0;
                                             file.extend_from_slice(&chunk);
                                             let shebang =LittleEndian::read_u16(&file[0..2]);
-                                            if true || shebang == AUDIO_SHEBANG{
+                                            if shebang == AUDIO_SHEBANG{
                                                 save_audio_file_to_disk(file, device_config.output_dir());
                                             }else{
                                                 save_cptv_file_to_disk(file, device_config.output_dir())
