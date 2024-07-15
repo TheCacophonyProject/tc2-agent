@@ -672,6 +672,9 @@ fn main() {
                                         run_pin.set_high();
                                         break;
                                     }
+                                    if !frame_acquire{
+                                        break;
+                                    }
                                 }
 
                                 let recv_timeout_ms = 10;
@@ -817,6 +820,8 @@ fn main() {
         let mut lepton_serial_number = String::from("");
         let mut taking_test_recoding = false;
         let mut test_audio_state_thread:Option<thread::JoinHandle<()>> = None;
+        let mut is_audio = device_config.is_audio_device();
+
         'transfer: loop {
             // Check once per frame to see if the config file may have been changed
             let updated_config = config_rx.try_recv();
@@ -826,6 +831,10 @@ fn main() {
                     if device_config != config {
                         info!("Config updated, should update rp2040");
                         device_config = config;
+                        if !is_audio{
+                            //will update after reset request if in audio mode
+                            is_audio = device_config.is_audio_device();
+                        }
                     }
                     rp2040_needs_reset = true;
                 }
@@ -838,7 +847,7 @@ fn main() {
                     }
                 }
             }
-            if device_config.is_audio_device() {
+            if is_audio{
                 if taking_test_recoding {
                     if test_audio_state_thread.is_none() || (test_audio_state_thread.is_some() && test_audio_state_thread.as_mut().unwrap().is_finished()) {
                         taking_test_recoding = false;
@@ -880,15 +889,26 @@ fn main() {
                     }
                     TAKE_TEST_AUDIO.store(false, Ordering::Relaxed);
                 }
+
+
                 if rp2040_needs_reset {
                     let date = chrono::Local::now();
-                    error!("3) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+
+                    error!("4) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
                     rp2040_needs_reset = false;
                     got_startup_info = false;
-                }
-                if cross_thread_signal.load(Ordering::Relaxed) {
-                    sent_reset_request = false;
-                    cross_thread_signal.store(false, Ordering::Relaxed);
+                
+                    if !sent_reset_request {
+                        sent_reset_request = true;
+                        is_audio = device_config.is_audio_device();
+
+                        let _ = restart_tx.send((true,is_audio));
+                    }
+                
+                    if cross_thread_signal.load(Ordering::Relaxed) {
+                        sent_reset_request = false;
+                        cross_thread_signal.store(false, Ordering::Relaxed);
+                    }
                 }
             }
             let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
