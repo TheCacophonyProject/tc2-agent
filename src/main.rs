@@ -77,14 +77,11 @@ fn get_frame( is_recording: bool) -> Option<[u8;39040]> {
     }
     return None
 }
-    fn send_frame(fb: [u8;39040],stream: &mut SocketStream) ->bool {
-   
-            if let Err(_) = stream.write_all(&fb) {
-                return  false;
-            }
-          stream.flush().is_ok()
-   
-  
+fn send_frame(fb: [u8;39040],stream: &mut SocketStream) ->bool {
+    if let Err(_) = stream.write_all(&fb) {
+        return  false;
+    }
+    stream.flush().is_ok()
 }
 
 fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
@@ -619,15 +616,7 @@ fn main() {
 
             let mut reconnects = 0;
             let mut prev_frame_num = None;
-            let thermal_sock=  (&address,SocketStream::from_address(&address, *&config.use_wifi).ok());
-            if thermal_sock.1.is_some(){
-                println!("Connected to {}",address);
-            }
-            let management_sock=  (&management_address,SocketStream::from_address(&management_address, *&config.use_wifi).ok());
-            if management_sock.1.is_some(){
-                println!("Connected to {}",management_address);
-            }
-            let mut sockets = [ thermal_sock, management_sock];
+            let mut sockets: [(&String, Option<SocketStream>); 2] = [ (&address,None),(&management_address,None)];
             loop {
                 if let Ok((_,is_audio)) = restart_rx.try_recv() {
                     frame_acquire = !is_audio;
@@ -645,7 +634,7 @@ fn main() {
                 if frame_acquire {
                     info!("Connecting to frame sockes");
                     let mut ms_elapsed = 0;
-                    'send_loop: loop {
+                    loop {
                         let mut connections = 0;
                         for i in 0..sockets.len(){
                             if sockets[i].1.is_none(){
