@@ -616,7 +616,7 @@ fn main() {
 
             let mut reconnects = 0;
             let mut prev_frame_num = None;
-            let mut sockets: [(&String, Option<SocketStream>); 2] = [ (&address,None),(&management_address,None)];
+            let mut sockets: [(String,bool,  Option<SocketStream>); 2] = [ (address, config.use_wifi,  None),(management_address,false, None)];
             loop {
                 if let Ok((_,is_audio)) = restart_rx.try_recv() {
                     frame_acquire = !is_audio;
@@ -635,24 +635,8 @@ fn main() {
                     info!("Connecting to frame sockes");
                     let mut ms_elapsed = 0;
                     loop {
-                        let mut connections = 0;
-                        for i in 0..sockets.len(){
-                            if sockets[i].1.is_none(){
-                                sockets[i].1=  SocketStream::from_address(&sockets[i].0, if i== 0 {*&config.use_wifi} else {false}).ok();
-                                if sockets[i].1.is_some(){
-                                    println!("Connected to {}",sockets[i].0);
-                                    connections +=1
-                                }
-                            }else{
-                                connections +=1
-                            }
-                        }
-                        if connections == 0{
-                            sleep(Duration::from_millis(1000));
-                            continue;
-                        }
-                        // Check if we need to reset rp2040 because of a config change
-                        if let Ok((_,is_audio)) = restart_rx.try_recv() {
+                          // Check if we need to reset rp2040 because of a config change
+                          if let Ok((_,is_audio)) = restart_rx.try_recv() {
                             frame_acquire = !is_audio;
 
                             cross_thread_signal_2.store(true, Ordering::Relaxed);
@@ -667,42 +651,46 @@ fn main() {
                             run_pin.set_high();
 
                             if !frame_acquire{
-                                for i in 0..sockets.len(){
-                                    if sockets[i].1.is_some(){
-                                        info!("Shutting down socket {}", if config.use_wifi {"tc2-frames server"} else {sockets[i].0});
-                                        let stream = sockets[i].1.as_mut().unwrap();
-                                        let _ = stream.shutdown().is_ok();
-                                        sockets[i].1 = None;
-                                    }
+                                for  (address,use_wifi,  stream) in sockets.iter_mut().filter(|(_,_, stream)| stream.is_some()) {
+                                    info!("Shutting down socket {}", if *use_wifi {"tc2-frames server"} else {address});
+                                    let _ = stream.take().unwrap().shutdown().is_ok();
                                 }
                                 break;
                             }
                         }
 
+                        for (address,use_wifi, stream) in sockets.iter_mut().filter(|(_,_,  stream)| stream.is_none()) {
+                            let    stream_connection:  Option<SocketStream> =  SocketStream::from_address(&address, *use_wifi).ok();
+                            if stream_connection.is_some() {
+                                println!("Connected to {}", &address);
+                            }
+                            *stream = stream_connection;
+                        }
+                        let connections = sockets.iter().filter(|(_, _,stream)| stream.is_some()).count();
+
+                        if connections == 0{
+                            sleep(Duration::from_millis(1000));
+                            continue;
+                        }
+                      
                         let recv_timeout_ms = 10;
                         let result = rx.recv_timeout(Duration::from_millis(recv_timeout_ms));
                         match result {
                             Ok((Some((radiometry_enabled, is_recording, firmware_version, camera_serial)), None)) => {
-                                if !config.use_wifi  {
-                                    let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
-                                    let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
-                                    for socket in sockets.iter_mut(){
-                                        if socket.1.is_some() {
-                                            let stream = socket.1.as_mut().unwrap();
-                                            if !stream.sent_header{                                                     
-                                                if let Err(_) = stream.write_all(header.as_bytes()) {
-                                                    warn!("Failed sending header info");
-                                                }
-
-                                                // Clear existing
-                                                if let Err(_) = stream.write_all(b"clear") {
-                                                    warn!("Failed clearing buffer");
-                                                }
-                                                let _ = stream.flush();
-                                                stream.sent_header = true;
-                                            }
-                                        }
+                                let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
+                                let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
+                                for  (address,_,  stream) in sockets.iter_mut().filter(|(_,use_wifi, stream)| stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header) {
+                                    let stream = stream.as_mut().unwrap();               
+                                    if let Err(_) = stream.write_all(header.as_bytes()) {
+                                        warn!("Failed sending header info");
                                     }
+
+                                    // Clear existing
+                                    if let Err(_) = stream.write_all(b"clear") {
+                                        warn!("Failed clearing buffer");
+                                    }
+                                    let _ = stream.flush();
+                                    stream.sent_header = true;
                                 }
 
                                 if reconnects > 0 {
@@ -715,16 +703,11 @@ fn main() {
                                 let frame_data = get_frame(is_recording);
                                 if let Some(fb) = frame_data{
                                     telemetry = Some(read_telemetry(&fb));
-                                    for i in 0..sockets.len(){
-                                        if sockets[i].1.is_some(){
-                                            let stream = sockets[i].1.as_mut().unwrap();
-                                        
-                                            let sent = send_frame( fb,stream);
-                                            if !sent {
-                                                warn!("Send to {} failed", if config.use_wifi {"tc2-frames server"} else {sockets[i].0});
-                                                let _ = stream.shutdown().is_ok();
-                                                sockets[i].1 = None;
-                                            }
+                                    for  (address,use_wifi,  stream) in sockets.iter_mut().filter(|(_,_, stream)| stream.is_some()) {
+                                        let sent = send_frame( fb,stream.as_mut().unwrap());
+                                        if !sent {
+                                            warn!("Send to {} failed", if *use_wifi {"tc2-frames server"} else {address});
+                                            let _ = stream.take().unwrap().shutdown().is_ok();
                                         }
                                     }
                                 }
