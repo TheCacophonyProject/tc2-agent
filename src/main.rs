@@ -715,8 +715,6 @@ fn main() {
                                 let frame_data = get_frame(is_recording);
                                 if let Some(fb) = frame_data{
                                     telemetry = Some(read_telemetry(&fb));
-                                    // let socket = &mut sockets[1];
-                                    // for socket in sockets.iter_mut(){
                                     for i in 0..sockets.len(){
                                         if sockets[i].1.is_some(){
                                             let stream = sockets[i].1.as_mut().unwrap();
@@ -734,27 +732,21 @@ fn main() {
                                 if e > 0.1 {
                                     info!("socket send took {}s", e);
                                 }
-                                // if !sent {
-                                //     warn!("Send to {} failed", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"});
-                                //     let _ = stream.shutdown().is_ok();
-                                //     break 'send_loop;
-                                // } else {
-                                    if let Some(telemetry) = telemetry {
-                                        if let Some(prev_frame_num) = prev_frame_num {
-                                            if !telemetry.ffc_in_progress {
-                                                if telemetry.frame_num != prev_frame_num + 1 {
-                                                    // NOTE: Frames can be missed when the raspberry pi blocks the thread with the unix socket in `thermal-recorder`.
-                                                    // println!("====");
-                                                    // println!("Missed {} frames after {}s on", telemetry.frame_num - (prev_frame_num + 1), telemetry.msec_on as f32 / 1000.0);
-                                                }
+                                if let Some(telemetry) = telemetry {
+                                    if let Some(prev_frame_num) = prev_frame_num {
+                                        if !telemetry.ffc_in_progress {
+                                            if telemetry.frame_num != prev_frame_num + 1 {
+                                                // NOTE: Frames can be missed when the raspberry pi blocks the thread with the unix socket in `thermal-recorder`.
+                                                // println!("====");
+                                                // println!("Missed {} frames after {}s on", telemetry.frame_num - (prev_frame_num + 1), telemetry.msec_on as f32 / 1000.0);
                                             }
                                         }
-                                        prev_frame_num = Some(telemetry.frame_num);
-                                        if telemetry.frame_num % 2700 == 0 {
-                                            info!("Got frame #{}", telemetry.frame_num);
-                                        }
                                     }
-                                // }
+                                    prev_frame_num = Some(telemetry.frame_num);
+                                    if telemetry.frame_num % 2700 == 0 {
+                                        info!("Got frame #{}", telemetry.frame_num);
+                                    }
+                                }
                                 ms_elapsed = 0;
                             },
                             Ok((None, Some(_transfer_in_progress))) => {
