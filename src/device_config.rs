@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::ops::Add;
+use std::str::FromStr;
 use sun_times::sun_times;
 use toml::value::Offset;
 use toml::Value;
@@ -417,10 +418,85 @@ impl Default for TimeWindow {
     }
 }
 
+#[repr(u8)]
 #[derive(Deserialize, Debug, PartialEq, Clone)]
+pub enum AudioMode {
+    Disabled = 0,
+    AudioOnly = 1,
+    AudioOrThermal = 2,
+    AudioAndThermal = 3,
+}
 
-struct AudioSettings {
-    enabled: Option<bool>,
+impl Into<u8> for AudioMode {
+    fn into(self) -> u8 {
+        self as u8
+    }
+}
+
+impl FromStr for AudioMode {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<AudioMode, Self::Err> {
+        match input {
+            "Disabled" => Ok(AudioMode::Disabled),
+            "AudioOnly" => Ok(AudioMode::AudioOnly),
+            "AudioOrThermal" => Ok(AudioMode::AudioOrThermal),
+            "AudioAndThermal" => Ok(AudioMode::AudioAndThermal),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<u8> for AudioMode {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        use AudioMode::*;
+
+        match value {
+            0 => Ok(AudioOnly),
+            1 => Ok(AudioOrThermal),
+            2 => Ok(AudioAndThermal),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Deserialize, Debug, PartialEq, Clone)]
+pub struct AudioSettings {
+    #[serde(
+        rename = "audio-mode",
+        default = "default_audio_mode",
+        deserialize_with = "deserialize_audio_mode"
+    )]
+    pub audio_mode: AudioMode,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        AudioSettings {
+            audio_mode: default_audio_mode(),
+        }
+    }
+}
+
+fn default_audio_mode() -> AudioMode {
+    AudioMode::Disabled
+}
+
+fn deserialize_audio_mode<'de, D>(deserializer: D) -> Result<AudioMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let audio_mode_raw: String = Deserialize::deserialize(deserializer)?;
+    if let Ok(mode) = AudioMode::from_str(&audio_mode_raw) {
+        Ok(mode)
+    } else {
+        Err(Error::custom(format!(
+            "Failed to parse audio mode: {}",
+            audio_mode_raw
+        )))
+    }
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
@@ -469,8 +545,8 @@ struct ThermalThrottlerSettings {
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 pub struct DeviceConfig {
-    #[serde(rename = "audio-recording")]
-    audio_info: Option<AudioSettings>,
+    #[serde(rename = "audio-recording", default)]
+    audio_info: AudioSettings,
     #[serde(rename = "windows", default)]
     recording_window: TimeWindow,
     #[serde(rename = "device")]
@@ -797,10 +873,7 @@ impl DeviceConfig {
     }
 
     pub fn is_audio_device(&self) -> bool {
-        if let Some(audio_info) = &self.audio_info {
-            return audio_info.enabled.unwrap_or_default();
-        }
-        return false;
+        return self.audio_info.audio_mode != AudioMode::Disabled;
     }
 
     pub fn write_to_slice(&self, output: &mut [u8]) {
