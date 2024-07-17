@@ -616,9 +616,9 @@ fn main() {
 
             let mut reconnects = 0;
             let mut prev_frame_num = None;
-            let mut sockets: [(String,bool,  Option<SocketStream>); 2] = [ (address, config.use_wifi,  None),(management_address,false, None)];
+            let mut sockets: [(String, bool, Option<SocketStream>); 2] = [(address, config.use_wifi, None), (management_address, false, None)];
             loop {
-                if let Ok((_,is_audio)) = restart_rx.try_recv() {
+                if let Ok((_, is_audio)) = restart_rx.try_recv() {
                     frame_acquire = !is_audio;
                     cross_thread_signal_2.store(true, Ordering::Relaxed);
                     info!("Restarting rp2040");
@@ -635,8 +635,8 @@ fn main() {
                     info!("Connecting to frame sockes");
                     let mut ms_elapsed = 0;
                     loop {
-                          // Check if we need to reset rp2040 because of a config change
-                          if let Ok((_,is_audio)) = restart_rx.try_recv() {
+                        // Check if we need to reset rp2040 because of a config change
+                        if let Ok((_, is_audio)) = restart_rx.try_recv() {
                             frame_acquire = !is_audio;
 
                             cross_thread_signal_2.store(true, Ordering::Relaxed);
@@ -650,37 +650,43 @@ fn main() {
                             sleep(Duration::from_millis(1000));
                             run_pin.set_high();
 
-                            if !frame_acquire{
-                                for  (address,use_wifi,  stream) in sockets.iter_mut().filter(|(_,_, stream)| stream.is_some()) {
-                                    info!("Shutting down socket {}", if *use_wifi {"tc2-frames server"} else {address});
+                            if !frame_acquire {
+                                for (address, use_wifi, stream) in sockets.iter_mut().filter(|(_, _, stream)| stream.is_some()) {
+                                    info!("Shutting down socket {}", if *use_wifi { "tc2-frames server" } else { address });
                                     let _ = stream.take().unwrap().shutdown().is_ok();
                                 }
                                 break;
                             }
                         }
 
-                        for (address,use_wifi, stream) in sockets.iter_mut().filter(|(_,_,  stream)| stream.is_none()) {
-                            let    stream_connection:  Option<SocketStream> =  SocketStream::from_address(&address, *use_wifi).ok();
+                        for (address, use_wifi, stream) in sockets.iter_mut().filter(|(_, _, stream)| stream.is_none()) {
+                            let stream_connection: Option<SocketStream> = SocketStream::from_address(&address, *use_wifi).ok();
                             if stream_connection.is_some() {
                                 println!("Connected to {}", &address);
                             }
                             *stream = stream_connection;
                         }
-                        let connections = sockets.iter().filter(|(_, _,stream)| stream.is_some()).count();
+                        let connections = sockets.iter().filter(|(_, _, stream)| stream.is_some()).count();
 
-                        if connections == 0{
+                        if connections == 0 {
                             sleep(Duration::from_millis(1000));
                             continue;
                         }
-                      
+
                         let recv_timeout_ms = 10;
                         let result = rx.recv_timeout(Duration::from_millis(recv_timeout_ms));
                         match result {
                             Ok((Some((radiometry_enabled, is_recording, firmware_version, camera_serial)), None)) => {
                                 let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
-                                let header = format!("ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n", model, firmware_version, camera_serial);
-                                for  (address,_,  stream) in sockets.iter_mut().filter(|(_,use_wifi, stream)| stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header) {
-                                    let stream = stream.as_mut().unwrap();               
+                                let header = format!(
+                                    "ResX: 160\nResX: 160\nResY: 120\nFrameSize: 39040\nModel: {}\nBrand: flir\nFPS: 9\nFirmware: DOC-AI-v0.{}\nCameraSerial: {}\n\n",
+                                    model, firmware_version, camera_serial
+                                );
+                                for (_, _, stream) in sockets
+                                    .iter_mut()
+                                    .filter(|(_, use_wifi, stream)| stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header)
+                                {
+                                    let stream = stream.as_mut().unwrap();
                                     if let Err(_) = stream.write_all(header.as_bytes()) {
                                         warn!("Failed sending header info");
                                     }
@@ -699,14 +705,14 @@ fn main() {
                                     reconnects = 0;
                                 }
                                 let s = Instant::now();
-                                let mut telemetry:Option<Telemetry> = None;
+                                let mut telemetry: Option<Telemetry> = None;
                                 let frame_data = get_frame(is_recording);
-                                if let Some(fb) = frame_data{
+                                if let Some(fb) = frame_data {
                                     telemetry = Some(read_telemetry(&fb));
-                                    for  (address,use_wifi,  stream) in sockets.iter_mut().filter(|(_,_, stream)| stream.is_some()) {
-                                        let sent = send_frame( fb,stream.as_mut().unwrap());
+                                    for (address, use_wifi, stream) in sockets.iter_mut().filter(|(_, _, stream)| stream.is_some()) {
+                                        let sent = send_frame(fb, stream.as_mut().unwrap());
                                         if !sent {
-                                            warn!("Send to {} failed", if *use_wifi {"tc2-frames server"} else {address});
+                                            warn!("Send to {} failed", if *use_wifi { "tc2-frames server" } else { address });
                                             let _ = stream.take().unwrap().shutdown().is_ok();
                                         }
                                     }
@@ -731,10 +737,10 @@ fn main() {
                                     }
                                 }
                                 ms_elapsed = 0;
-                            },
+                            }
                             Ok((None, Some(_transfer_in_progress))) => {
                                 ms_elapsed = 0;
-                            },
+                            }
                             _ => {
                                 const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
                                 ms_elapsed += recv_timeout_ms;
@@ -749,18 +755,21 @@ fn main() {
                                         }
                                         process::exit(0);
                                     } else {
-                                        info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)", NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects);
+                                        info!(
+                                            "-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)",
+                                            NUM_ATTEMPTS_BEFORE_REPROGRAM - reconnects
+                                        );
                                     }
                                 }
                             }
                         }
-                    }                               
+                    }
                 }
                 // Wait 1 second between attempts to connect to the frame socket
                 sleep(Duration::from_millis(1000));
             }
         });
-
+        
         info!("Waiting to for messages from rp2040");
         // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
         //let mut dbus_conn = Some(dbus_conn);
