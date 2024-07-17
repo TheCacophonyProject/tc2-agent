@@ -638,7 +638,7 @@ fn main() {
                         let mut connections = 0;
                         for i in 0..sockets.len(){
                             if sockets[i].1.is_none(){
-                                sockets[i].1=  SocketStream::from_address(&sockets[i].0, *&config.use_wifi).ok();
+                                sockets[i].1=  SocketStream::from_address(&sockets[i].0, if i== 0 {*&config.use_wifi} else {false}).ok();
                                 if sockets[i].1.is_some(){
                                     println!("Connected to {}",sockets[i].0);
                                     connections +=1
@@ -656,16 +656,25 @@ fn main() {
                             frame_acquire = !is_audio;
 
                             cross_thread_signal_2.store(true, Ordering::Relaxed);
-                            loop {
-                                info!("Restarting rp2040");
-                                if !run_pin.is_set_high() {
-                                    run_pin.set_high();
-                                    sleep(Duration::from_millis(1000));
-                                }
-
-                                run_pin.set_low();
-                                sleep(Duration::from_millis(1000));
+                            info!("Restarting rp2040");
+                            if !run_pin.is_set_high() {
                                 run_pin.set_high();
+                                sleep(Duration::from_millis(1000));
+                            }
+
+                            run_pin.set_low();
+                            sleep(Duration::from_millis(1000));
+                            run_pin.set_high();
+
+                            if !frame_acquire{
+                                for i in 0..sockets.len(){
+                                    if sockets[i].1.is_some(){
+                                        info!("Shutting down socket {}", if config.use_wifi {"tc2-frames server"} else {sockets[i].0});
+                                        let stream = sockets[i].1.as_mut().unwrap();
+                                        let _ = stream.shutdown().is_ok();
+                                        sockets[i].1 = None;
+                                    }
+                                }
                                 break;
                             }
                         }
@@ -693,9 +702,6 @@ fn main() {
                                                 stream.sent_header = true;
                                             }
                                         }
-                                    }
-                                    if !frame_acquire{
-                                        break;
                                     }
                                 }
 
