@@ -528,6 +528,20 @@ fn main() {
             dpcon.run().unwrap();
         });
 
+    // Check if the file indicating that the RP2040 needs to be programmed.
+    // This is used to save time when setting up cameras so it will program the RP2040 instead of trying to connect first.
+    let program_rp2040_file = Path::new("/etc/cacophony/program_rp2040");
+    if program_rp2040_file.exists() {
+        println!("Program RP2040 because /etc/cacophony/program_rp2040 exists");
+        let e = program_rp2040();
+        if e.is_err() {
+            warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
+            process::exit(1);
+        }
+        fs::remove_file(program_rp2040_file).unwrap();
+        process::exit(0);
+    }
+
     let mut current_config = device_config.unwrap();
     let initial_config = current_config.clone();
     let (config_tx, config_rx) = channel();
@@ -572,8 +586,6 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term)).unwrap();
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&term)).unwrap();
 
-    let mut frame_acquire = !initial_config.is_audio_device();
-
     // We want real-time priority for all the work we do.
     let handle = thread::Builder::new().name("frame-acquire".to_string()).spawn_with_priority(ThreadPriority::Max, move |result| {
         assert!(result.is_ok(), "Thread must have permissions to run with realtime priority, run as root user");
@@ -607,7 +619,6 @@ fn main() {
         }
         pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
-        // let (tx, rx) = channel();
 
         let (tx, rx):(Sender<(Option<(bool,bool,u32,String)>,Option<bool>,Option<bool>)>, Receiver<(Option<(bool,bool,u32,String)>,Option<bool>,Option<bool>)>) = channel();
         let (restart_tx, restart_rx) = channel();
@@ -647,18 +658,15 @@ fn main() {
                             // Check if we need to reset rp2040 because of a config change
                             if let Ok(_) = restart_rx.try_recv() {
                                 cross_thread_signal_2.store(true, Ordering::Relaxed);
-                                loop {
-                                    info!("Restarting rp2040");
-                                    if !run_pin.is_set_high() {
-                                        run_pin.set_high();
-                                        sleep(Duration::from_millis(1000));
-                                    }
-
-                                    run_pin.set_low();
-                                    sleep(Duration::from_millis(1000));
+                                info!("Restarting rp2040");
+                                if !run_pin.is_set_high() {
                                     run_pin.set_high();
-                                    break;
+                                    sleep(Duration::from_millis(1000));
                                 }
+
+                                run_pin.set_low();
+                                sleep(Duration::from_millis(1000));
+                                run_pin.set_high(); 
                             }
                             
                             let result = rx.recv_timeout(Duration::from_millis(recv_timeout_ms));
@@ -815,6 +823,8 @@ fn main() {
         let mut lepton_serial_number = String::from("");
         let mut taking_test_recoding = false;
         let mut test_audio_state_thread:Option<thread::JoinHandle<()>> = None;
+        let mut is_audio = device_config.is_audio_device();
+
         'transfer: loop {
             // Check once per frame to see if the config file may have been changed
             let updated_config = config_rx.try_recv();
@@ -824,6 +834,10 @@ fn main() {
                     if device_config != config {
                         info!("Config updated, should update rp2040");
                         device_config = config;
+                        if !is_audio{
+                            //will update after reset request if in audio mode
+                            is_audio = device_config.is_audio_device();
+                        }
                     }
                     rp2040_needs_reset = true;
                 }
@@ -1234,10 +1248,14 @@ fn program_rp2040() -> io::Result<()> {
     let bytes = std::fs::read("/etc/cacophony/rp2040-firmware.elf")
         .expect("firmware file should exist at /etc/cacophony/rp2040-firmware.elf"); // Vec<u8>
     let hash = sha256::digest(&bytes);
-    if hash != EXPECTED_RP2040_FIRMWARE_HASH {
+    let expected_hash = EXPECTED_RP2040_FIRMWARE_HASH.trim();
+    if hash != expected_hash {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "rp2040-firmware.elf does not match expected hash has it been modified?",
+            format!(
+                "rp2040-firmware.elf does not match expected hash. Expected: '{}', Calculated: '{}'",
+                expected_hash, hash
+            ),
         ));
     }
     let status = Command::new("tc2-hat-rp2040")
