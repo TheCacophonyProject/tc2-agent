@@ -9,6 +9,7 @@ use std::time::Duration;
 pub struct SocketStream {
     unix: Option<UnixStream>,
     tcp: Option<TcpStream>,
+    pub sent_header: bool,
 }
 
 impl SocketStream {
@@ -17,6 +18,7 @@ impl SocketStream {
             UnixStream::connect(address).map(|stream| SocketStream {
                 unix: Some(stream),
                 tcp: None,
+                sent_header: false,
             })
         } else {
             TcpStream::connect(address).map(|stream| {
@@ -27,6 +29,7 @@ impl SocketStream {
                 SocketStream {
                     unix: None,
                     tcp: Some(stream),
+                    sent_header: false,
                 }
             })
         }
