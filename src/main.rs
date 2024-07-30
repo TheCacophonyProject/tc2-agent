@@ -1298,7 +1298,7 @@ fn dbus_attiny_command(
         match dbus_attiny_command_attempt(conn, command, value) {
             Ok(result) => return Ok(result),
             Err(e) => {
-                if attempt >= max_attempts {
+                if attempt == max_attempts {
                     return Err("Max attempts reached: failed to execute i2c dbus command");
                 }
                 eprintln!("Attempt {}/{} failed: {}. Retrying in {:?}...", attempt, max_attempts, e, retry_delay);
