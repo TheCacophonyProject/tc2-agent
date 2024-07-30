@@ -1,6 +1,7 @@
 use rustbus::{DuplexConn, MessageBuilder};
 
 #[derive(Debug)]
+
 pub enum LoggerEventKind {
     Rp2040Sleep,
     OffloadedRecording,
@@ -25,6 +26,10 @@ pub enum LoggerEventKind {
     AudioRecordingFailed,
     RTCTime(u64),
     StartedAudioRecording,
+    ThermalMode,
+    AudioMode,
+    RecordingNotFinished,
+    FileOffloadFailed,
 }
 
 impl Into<u16> for LoggerEventKind {
@@ -54,6 +59,10 @@ impl Into<u16> for LoggerEventKind {
             AudioRecordingFailed => 21,
             RTCTime(_) => 22,
             StartedAudioRecording => 23,
+            ThermalMode => 24,
+            AudioMode => 25,
+            RecordingNotFinished => 26,
+            FileOffloadFailed => 27,
         }
     }
 }
@@ -87,11 +96,14 @@ impl TryFrom<u16> for LoggerEventKind {
             21 => Ok(AudioRecordingFailed),
             22 => Ok(RTCTime(0)),
             23 => Ok(StartedAudioRecording),
+            24 => Ok(ThermalMode),
+            25 => Ok(AudioMode),
+            26 => Ok(RecordingNotFinished),
+            27 => Ok(FileOffloadFailed),
             _ => Err(()),
         }
     }
 }
-
 pub struct LoggerEvent {
     timestamp: u64,
     event: LoggerEventKind,
