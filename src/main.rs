@@ -658,19 +658,21 @@ fn main() {
                         //     break;
                         // }
                     }
-
-                    for (address, use_wifi, stream) in sockets.iter_mut().filter(|(_, _, stream)| stream.is_none()) {
-                        let stream_connection: Option<SocketStream> = SocketStream::from_address(&address, *use_wifi).ok();
-                        if stream_connection.is_some() {
-                            println!("Connected to {}", &address);
+                    if !recv_audio_mode{
+                        for (address, use_wifi, stream) in sockets.iter_mut().filter(|(_, _, stream)| stream.is_none()) {
+                            let stream_connection: Option<SocketStream> = SocketStream::from_address(&address, *use_wifi).ok();
+                            if stream_connection.is_some() {
+                                println!("Connected to {}", &address);
+                            }
+                            *stream = stream_connection;
                         }
-                        *stream = stream_connection;
-                    }
-                    let connections = sockets.iter().filter(|(_, _, stream)| stream.is_some()).count();
+                        
+                        let connections = sockets.iter().filter(|(_, _, stream)| stream.is_some()).count();
 
-                    if connections == 0 {
-                        sleep(Duration::from_millis(1000));
-                        continue;
+                        if connections == 0 {
+                            sleep(Duration::from_millis(1000));
+                            continue;
+                        }
                     }
 
                     let result = rx.recv_timeout(Duration::from_millis(recv_timeout_ms));
