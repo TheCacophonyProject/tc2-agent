@@ -1,7 +1,6 @@
 use rustbus::{DuplexConn, MessageBuilder};
 
 #[derive(Debug)]
-
 pub enum LoggerEventKind {
     Rp2040Sleep,
     OffloadedRecording,
@@ -12,7 +11,7 @@ pub enum LoggerEventKind {
     ToldRpiToSleep,
     GotRpiPoweredDown,
     GotRpiPoweredOn,
-    ToldRpiToWake,
+    ToldRpiToWake(u64),
     LostSync,
     SetAlarm(u64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
     GotPowerOnTimeout,
@@ -45,7 +44,7 @@ impl Into<u16> for LoggerEventKind {
             ToldRpiToSleep => 7,
             GotRpiPoweredDown => 8,
             GotRpiPoweredOn => 9,
-            ToldRpiToWake => 10,
+            ToldRpiToWake(_) => 10,
             LostSync => 11,
             SetAlarm(_) => 12,
             GotPowerOnTimeout => 13,
@@ -82,7 +81,7 @@ impl TryFrom<u16> for LoggerEventKind {
             7 => Ok(ToldRpiToSleep),
             8 => Ok(GotRpiPoweredDown),
             9 => Ok(GotRpiPoweredOn),
-            10 => Ok(ToldRpiToWake),
+            10 => Ok(ToldRpiToWake(0)),
             11 => Ok(LostSync),
             12 => Ok(SetAlarm(0)),
             13 => Ok(GotPowerOnTimeout),
@@ -136,7 +135,12 @@ impl LoggerEvent {
             call.body
                 .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
                 .unwrap(); // Microseconds to nanoseconds
-            call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
+            call.body.push_param("RTCTime").unwrap();
+        } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
+            call.body
+                .push_param(format!(r#"{{ "wakeup-reason": {} }}"#, reason))
+                .unwrap(); // Microseconds to nanoseconds
+            call.body.push_param("ToldRpiToWake").unwrap();
         } else {
             call.body
                 .push_param(json_payload.unwrap_or(String::from("{}")))

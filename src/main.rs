@@ -406,11 +406,14 @@ fn audio_handler(
         let mut resp = msg.dynheader.make_response();
 
         let state = RP2040_STATE.load(Ordering::Relaxed);
-        if state & (0x08 | 0x04) == (0x08 | 0x04) {
+     
+         if state & (0x08 | 0x04) == (0x08 | 0x04) {
             status = AudioStatus::TakingTestRecoding;
         } else if state & 0x08 == 0x08 {
             status = AudioStatus::WaitingToRecord;
-        } else if TAKE_TEST_AUDIO.load(Ordering::Relaxed) {
+        } else if state & 0x04 == 0x04 {
+            status = AudioStatus::Recording;
+        }else if TAKE_TEST_AUDIO.load(Ordering::Relaxed) {
             status = AudioStatus::WaitingToRecord;
         } else {
             status = AudioStatus::Ready;
@@ -426,6 +429,7 @@ pub enum AudioStatus {
     Ready = 1,
     WaitingToRecord = 2,
     TakingTestRecoding = 3,
+    Recording = 4,
 }
 
 use lazy_static::lazy_static;
@@ -873,7 +877,7 @@ fn main() {
                     }
                 }
             }
-            if audio_mode{
+            if is_audio{
                 if taking_test_recoding {
                     if test_audio_state_thread.is_none() || (test_audio_state_thread.is_some() && test_audio_state_thread.as_mut().unwrap().is_finished()) {
                         taking_test_recoding = false;
@@ -881,7 +885,12 @@ fn main() {
                     }
                 }else if TAKE_TEST_AUDIO.load(Ordering::Relaxed)
                 {
-                    if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
+                    //if already recording dont take test rec
+                    let is_recording = read_attiny_recording_flag(&mut dbus_conn);
+                    if is_recording{
+                        RP2040_STATE.store(0x04, Ordering::Relaxed);
+                    }
+                    else if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
                         if !device_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
                             // NOTE: Always reset rp2040 on startup if it's safe to do so.
                             let _ = restart_tx.send(true);
@@ -916,22 +925,23 @@ fn main() {
                     }
                     TAKE_TEST_AUDIO.store(false, Ordering::Relaxed);
                 }
+                if audio_mode &&  rp2040_needs_reset {
                     let date = chrono::Local::now();
-                   if rp2040_needs_reset {
-                            error!("4) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
-                            rp2040_needs_reset = false;
-                            got_startup_info = false;
-                        
-                        if !sent_reset_request {
-                            sent_reset_request = true;
-                            let _ = restart_tx.send(true);
-                        }
-                    
-                        if cross_thread_signal.load(Ordering::Relaxed) {
-                            sent_reset_request = false;
-                            cross_thread_signal.store(false, Ordering::Relaxed);
-                        }
+
+                    error!("4) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                    rp2040_needs_reset = false;
+                    got_startup_info = false;
+                
+                    if !sent_reset_request {
+                        sent_reset_request = true;
+                        let _ = restart_tx.send(true);
                     }
+                
+                    if cross_thread_signal.load(Ordering::Relaxed) {
+                        sent_reset_request = false;
+                        cross_thread_signal.store(false, Ordering::Relaxed);
+                    }
+                }
                 
             }
             let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
@@ -1085,6 +1095,12 @@ fn main() {
                                                 }else  if let LoggerEventKind::RTCTime(alarm_time) = &mut event_kind {
                                                     if NaiveDateTime::from_timestamp_micros(event_payload as i64).is_some() {
                                                         *alarm_time = event_payload;
+                                                    } else {
+                                                        warn!("Missed alarm from event was invalid {}", event_payload);
+                                                    }
+                                                }else  if let LoggerEventKind::ToldRpiToWake(reason) = &mut event_kind {
+                                                    if NaiveDateTime::from_timestamp_micros(event_payload as i64).is_some() {
+                                                        *reason = event_payload;
                                                     } else {
                                                         warn!("Missed alarm from event was invalid {}", event_payload);
                                                     }
