@@ -660,7 +660,7 @@ impl DeviceConfig {
                     std::process::exit(1);
                 }
                 info!("Got config {:?}", device_config);
-                if !device_config.is_audio_device() {
+                if device_config.audio_info.audio_mode != AudioMode::AudioOnly {
                     let inside_recording_window =
                         device_config.time_is_in_recording_window(&Utc::now().naive_utc());
                     info!("Inside recording window: {}", inside_recording_window);
@@ -880,8 +880,8 @@ impl DeviceConfig {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
-        buf.write_u8(if self.is_audio_device() { 1 } else { 0 })
-            .unwrap();
+        let audio_mode: u8 = self.audio_info.audio_mode.clone().into();
+        buf.write_u8(audio_mode).unwrap();
         let (latitude, longitude) = self.lat_lng();
         buf.write_f32::<LittleEndian>(latitude).unwrap();
         buf.write_f32::<LittleEndian>(longitude).unwrap();
