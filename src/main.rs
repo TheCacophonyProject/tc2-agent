@@ -637,7 +637,7 @@ fn main() {
                 }
                 let mut recv_audio_mode = false;
                 let mut recv_timeout_ms = 10;
-                info!("Connecting to frame sockes");
+                info!("Connecting to frame sockets");
                 let mut ms_elapsed = 0;
                 loop {
                     // Check if we need to reset rp2040 because of a config change
@@ -653,14 +653,6 @@ fn main() {
                         run_pin.set_low();
                         sleep(Duration::from_millis(1000));
                         run_pin.set_high();
-
-                        // if !frame_acquire {
-                        //     for (address, use_wifi, stream) in sockets.iter_mut().filter(|(_, _, stream)| stream.is_some()) {
-                        //         info!("Shutting down socket {}", if *use_wifi { "tc2-frames server" } else { address });
-                        //         let _ = stream.take().unwrap().shutdown().is_ok();
-                        //     }
-                        //     break;
-                        // }
                     }
                     if !recv_audio_mode{
                         for (address, use_wifi, stream) in sockets.iter_mut().filter(|(_, _, stream)| stream.is_none()) {
@@ -891,8 +883,7 @@ fn main() {
                         RP2040_STATE.store(0x04, Ordering::Relaxed);
                     }
                     else if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
-                        if !device_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
-                            // NOTE: Always reset rp2040 on startup if it's safe to do so.
+                        if safe_to_restart_rp2040(&mut dbus_conn) {
                             let _ = restart_tx.send(true);
                             taking_test_recoding = true;
                             info!("Telling rp2040 to take test recording and restarting");
@@ -931,7 +922,8 @@ fn main() {
                     error!("4) Requesting reset of rp2040 due to config change, {}", date.format("%Y-%m-%d--%H:%M:%S"));
                     rp2040_needs_reset = false;
                     got_startup_info = false;
-                
+                    is_audio = device_config.is_audio_device();
+
                     if !sent_reset_request {
                         sent_reset_request = true;
                         let _ = restart_tx.send(true);
