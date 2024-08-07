@@ -887,6 +887,11 @@ fn main() {
                             let _ = restart_tx.send(true);
                             taking_test_recoding = true;
                             info!("Telling rp2040 to take test recording and restarting");
+                           
+                        }
+                        RP2040_STATE.store(state, Ordering::Relaxed);
+                    }
+                    if is_recording || taking_test_recoding {
                             test_audio_state_thread = Some(thread::spawn(move || {
                                 let thread_dbus = DuplexConn::connect_to_bus(session_path, true);
                                 if thread_dbus.is_err() {
@@ -897,6 +902,8 @@ fn main() {
                                     if _unique_name.is_err() {
                                         error!("Error getting handshake with system DBus: {}", _unique_name.err().unwrap());
                                     } else {
+                                        //be a bit lazy if doing a recording
+                                        let sleep_duration = if is_recording { 2000 } else { 1000 };
                                         loop {
                                             if let Ok(state) = read_tc2_agent_state(&mut thread_dbus) {
                                                 RP2040_STATE.store(state, Ordering::Relaxed);
@@ -906,13 +913,12 @@ fn main() {
                                             } else {
                                                 warn!("error reading tc2 agent state");
                                             }
-                                            sleep(Duration::from_millis(1000));
+
+                                            sleep(Duration::from_millis(sleep_duration));
                                         }
                                     }
                                 }
                             }));
-                        }
-                        RP2040_STATE.store(state, Ordering::Relaxed);
                     }
                     TAKE_TEST_AUDIO.store(false, Ordering::Relaxed);
                 }
