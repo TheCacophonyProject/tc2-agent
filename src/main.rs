@@ -418,7 +418,7 @@ fn audio_handler(
         } else {
             status = AudioStatus::Ready;
         }
-
+        resp.body.push_param(RP2040_MODE.load(Ordering::Relaxed)).unwrap();
         resp.body.push_param(status as u8).unwrap();
         Ok(Some(resp))
     } else {
@@ -439,6 +439,10 @@ lazy_static! {
 }
 lazy_static! {
     static ref RP2040_STATE: Arc<AtomicU8> = Arc::new(AtomicU8::new(2));
+}
+
+lazy_static! {
+    static ref RP2040_MODE: Arc<AtomicU8> = Arc::new(AtomicU8::new(0));
 }
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1047,6 +1051,7 @@ fn main() {
                                         firmware_version = LittleEndian::read_u32(&chunk[4..8]);
                                         lepton_serial_number = format!("{}", LittleEndian::read_u32(&chunk[8..12]));
                                         audio_mode =   chunk[12] > 0;
+                                        RP2040_MODE.store(if chunk[12] > 0 { 1 } else { 0 }, Ordering::Relaxed);
 
                                         got_startup_info = true;
                                         info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{} audio mode {}", radiometry_enabled, firmware_version, lepton_serial_number,audio_mode);
