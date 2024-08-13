@@ -1107,14 +1107,6 @@ fn main() {
                                                     } else {
                                                         warn!("Missed alarm from event was invalid {}", event_payload);
                                                     }
-                                                }else  if let LoggerEventKind::OffloadedRecording(reason) = &mut event_kind {
-                                                        *reason = event_payload;
-                                                }else  if let LoggerEventKind::StartedAudioRecording(reason) = &mut event_kind {
-                                                    *reason = event_payload;
-                                                }else  if let LoggerEventKind::EndedRecording(reason) = &mut event_kind {
-                                                    *reason = event_payload;
-                                                }else  if let LoggerEventKind::StartedRecording(reason) = &mut event_kind {
-                                                        *reason = event_payload;
                                                 }
                                                 let payload_json = if let LoggerEventKind::SavedNewConfig = event_kind {
                                                     // If we get saved new config, the rp2040 would have just been
