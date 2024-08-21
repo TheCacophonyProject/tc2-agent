@@ -24,7 +24,7 @@ pub enum LoggerEventKind {
     AttinyCommError,
     Rp2040MissedAudioAlarm(u64),
     AudioRecordingFailed,
-    RTCTime(u64),
+    ErasePartialOrCorruptRecording,
     StartedAudioRecording,
     ThermalMode,
     AudioMode,
@@ -60,7 +60,7 @@ impl Into<u16> for LoggerEventKind {
             AttinyCommError => 19,
             Rp2040MissedAudioAlarm(_) => 20,
             AudioRecordingFailed => 21,
-            RTCTime(_) => 22,
+            ErasePartialOrCorruptRecording => 22,
             StartedAudioRecording => 23,
             ThermalMode => 24,
             AudioMode => 25,
@@ -100,7 +100,7 @@ impl TryFrom<u16> for LoggerEventKind {
             19 => Ok(AttinyCommError),
             20 => Ok(Rp2040MissedAudioAlarm(0)),
             21 => Ok(AudioRecordingFailed),
-            22 => Ok(RTCTime(0)),
+            22 => Ok(ErasePartialOrCorruptRecording),
             23 => Ok(StartedAudioRecording),
             24 => Ok(ThermalMode),
             25 => Ok(AudioMode),
@@ -142,11 +142,6 @@ impl LoggerEvent {
                 .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
                 .unwrap(); // Microseconds to nanoseconds
             call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
-        } else if let LoggerEventKind::RTCTime(alarm) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
-                .unwrap(); // Microseconds to nanoseconds
-            call.body.push_param("RTCTime").unwrap();
         } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
             call.body
                 .push_param(format!(r#"{{ "wakeup-reason": {} }}"#, reason))

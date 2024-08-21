@@ -34,7 +34,7 @@ use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
 
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
-use crate::device_config::{AudioMode,DeviceConfig};
+use crate::device_config::DeviceConfig;
 use crate::double_buffer::DoubleBuffer;
 use crate::event_logger::{LoggerEvent, LoggerEventKind};
 use crate::mode_config::ModeConfig;
@@ -645,7 +645,7 @@ fn main() {
                 let mut ms_elapsed = 0;
                 loop {
                     // Check if we need to reset rp2040 because of a config change
-                    if let Ok((_)) = restart_rx.try_recv() {
+                    if let Ok(_) = restart_rx.try_recv() {
 
                         cross_thread_signal_2.store(true, Ordering::Relaxed);
                         info!("Restarting rp2040");
@@ -781,11 +781,7 @@ fn main() {
                             
                         }
                     }
-                    // Err(e) => warn!("{} not found: {}", if config.use_wifi {&"tc2-frames server"} else {&"thermal-recorder unix socket"}, e.to_string())
                 }
-            
-                // Wait 1 second between attempts to connect to the frame socket
-                sleep(Duration::from_millis(1000));
             }
         });
         
@@ -1090,12 +1086,6 @@ fn main() {
                                                         warn!("Wakeup alarm from event was invalid {}", event_payload);
                                                     }
                                                 }else  if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm_time) = &mut event_kind {
-                                                    if NaiveDateTime::from_timestamp_micros(event_payload as i64).is_some() {
-                                                        *alarm_time = event_payload;
-                                                    } else {
-                                                        warn!("Missed alarm from event was invalid {}", event_payload);
-                                                    }
-                                                }else  if let LoggerEventKind::RTCTime(alarm_time) = &mut event_kind {
                                                     if NaiveDateTime::from_timestamp_micros(event_payload as i64).is_some() {
                                                         *alarm_time = event_payload;
                                                     } else {
