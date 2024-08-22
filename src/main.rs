@@ -36,7 +36,7 @@ use thread_priority::*;
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
 use crate::device_config::DeviceConfig;
 use crate::double_buffer::DoubleBuffer;
-use crate::event_logger::{LoggerEvent, LoggerEventKind};
+use crate::event_logger::{LoggerEvent, LoggerEventKind,WakeReason};
 use crate::mode_config::ModeConfig;
 use crate::service::AgentService;
 use crate::socket_stream::{get_socket_address, SocketStream};
@@ -1092,10 +1092,10 @@ fn main() {
                                                         warn!("Missed alarm from event was invalid {}", event_payload);
                                                     }
                                                 }else  if let LoggerEventKind::ToldRpiToWake(reason) = &mut event_kind {
-                                                    if NaiveDateTime::from_timestamp_micros(event_payload as i64).is_some() {
-                                                        *reason = event_payload;
+                                                    if let Ok(wake_reason) = WakeReason::try_from(event_payload as u8){
+                                                        *reason = wake_reason;
                                                     } else {
-                                                        warn!("Missed alarm from event was invalid {}", event_payload);
+                                                        warn!("Told rpi to wake invalid reason {}",event_payload);
                                                     }
                                                 }
                                                 let payload_json = if let LoggerEventKind::SavedNewConfig = event_kind {

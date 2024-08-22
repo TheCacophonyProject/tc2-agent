@@ -1,7 +1,41 @@
 use rustbus::{DuplexConn, MessageBuilder};
 
-#[derive(Debug)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
 
+pub enum WakeReason {
+    Unknown = 0,
+    ThermalOffload = 1,
+    ThermalOffloadAfter24Hours = 2,
+    ThermalHighPower = 3,
+    AudioThermalEnded = 4,
+    AudioShouldOffload = 5,
+}
+impl std::fmt::Display for WakeReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl TryFrom<u8> for WakeReason {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        use WakeReason::*;
+
+        match value {
+            0 => Ok(Unknown),
+            1 => Ok(ThermalOffload),
+            2 => Ok(ThermalOffloadAfter24Hours),
+            3 => Ok(ThermalHighPower),
+            4 => Ok(AudioThermalEnded),
+            5 => Ok(AudioShouldOffload),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum LoggerEventKind {
     Rp2040Sleep,
     OffloadedRecording,
@@ -12,7 +46,7 @@ pub enum LoggerEventKind {
     ToldRpiToSleep,
     GotRpiPoweredDown,
     GotRpiPoweredOn,
-    ToldRpiToWake(u64),
+    ToldRpiToWake(WakeReason),
     LostSync,
     SetAlarm(u64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
     GotPowerOnTimeout,
@@ -88,7 +122,7 @@ impl TryFrom<u16> for LoggerEventKind {
             7 => Ok(ToldRpiToSleep),
             8 => Ok(GotRpiPoweredDown),
             9 => Ok(GotRpiPoweredOn),
-            10 => Ok(ToldRpiToWake(0)),
+            10 => Ok(ToldRpiToWake(WakeReason::Unknown)),
             11 => Ok(LostSync),
             12 => Ok(SetAlarm(0)),
             13 => Ok(GotPowerOnTimeout),
@@ -113,7 +147,6 @@ impl TryFrom<u16> for LoggerEventKind {
         }
     }
 }
-
 pub struct LoggerEvent {
     timestamp: u64,
     event: LoggerEventKind,
@@ -144,7 +177,7 @@ impl LoggerEvent {
             call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
         } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
             call.body
-                .push_param(format!(r#"{{ "wakeup-reason": {} }}"#, reason))
+                .push_param(format!(r#"{{ "wakeup-reason": "{}" }}"#, reason))
                 .unwrap(); // Microseconds to nanoseconds
             call.body.push_param("ToldRpiToWake").unwrap();
         } else {
