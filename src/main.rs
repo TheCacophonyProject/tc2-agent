@@ -56,6 +56,17 @@ use simplelog::*;
 use std::io::Write;
 use std::sync::mpsc::{Sender, Receiver};
 
+
+pub mod tc2_agent_state {
+    pub const NOT_READY: u8 = 0x00;
+    pub const READY: u8 = 1 << 1;
+    pub const RECORDING: u8 = 1 << 2;
+    pub const TEST_AUDIO_RECORDING: u8 = 1 << 3;
+    pub const TAKE_AUDIO: u8 = 1 << 4;
+    pub const OFFLOAD: u8 = 1 << 5;
+    pub const THERMAL_MODE: u8 = 1 << 6;
+}
+
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
@@ -327,7 +338,7 @@ fn read_tc2_agent_state(conn: &mut DuplexConn) -> Result<u8, &'static str> {
 }
 
 fn read_attiny_recording_flag(conn: &mut DuplexConn) -> bool {
-    read_tc2_agent_state(conn).map_or(false, |x| x & 0x04 == 0x04)
+    read_tc2_agent_state(conn).map_or(false, |x| x & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING)
 }
 fn safe_to_restart_rp2040(conn: &mut DuplexConn) -> bool {
     !read_attiny_recording_flag(conn)
@@ -340,12 +351,12 @@ fn read_attiny_firmware_version(conn: &mut DuplexConn) -> Result<u8, &'static st
 fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn) -> Result<u8, &'static str> {
     let state = read_tc2_agent_state(conn);
     if let Ok(state) = state {
-        if (state & 0x04) == 0x04 {
+        if (state & tc2_agent_state::RECORDING) == tc2_agent_state::RECORDING {
             Err("Already recording so not doing test rec")
         } else {
-            let res = dbus_write_attiny_command(conn, 0x07, state | 0x08);
+            let res = dbus_write_attiny_command(conn, 0x07, state | tc2_agent_state::TEST_AUDIO_RECORDING);
             if res.is_ok() {
-                Ok(state | 0x08)
+                Ok(state | tc2_agent_state::TEST_AUDIO_RECORDING)
             } else {
                 Err(res.unwrap_err())
             }
@@ -358,7 +369,7 @@ fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn) -> Result<u8, &'st
 fn set_attiny_tc2_agent_ready(conn: &mut DuplexConn) -> Result<(), &'static str> {
     let state = read_tc2_agent_state(conn);
     if let Ok(state) = state {
-        dbus_write_attiny_command(conn, 0x07, state | 0x02).map(|_| ())
+        dbus_write_attiny_command(conn, 0x07, state | tc2_agent_state::READY).map(|_| ())
     } else {
         Err("Failed reading ready state from attiny")
     }
@@ -390,7 +401,7 @@ fn audio_handler(
     if msg.dynheader.member.as_ref().unwrap() == "testaudio" {
         let message;
 
-        if RP2040_STATE.load(Ordering::Relaxed) & 0x08 == 0 {
+        if RP2040_STATE.load(Ordering::Relaxed) & tc2_agent_state::TEST_AUDIO_RECORDING == 0 {
             TAKE_TEST_AUDIO.store(true, Ordering::Relaxed);
             message = "Asked for a test recording";
         } else {
@@ -407,11 +418,11 @@ fn audio_handler(
 
         let state = RP2040_STATE.load(Ordering::Relaxed);
      
-         if state & (0x08 | 0x04) == (0x08 | 0x04) {
+         if state & (tc2_agent_state::TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING) == (tc2_agent_state::TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING) {
             status = AudioStatus::TakingTestRecoding;
-        } else if state & 0x08 == 0x08 {
+        } else if state & tc2_agent_state::TEST_AUDIO_RECORDING == tc2_agent_state::TEST_AUDIO_RECORDING {
             status = AudioStatus::WaitingToRecord;
-        } else if state & 0x04 == 0x04 {
+        } else if state & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING {
             status = AudioStatus::Recording;
         }else if TAKE_TEST_AUDIO.load(Ordering::Relaxed) {
             status = AudioStatus::WaitingToRecord;
@@ -880,7 +891,7 @@ fn main() {
                     //if already recording dont take test rec
                     let is_recording = read_attiny_recording_flag(&mut dbus_conn);
                     if is_recording{
-                        RP2040_STATE.store(0x04, Ordering::Relaxed);
+                        RP2040_STATE.store(tc2_agent_state::RECORDING, Ordering::Relaxed);
                     }
                     else if let Ok(state) = set_attiny_tc2_agent_test_audio_rec( &mut dbus_conn) {
                         if safe_to_restart_rp2040(&mut dbus_conn) {
@@ -907,7 +918,7 @@ fn main() {
                                         loop {
                                             if let Ok(state) = read_tc2_agent_state(&mut thread_dbus) {
                                                 RP2040_STATE.store(state, Ordering::Relaxed);
-                                                if state & (0x04 | 0x08) == 0 {
+                                                if state & (tc2_agent_state::RECORDING | tc2_agent_state::TEST_AUDIO_RECORDING) == 0 {
                                                     break;
                                                 }
                                             } else {
