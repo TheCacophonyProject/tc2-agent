@@ -15,7 +15,7 @@ addons:
 
 env:
   global:
-    - RP2040_FIRMWARE_VERSION=0.2.12-audio-mode
+    - RP2040_FIRMWARE_VERSION=0.2.13-audio-mode
 
 before_script:
   - rustup target add aarch64-unknown-linux-musl
