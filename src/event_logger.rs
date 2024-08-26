@@ -178,7 +178,7 @@ impl LoggerEvent {
         } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
             call.body
                 .push_param(format!(r#"{{ "wakeup-reason": "{}" }}"#, reason))
-                .unwrap(); // Microseconds to nanoseconds
+                .unwrap();
             call.body.push_param("ToldRpiToWake").unwrap();
         } else {
             call.body

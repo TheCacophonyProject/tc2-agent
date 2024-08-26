@@ -54,7 +54,6 @@ use rustbus::connection::Timeout;
 use rustbus::{get_system_bus_path, DuplexConn, MessageBuilder, MessageType};
 use simplelog::*;
 use std::io::Write;
-use std::sync::mpsc::{Sender, Receiver};
 
 
 pub mod tc2_agent_state {
@@ -623,7 +622,7 @@ fn main() {
         pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
         pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
 
-        let (tx, rx):(Sender<(Option<(bool,bool,u32,String)>,Option<bool>,Option<bool>)>, Receiver<(Option<(bool,bool,u32,String)>,Option<bool>,Option<bool>)>) = channel();
+        let (tx, rx) = channel();
         let (restart_tx, restart_rx) = channel();
 
         // Used to indicate that a reset request was received and processed by the frame-socket thread.
