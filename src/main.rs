@@ -1056,8 +1056,8 @@ fn main() {
                                         radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 2;
                                         firmware_version = LittleEndian::read_u32(&chunk[4..8]);
                                         lepton_serial_number = format!("{}", LittleEndian::read_u32(&chunk[8..12]));
-                                        audio_mode =   chunk[12] > 0;
-                                        RP2040_MODE.store(if chunk[12] > 0 { 1 } else { 0 }, Ordering::Relaxed);
+                                        audio_mode =  LittleEndian::read_u32(&chunk[12..16]) > 0;
+                                        RP2040_MODE.store(if audio_mode { 1 } else { 0 }, Ordering::Relaxed);
 
                                         got_startup_info = true;
                                         info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{} audio mode {}", radiometry_enabled, firmware_version, lepton_serial_number,audio_mode);
