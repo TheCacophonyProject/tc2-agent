@@ -1333,6 +1333,29 @@ fn dbus_attiny_command(
     command: u8,
     value: Option<u8>,
 ) -> Result<u8, &'static str> {
+    let max_attempts = 10;
+    let retry_delay = std::time::Duration::from_secs(2);
+
+    for attempt in 1..=max_attempts {
+        match dbus_attiny_command_attempt(conn, command, value) {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                if attempt == max_attempts {
+                    return Err("Max attempts reached: failed to execute i2c dbus command");
+                }
+                eprintln!("Attempt {}/{} failed: {}. Retrying in {:?}...", attempt, max_attempts, e, retry_delay);
+                std::thread::sleep(retry_delay);
+            }
+        }
+    }
+    Err("Failed to execute dbus command after maximum retries")
+}
+
+fn dbus_attiny_command_attempt(
+    conn: &mut DuplexConn,
+    command: u8,
+    value: Option<u8>,
+) -> Result<u8, &'static str> {
     let is_read_command = value.is_none();
     let mut payload: Vec<u8> = vec![command];
     if let Some(value) = value {
