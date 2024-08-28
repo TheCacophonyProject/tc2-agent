@@ -774,7 +774,6 @@ fn main() {
             let mut sent_reset_request = false;
             let mut has_failed = false;
             let mut got_startup_info = false;
-            let mut audio_mode = false;
             let mut radiometry_enabled = false;
             let mut firmware_version = 0;
             let mut lepton_serial_number = String::from("");
@@ -978,11 +977,7 @@ fn main() {
                                             radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 2;
                                             firmware_version = LittleEndian::read_u32(&chunk[4..8]);
                                             lepton_serial_number = format!("{}", LittleEndian::read_u32(&chunk[8..12]));
-                                            audio_mode = LittleEndian::read_u32(&chunk[12..16]) > 0;
-                                            RP2040_MODE.store(if audio_mode { 1 } else { 0 }, Ordering::Relaxed);
-
                                             got_startup_info = true;
-                                            info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{} audio mode {}", radiometry_enabled, firmware_version, lepton_serial_number, audio_mode);
                                             if firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION {
                                                 exit_cleanly(&mut dbus_conn);
                                                 info!("Unsupported firmware version, expected {}, got {}. Will reprogram RP2040.", EXPECTED_RP2040_FIRMWARE_VERSION, firmware_version);
@@ -993,6 +988,11 @@ fn main() {
                                                 }
                                                 process::exit(0);
                                             }
+
+                                            let audio_mode = LittleEndian::read_u32(&chunk[12..16]) > 0;
+                                            RP2040_MODE.store(if audio_mode { 1 } else { 0 }, Ordering::Relaxed);
+                                            info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{} audio mode {}", radiometry_enabled, firmware_version, lepton_serial_number, audio_mode);
+
                                             if device_config.use_low_power_mode() && !radiometry_enabled && !device_config.is_audio_device() {
                                                 exit_cleanly(&mut dbus_conn);
                                                 error!("Low power mode is currently only supported on lepton sensors with radiometry or audio device, exiting.");
