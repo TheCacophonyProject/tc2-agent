@@ -1,5 +1,40 @@
 use rustbus::{DuplexConn, MessageBuilder};
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+
+pub enum WakeReason {
+    Unknown = 0,
+    ThermalOffload = 1,
+    ThermalOffloadAfter24Hours = 2,
+    ThermalHighPower = 3,
+    AudioThermalEnded = 4,
+    AudioShouldOffload = 5,
+}
+impl std::fmt::Display for WakeReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl TryFrom<u8> for WakeReason {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        use WakeReason::*;
+
+        match value {
+            0 => Ok(Unknown),
+            1 => Ok(ThermalOffload),
+            2 => Ok(ThermalOffloadAfter24Hours),
+            3 => Ok(ThermalHighPower),
+            4 => Ok(AudioThermalEnded),
+            5 => Ok(AudioShouldOffload),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum LoggerEventKind {
     Rp2040Sleep,
@@ -11,7 +46,7 @@ pub enum LoggerEventKind {
     ToldRpiToSleep,
     GotRpiPoweredDown,
     GotRpiPoweredOn,
-    ToldRpiToWake,
+    ToldRpiToWake(WakeReason),
     LostSync,
     SetAlarm(u64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
     GotPowerOnTimeout,
@@ -24,6 +59,14 @@ pub enum LoggerEventKind {
     Rp2040MissedAudioAlarm(u64),
     AudioRecordingFailed,
     ErasePartialOrCorruptRecording,
+    StartedAudioRecording,
+    ThermalMode,
+    AudioMode,
+    RecordingNotFinished,
+    FileOffloadFailed,
+    LogOffloadFailed,
+    OffloadedLogs,
+    CorruptFile,
 }
 
 impl Into<u16> for LoggerEventKind {
@@ -39,7 +82,7 @@ impl Into<u16> for LoggerEventKind {
             ToldRpiToSleep => 7,
             GotRpiPoweredDown => 8,
             GotRpiPoweredOn => 9,
-            ToldRpiToWake => 10,
+            ToldRpiToWake(_) => 10,
             LostSync => 11,
             SetAlarm(_) => 12,
             GotPowerOnTimeout => 13,
@@ -52,6 +95,14 @@ impl Into<u16> for LoggerEventKind {
             Rp2040MissedAudioAlarm(_) => 20,
             AudioRecordingFailed => 21,
             ErasePartialOrCorruptRecording => 22,
+            StartedAudioRecording => 23,
+            ThermalMode => 24,
+            AudioMode => 25,
+            RecordingNotFinished => 26,
+            FileOffloadFailed => 27,
+            OffloadedLogs => 28,
+            LogOffloadFailed => 29,
+            CorruptFile => 30,
         }
     }
 }
@@ -71,7 +122,7 @@ impl TryFrom<u16> for LoggerEventKind {
             7 => Ok(ToldRpiToSleep),
             8 => Ok(GotRpiPoweredDown),
             9 => Ok(GotRpiPoweredOn),
-            10 => Ok(ToldRpiToWake),
+            10 => Ok(ToldRpiToWake(WakeReason::Unknown)),
             11 => Ok(LostSync),
             12 => Ok(SetAlarm(0)),
             13 => Ok(GotPowerOnTimeout),
@@ -84,11 +135,18 @@ impl TryFrom<u16> for LoggerEventKind {
             20 => Ok(Rp2040MissedAudioAlarm(0)),
             21 => Ok(AudioRecordingFailed),
             22 => Ok(ErasePartialOrCorruptRecording),
+            23 => Ok(StartedAudioRecording),
+            24 => Ok(ThermalMode),
+            25 => Ok(AudioMode),
+            26 => Ok(RecordingNotFinished),
+            27 => Ok(FileOffloadFailed),
+            28 => Ok(OffloadedLogs),
+            29 => Ok(LogOffloadFailed),
+            30 => Ok(CorruptFile),
             _ => Err(()),
         }
     }
 }
-
 pub struct LoggerEvent {
     timestamp: u64,
     event: LoggerEventKind,
@@ -117,6 +175,11 @@ impl LoggerEvent {
                 .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
                 .unwrap(); // Microseconds to nanoseconds
             call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
+        } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
+            call.body
+                .push_param(format!(r#"{{ "wakeup-reason": "{}" }}"#, reason))
+                .unwrap();
+            call.body.push_param("ToldRpiToWake").unwrap();
         } else {
             call.body
                 .push_param(json_payload.unwrap_or(String::from("{}")))
