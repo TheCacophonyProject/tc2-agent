@@ -1110,8 +1110,8 @@ fn main() {
                                                     }
                                                 }else  if let LoggerEventKind::RtcCommError = &mut event_kind {
                                                     if event_timestamp == 0{
-                                                        event_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                                                        time = NaiveDateTime::from_timestamp_millis(event_timestamp as i64).unwrap();
+                                                        time = chrono::Local::now().naive_local();
+                                                        event_timestamp = time.timestamp_micros() as u64;
                                                     }
                                                 }
                                                 let payload_json = if let LoggerEventKind::SavedNewConfig = event_kind {
