@@ -10,3 +10,5 @@ Gathered frames are then output to either a unix domain socket on the Raspberry 
 ### Build and deploy
 1. Edit `deploy.sh` to specify the name of your development raspberry pi on your local network.
 2. Run `deploy.sh`
+
+foobar
