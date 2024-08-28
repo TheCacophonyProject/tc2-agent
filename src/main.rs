@@ -28,7 +28,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, TryRecvError};
 use std::sync::Arc;
 use std::thread::sleep;
-use std::time::Instant;
+use std::time::{Instant,SystemTime, UNIX_EPOCH};
+
 use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
@@ -1085,10 +1086,10 @@ fn main() {
                                     }
                                     CAMERA_SEND_LOGGER_EVENT => {
                                         let event_kind = LittleEndian::read_u16(&chunk[0..2]);
-                                        let event_timestamp = LittleEndian::read_u64(&chunk[2..2 + 8]);
+                                        let mut event_timestamp = LittleEndian::read_u64(&chunk[2..2 + 8]);
                                         let event_payload = LittleEndian::read_u64(&chunk[10..18]);
                                         if let Ok(mut event_kind) = LoggerEventKind::try_from(event_kind) {
-                                            if let Some(time) = NaiveDateTime::from_timestamp_micros(event_timestamp as i64) {
+                                            if let Some(mut time) = NaiveDateTime::from_timestamp_micros(event_timestamp as i64) {
                                                 if let LoggerEventKind::SetAlarm(alarm_time) = &mut event_kind {
                                                     if NaiveDateTime::from_timestamp_micros(event_payload as i64).is_some() {
                                                         *alarm_time = event_payload;
@@ -1106,6 +1107,11 @@ fn main() {
                                                         *reason = wake_reason;
                                                     } else {
                                                         warn!("Told rpi to wake invalid reason {}",event_payload);
+                                                    }
+                                                }else  if let LoggerEventKind::RtcCommError = &mut event_kind {
+                                                    if event_timestamp == 0{
+                                                        event_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                                                        time = NaiveDateTime::from_timestamp_millis(event_timestamp as i64).unwrap();
                                                     }
                                                 }
                                                 let payload_json = if let LoggerEventKind::SavedNewConfig = event_kind {
