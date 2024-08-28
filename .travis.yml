@@ -28,7 +28,6 @@ script:
   - if [ -n "$TRAVIS_TAG" ]; then sed -i "s/version = \"0.0.0-snapshot\"/version = \"${TRAVIS_TAG#v}\"/g" Cargo.toml; fi
   - cargo install cargo-deb --version 2.3.0
   - wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware.sha256
-  - echo "Firmware hash is"
   - cat _releases/tc2-firmware.sha256
   - wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
   - cargo build --release --target=aarch64-unknown-linux-musl
