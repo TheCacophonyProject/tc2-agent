@@ -12,7 +12,7 @@ authors = ["Cacophony Developers <coredev@cacophony.org.nz>"]
 framebuffer = "0.3.1"
 bmp = "0.5.0"
 rppal = "0.17.0"
-chrono = "0.4.31"
+chrono = { version = "0.4.38", features = ["serde"] }
 byteorder = "1.4.3"
 thread-priority = "1.1.0"
 argh = "0.1.10"

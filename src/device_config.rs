@@ -5,13 +5,17 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{
     DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
 };
-use log::{error, info};
+use log::{error, info, warn};
+use notify::event::{AccessKind, AccessMode};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::de::Error;
 use serde::{Deserialize, Deserializer};
-use std::fs;
 use std::io::{Cursor, Write};
 use std::ops::Add;
+use std::path::Path;
 use std::str::FromStr;
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::{fs, process};
 use sun_times::sun_times;
 use toml::value::Offset;
 use toml::Value;
@@ -922,5 +926,78 @@ impl DeviceConfig {
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write(&device_name[0..device_name_length]).unwrap();
+    }
+}
+
+pub fn watch_local_config_file_changes(
+    mut current_config: DeviceConfig,
+) -> (Sender<DeviceConfig>, Receiver<DeviceConfig>) {
+    let (config_tx, config_rx) = channel();
+    let mut watcher = notify::recommended_watcher(move |res| match res {
+        Ok(Event { kind, .. }) => {
+            match kind {
+                EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
+                    // File got written to
+                    // Send event to
+                    match DeviceConfig::load_from_fs() {
+                        Ok(config) => {
+                            // Send to rp2040 to write via a channel somehow.  Maybe we have to restart the rp2040 here so that it re-handshakes and
+                            // picks up the new info
+                            if config != current_config {
+                                current_config = config;
+                                warn!("Config updated");
+                                let _ = config_tx.send(current_config.clone());
+                            }
+                        }
+                        Err(msg) => {
+                            error!("Load config error: {}", msg);
+                            process::exit(1);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(e) => error!("file watch error for /etc/cacophony/config.toml: {:?}", e),
+    })
+    .unwrap();
+    // Add a path to be watched. All files and directories at that path and
+    // below will be monitored for changes.
+    watcher
+        .watch(
+            Path::new("/etc/cacophony/config.toml"),
+            RecursiveMode::NonRecursive,
+        )
+        .unwrap();
+    (config_tx, config_rx)
+}
+
+pub fn check_for_device_config_changes(
+    device_config_change_channel_rx: &Receiver<DeviceConfig>,
+    device_config: &mut DeviceConfig,
+    is_audio_device: &mut bool,
+    rp2040_needs_reset: &mut bool,
+) {
+    // Check once per frame to see if the config file may have been changed
+    let updated_config = device_config_change_channel_rx.try_recv();
+    match updated_config {
+        Ok(config) => {
+            // NOTE: Defer this till a time we know the rp2040 isn't writing to flash memory.
+            if *device_config != config {
+                info!("Config updated, should update rp2040");
+                *device_config = config;
+                if !*is_audio_device {
+                    //will update after reset request if in audio mode
+                    *is_audio_device = device_config.is_audio_device();
+                }
+            }
+            *rp2040_needs_reset = true;
+        }
+        Err(kind) => match kind {
+            TryRecvError::Empty => {}
+            TryRecvError::Disconnected => {
+                warn!("Disconnected from config file watcher channel");
+            }
+        },
     }
 }

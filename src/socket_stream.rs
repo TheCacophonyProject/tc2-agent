@@ -66,10 +66,10 @@ impl SocketStream {
     }
 }
 
-pub fn get_socket_address(config: &ModeConfig) -> String {
+pub fn get_socket_address(serve_frames_via_wifi: bool) -> String {
     let address = {
         // Find the socket address
-        let address = if config.use_wifi {
+        let address = if serve_frames_via_wifi {
             // Scan for servers on port 34254.
             use mdns_sd::{ServiceDaemon, ServiceEvent};
             // Create a daemon
@@ -98,10 +98,10 @@ pub fn get_socket_address(config: &ModeConfig) -> String {
         } else {
             Some("/var/run/lepton-frames".to_string())
         };
-        if config.use_wifi && address.is_none() {
+        if serve_frames_via_wifi && address.is_none() {
             panic!("t2c-frames service not found on local network");
         }
-        let address = if config.use_wifi {
+        let address = if serve_frames_via_wifi {
             format!("{}:34254", address.unwrap())
         } else {
             address.unwrap()
