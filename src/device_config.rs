@@ -917,6 +917,7 @@ pub fn watch_local_config_file_changes(mut current_config: DeviceConfig) -> Rece
     config_rx
 }
 
+// FIXME: Use RecordingModeState here?
 pub fn check_for_device_config_changes(
     device_config_change_channel_rx: &Receiver<DeviceConfig>,
     device_config: &mut DeviceConfig,

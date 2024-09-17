@@ -1,9 +1,13 @@
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
 use chrono::{DateTime, Utc};
+use flate2::read::GzEncoder;
+use flate2::read::MultiGzDecoder;
+//use flate2::write::GzEncoder;
+use flate2::Compression;
 use log::{error, info};
+use std::io::prelude::*;
 use std::{fs, thread};
 
-// TODO: Recompress cptv file gzip wrapper to save ~20% file size
 pub fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
     let output_dir = String::from(output_dir);
     thread::spawn(move || match decode_cptv_header_streaming(&cptv_bytes) {
@@ -13,7 +17,7 @@ pub fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                 let recording_date_time =
                     DateTime::from_timestamp_millis(header.timestamp as i64 / 1000)
                         .unwrap_or(chrono::Local::now().with_timezone(&Utc));
-                if fs::metadata(&output_dir).is_err() {
+                if !fs::exists(&output_dir).unwrap_or(false) {
                     fs::create_dir(&output_dir)
                         .expect(&format!("Failed to create output directory {}", output_dir));
                 }
@@ -22,6 +26,10 @@ pub fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                     output_dir,
                     recording_date_time.format("%Y-%m-%d--%H-%M-%S")
                 );
+                let decoder = MultiGzDecoder::new(&cptv_bytes[..]);
+                let mut encoder = GzEncoder::new(decoder, Compression::default());
+                let mut cptv_bytes = Vec::new();
+                encoder.read_to_end(&mut cptv_bytes).unwrap();
                 // If the file already exists, don't re-save it.
                 let is_existing_file = match fs::metadata(&path) {
                     Ok(metadata) => metadata.len() as usize == cptv_bytes.len(),

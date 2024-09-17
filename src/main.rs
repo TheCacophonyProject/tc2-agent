@@ -213,7 +213,7 @@ fn main() {
     let (serve_frames_via_wifi, spi_speed_mhz) = {
         let startup_mode_config: ModeConfig = argh::from_env();
         let serve_frames_via_wifi = startup_mode_config.use_wifi;
-        let spi_speed = startup_mode_config.spi_speed;
+        let spi_speed = startup_mode_config.spi_speed_mhz;
         (serve_frames_via_wifi, spi_speed)
     };
 
