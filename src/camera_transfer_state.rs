@@ -3,10 +3,10 @@ use crate::dbus_attiny::{
     exit_cleanly, process_interrupted, read_attiny_recording_flag, read_tc2_agent_state,
     safe_to_restart_rp2040, set_attiny_tc2_agent_test_audio_rec,
 };
+use crate::dbus_audio::AudioStatus;
 use crate::device_config::{check_for_device_config_changes, DeviceConfig};
 use crate::event_logger::{LoggerEvent, LoggerEventKind, WakeReason};
 use crate::frame_socket_server::FrameSocketServerMessage;
-use crate::mode_config::ModeConfig;
 use crate::program_rp2040::program_rp2040;
 use crate::save_audio::save_audio_file_to_disk;
 use crate::save_cptv::save_cptv_file_to_disk;
@@ -21,12 +21,11 @@ use crc::{Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
 use rppal::gpio::Trigger;
 use rppal::spi::{BitOrder, Bus, Mode, Polarity, SlaveSelect, Spi};
-use rppal::uart::Error::Gpio;
 use rustbus::connection::Timeout;
 use rustbus::{get_system_bus_path, DuplexConn};
 use std::ops::Not;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -42,10 +41,10 @@ pub const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
 pub const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
 
 pub struct CameraHandshakeInfo {
-    radiometry_enabled: bool,
-    is_recording: bool,
-    firmware_version: u32,
-    camera_serial: String,
+    pub radiometry_enabled: bool,
+    pub is_recording: bool,
+    pub firmware_version: u32,
+    pub camera_serial: String,
 }
 
 #[repr(u8)]
@@ -92,19 +91,59 @@ pub fn enter_camera_transfer_loop(
     mut recording_mode_state: RecordingModeState,
     mut recording_state: RecordingState,
 ) {
-    //let spi_speed = 30_000_000; // rPi4 can handle this in PIO mode
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
     info!("Initialising SPI at {}Mhz", spi_speed_mhz);
-    let mut spi = Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3).unwrap();
-    spi.set_bits_per_word(8).unwrap();
-    spi.set_bit_order(BitOrder::MsbFirst).unwrap();
-    spi.set_ss_polarity(Polarity::ActiveLow).unwrap();
+    let mut spi = match Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3) {
+        Ok(spi) => spi,
+        Err(e) => {
+            error!("Failed to get SPI0: {e}");
+            process::exit(1);
+        }
+    };
+    if spi.set_bits_per_word(8).is_err() {
+        error!("Failed to set SPI bits per word");
+        process::exit(1);
+    };
+    if spi.set_bit_order(BitOrder::MsbFirst).is_err() {
+        error!("Failed to set SPI output bit order");
+        process::exit(1);
+    };
+    if spi.set_ss_polarity(Polarity::ActiveLow).is_err() {
+        error!("Failed to set SPI SS polarity");
+        process::exit(1);
+    }
+    let gpio = match rppal::gpio::Gpio::new() {
+        Err(e) => {
+            error!("Failed to get GPIO: {e}");
+            process::exit(1);
+        }
+        Ok(gpio) => gpio,
+    };
+    let mut pin = match gpio.get(7) {
+        Ok(pin) => pin.into_input(),
+        Err(e) => {
+            error!(
+                "Failed to get pi ping interrupt pin ({e}), \
+        is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
+            );
+            process::exit(1);
+        }
+    };
+    pin.clear_interrupt()
+        .map_err(|e| {
+            error!("Unable to clear pi ping interrupt pin: {e}");
+            process::exit(1);
+        })
+        .unwrap();
 
-    let gpio = rppal::gpio::Gpio::new().unwrap();
-    let mut pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_input();
-    pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
-    pin.set_interrupt(Trigger::RisingEdge).expect("Unable to set pi ping interrupt");
+    // NOTE: `rppal` now has a `debounce` option here which may be worth exploring.
+    pin.set_interrupt(Trigger::RisingEdge, None)
+        .map_err(|e| {
+            error!("Unable to set pi ping interrupt: {e}");
+            process::exit(1);
+        })
+        .unwrap();
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
@@ -122,15 +161,14 @@ pub fn enter_camera_transfer_loop(
     let mut device_config: DeviceConfig = initial_config;
     let mut rp2040_needs_reset = false;
     let mut sent_reset_request = false;
-    let mut has_failed = false;
+    let mut header_integrity_check_has_failed = false;
     let mut got_startup_info = false;
     let mut radiometry_enabled = false;
     let mut firmware_version = 0;
     let mut lepton_serial_number = String::from("");
-    let mut taking_test_recording = false;
     let mut test_audio_state_thread: Option<thread::JoinHandle<()>> = None;
     let mut is_audio_device = device_config.is_audio_device();
-    let mut is_recording = false;
+    info!("Waiting for messages from rp2040");
     'transfer: loop {
         check_for_device_config_changes(
             &device_config_change_channel_rx,
@@ -138,20 +176,19 @@ pub fn enter_camera_transfer_loop(
             &mut is_audio_device,
             &mut rp2040_needs_reset,
         );
-        maybe_make_test_audio_recording(
-            &is_audio_device,
-            &mut dbus_conn,
-            &mut taking_test_recording,
-            &restart_rp2040_channel_tx,
-            &mut is_recording,
-            &mut recording_state,
-            &mut test_audio_state_thread,
-        );
-        if !is_recording && rp2040_needs_reset {
+        if is_audio_device {
+            maybe_make_test_audio_recording(
+                &mut dbus_conn,
+                &restart_rp2040_channel_tx,
+                &mut recording_state,
+                &mut test_audio_state_thread,
+            );
+        }
+        if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
 
-            error!(
-                "4) Requesting reset of rp2040 due to config change, {}",
+            warn!(
+                "Requesting reset of rp2040 due to config change, {}",
                 date.format("%Y-%m-%d--%H:%M:%S")
             );
             rp2040_needs_reset = false;
@@ -174,12 +211,40 @@ pub fn enter_camera_transfer_loop(
             if _pin_level.is_some() {
                 {
                     drop(pin);
-                    let output_pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_output_low();
+                    let output_pin = match gpio.get(7) {
+                        Ok(pin) => pin.into_output_low(),
+                        Err(e) => {
+                            error!(
+                                "Failed to get pi ping interrupt pin ({e}), \
+        is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
+                            );
+                            process::exit(1);
+                        }
+                    };
                     drop(output_pin);
-                    pin = gpio.get(7).expect("Failed to get pi ping interrupt pin, is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?").into_input();
-                    pin.clear_interrupt().expect("Unable to clear pi ping interrupt pin");
-                    pin.set_interrupt(Trigger::RisingEdge)
-                        .expect("Unable to set pi ping interrupt");
+                    pin = match gpio.get(7) {
+                        Ok(pin) => pin.into_input(),
+                        Err(e) => {
+                            error!(
+                                "Failed to get pi ping interrupt pin ({e}), \
+        is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
+                            );
+                            process::exit(1);
+                        }
+                    };
+
+                    pin.clear_interrupt()
+                        .map_err(|e| {
+                            error!("Unable to clear pi ping interrupt pin: {e}");
+                            process::exit(1);
+                        })
+                        .unwrap();
+                    pin.set_interrupt(Trigger::RisingEdge, None)
+                        .map_err(|e| {
+                            error!("Unable to set pi ping interrupt: {e}");
+                            process::exit(1);
+                        })
+                        .unwrap();
                 }
 
                 spi.read(&mut raw_read_buffer[..2066]).unwrap();
@@ -201,15 +266,13 @@ pub fn enter_camera_transfer_loop(
                         && crc_from_remote_inv.not() == crc_from_remote;
                     let transfer_type_check = transfer_type == transfer_type_dup;
                     if !num_bytes_check || !header_crc_check || !transfer_type_check {
-                        if !has_failed {
-                            has_failed = true;
+                        // Just log the *first* time the header integrity check fails in a session.
+                        if !header_integrity_check_has_failed {
+                            header_integrity_check_has_failed = true;
                             warn!("Header integrity check failed {:?}", &header_slice[..]);
                             // We still need to make sure we read out all the bytes?
                         }
 
-                        // Well, this is super tricky if this is a raw frame transfer that got garbled.
-                        // Do we care about this case?  In the case where the pi wants frames, it should just restart
-                        // the rp2040 on startup.
                         LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                         LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                         spi.write(&return_payload_buf).unwrap();
@@ -298,14 +361,24 @@ pub fn enter_camera_transfer_loop(
                                             RecordingMode::Thermal
                                         };
                                     recording_mode_state.set_mode(recording_mode);
-                                    info!("Got startup info: radiometry enabled: {}, firmware version: {}, lepton serial #{} audio mode {}", radiometry_enabled, firmware_version, lepton_serial_number, recording_mode);
+                                    info!(
+                                        "Got startup info: \
+                                    radiometry enabled: {radiometry_enabled}, \
+                                    firmware version: {firmware_version}, \
+                                    lepton serial #{lepton_serial_number} \
+                                    audio mode {:?}",
+                                        recording_mode
+                                    );
 
                                     if device_config.use_low_power_mode()
                                         && !radiometry_enabled
                                         && !device_config.is_audio_device()
                                     {
                                         exit_cleanly(&mut dbus_conn);
-                                        error!("Low power mode is currently only supported on lepton sensors with radiometry or audio device, exiting.");
+                                        error!(
+                                            "Low power mode is currently only supported on \
+                                        lepton sensors with radiometry or audio device, exiting."
+                                        );
                                         panic!("Exit");
                                     }
                                     // Terminate any existing file download.
@@ -484,7 +557,11 @@ pub fn enter_camera_transfer_loop(
                                         if !got_startup_info {
                                             if safe_to_restart_rp2040(&mut dbus_conn) {
                                                 let date = chrono::Local::now();
-                                                error!("1) Requesting reset of rp2040 to force handshake, {}", date.format("%Y-%m-%d--%H:%M:%S"));
+                                                error!(
+                                                    "1) Requesting reset of rp2040 to \
+                                                force handshake, {}",
+                                                    date.format("%Y-%m-%d--%H:%M:%S")
+                                                );
                                                 let _ = restart_rp2040_channel_tx.send(true);
                                             }
                                         }
@@ -563,7 +640,12 @@ pub fn enter_camera_transfer_loop(
                             warn!("Crc check failed, remote was notified and will re-transmit");
                         }
                     } else {
-                        spi.read(&mut raw_read_buffer[2066..num_bytes + header_length]).unwrap();
+                        spi.read(&mut raw_read_buffer[2066..num_bytes + header_length])
+                            .map_err(|e| {
+                                error!("SPI read error: {:?}", e);
+                                process::exit(1);
+                            })
+                            .unwrap();
                         // Frame
                         let mut frame = [0u8; FRAME_LENGTH];
                         BigEndian::write_u16_into(
@@ -581,7 +663,10 @@ pub fn enter_camera_transfer_loop(
                                 got_startup_info
                             );
                         }
-                        is_recording = crc_from_remote == 1 && !device_config.use_low_power_mode();
+                        // FIXME: Should is_recording bit only be set in high power mode?
+                        let is_recording =
+                            crc_from_remote == 1 && !device_config.use_low_power_mode();
+                        recording_state.set_is_recording(is_recording);
                         if !got_startup_info {
                             error!("1) Requesting reset of rp2040 to force handshake");
                             rp2040_needs_reset = true;
@@ -590,7 +675,7 @@ pub fn enter_camera_transfer_loop(
                             let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                 camera_handshake_info: Some(CameraHandshakeInfo {
                                     radiometry_enabled,
-                                    is_recording,
+                                    is_recording: recording_state.is_recording(),
                                     firmware_version,
                                     camera_serial: lepton_serial_number.clone(),
                                 }),
@@ -609,50 +694,47 @@ pub fn enter_camera_transfer_loop(
 }
 
 fn maybe_make_test_audio_recording(
-    is_audio_device: &bool,
     dbus_conn: &mut DuplexConn,
-    taking_test_recording: &mut bool,
     restart_rp2040_channel_tx: &Sender<bool>,
-    is_recording: &mut bool,
     recording_state: &mut RecordingState,
     test_audio_state_thread: &mut Option<thread::JoinHandle<()>>,
 ) {
-    if *is_audio_device {
-        if taking_test_recording {
-            if test_audio_state_thread.is_none()
-                || (test_audio_state_thread.is_some()
-                    && *test_audio_state_thread.as_mut().unwrap().is_finished())
-            {
-                *taking_test_recording = false;
-                *test_audio_state_thread = None;
-                *is_recording = false;
+    // If we're making an audio recording already, we can't be making a test audio recording – but
+    // maybe we can queue it up to happen once the current recording is finished?
+    if recording_state.is_taking_test_audio_recording() {
+        if test_audio_state_thread.is_none()
+            || (test_audio_state_thread.is_some()
+                && test_audio_state_thread.as_mut().unwrap().is_finished())
+        {
+            recording_state.finished_taking_test_recording();
+            *test_audio_state_thread = None;
+        }
+    }
+    if recording_state.should_take_test_audio_recording() {
+        // if already recording don't take test rec
+        let is_recording = read_attiny_recording_flag(dbus_conn);
+        if is_recording {
+            // Is it correct that this clobbers any other state?
+            recording_state.set_state(tc2_agent_state::RECORDING);
+        } else if let Ok(state) = set_attiny_tc2_agent_test_audio_rec(dbus_conn) {
+            if safe_to_restart_rp2040(dbus_conn) {
+                let _ = restart_rp2040_channel_tx.send(true);
+                recording_state.set_should_take_test_audio_recording(true);
+                info!("Telling rp2040 to take test recording and restarting");
             }
-        } else if recording_state.should_take_test_audio_recording() {
-            // if already recording don't take test rec
-            *is_recording = read_attiny_recording_flag(dbus_conn);
-            if *is_recording {
-                recording_state.set_state(tc2_agent_state::RECORDING);
-            } else if let Ok(state) = set_attiny_tc2_agent_test_audio_rec(dbus_conn) {
-                if safe_to_restart_rp2040(dbus_conn) {
-                    let _ = restart_rp2040_channel_tx.send(true);
-                    *taking_test_recording = true;
-                    info!("Telling rp2040 to take test recording and restarting");
-                }
-                recording_state.set_state(state);
-            }
-            if *is_recording || *taking_test_recording {
-                let mut inner_recording_state = recording_state.clone();
-                *test_audio_state_thread = Some(thread::spawn(move || {
-                    let dbus_session_path = get_system_bus_path().unwrap_or_else(|e| {
-                        error!("Error getting system DBus: {}", e);
-                        process::exit(1);
-                    });
-                    let thread_dbus = DuplexConn::connect_to_bus(dbus_session_path, true);
-                    if thread_dbus.is_err() {
-                        error!("Error connecting to system DBus: {}", thread_dbus.err().unwrap());
-                    } else {
-                        let mut thread_dbus = thread_dbus.unwrap();
-                        let _unique_name = thread_dbus.send_hello(Timeout::Infinite);
+            recording_state.set_state(state);
+        }
+        if is_recording || recording_state.should_take_test_audio_recording() {
+            let mut inner_recording_state = recording_state.clone();
+            *test_audio_state_thread = Some(thread::spawn(move || {
+                let dbus_session_path = get_system_bus_path().unwrap_or_else(|e| {
+                    error!("Error getting system DBus: {}", e);
+                    process::exit(1);
+                });
+                match DuplexConn::connect_to_bus(dbus_session_path, true) {
+                    Err(e) => error!("Error connecting to system DBus: {}", e),
+                    Ok(mut conn) => {
+                        let _unique_name = conn.send_hello(Timeout::Infinite);
                         if _unique_name.is_err() {
                             error!(
                                 "Error getting handshake with system DBus: {}",
@@ -662,26 +744,25 @@ fn maybe_make_test_audio_recording(
                             //be a bit lazy if doing a recording
                             let sleep_duration = if is_recording { 2000 } else { 1000 };
                             loop {
-                                if let Ok(state) = read_tc2_agent_state(&mut thread_dbus) {
+                                // Update our internal rp2040 state once every 1-2 seconds until
+                                // we see that the state has entered taking_test_audio_recording.
+                                if let Ok(state) = read_tc2_agent_state(&mut conn) {
                                     inner_recording_state.set_state(state);
-                                    if state
-                                        & (tc2_agent_state::RECORDING
-                                            | tc2_agent_state::TEST_AUDIO_RECORDING)
-                                        == 0
+                                    if let AudioStatus::TakingTestRecording =
+                                        inner_recording_state.get_audio_status()
                                     {
                                         break;
                                     }
                                 } else {
                                     warn!("error reading tc2 agent state");
                                 }
-
                                 sleep(Duration::from_millis(sleep_duration));
                             }
                         }
                     }
-                }));
-            }
-            recording_state.set_should_take_test_audio_recording(false);
+                }
+            }));
         }
+        recording_state.finished_taking_test_recording();
     }
 }

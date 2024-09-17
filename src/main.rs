@@ -1,7 +1,10 @@
+extern crate core;
+
 mod camera_transfer_state;
 mod cptv_frame_dispatch;
 mod cptv_header;
 mod dbus_attiny;
+mod dbus_audio;
 mod detection_mask;
 mod device_config;
 mod double_buffer;
@@ -16,71 +19,52 @@ mod socket_stream;
 mod telemetry;
 mod utils;
 
-use byteorder::{BigEndian, ByteOrder, LittleEndian};
-use chrono::{DateTime, NaiveDateTime, Utc};
-use rppal::spi::BitOrder;
-use rppal::{
-    gpio::{Gpio, Trigger},
-    spi::{Bus, Mode, Polarity, SlaveSelect, Spi},
-};
-use rustbus::connection::dispatch_conn::DispatchConn;
+use rppal::gpio::Gpio;
 
 use std::fs;
-use std::io;
-use std::ops::Not;
-use std::path::Path;
 use std::process;
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::mpsc::{channel, TryRecvError};
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::thread::sleep;
-use std::time::Instant;
 
 use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
 
-use crate::camera_transfer_state::ExtTransferMessage::{
-    BeginAndEndFileTransfer, BeginFileTransfer, CameraConnectInfo, CameraRawFrameTransfer,
-    EndFileTransfer, GetMotionDetectionMask, ResumeFileTransfer, SendLoggerEvent,
-};
-use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
-use crate::device_config::{watch_local_config_file_changes, DeviceConfig};
-use crate::double_buffer::DoubleBuffer;
-use crate::event_logger::{LoggerEvent, LoggerEventKind, WakeReason};
-use crate::mode_config::ModeConfig;
-use crate::service::AgentService;
-use crate::socket_stream::{get_socket_address, SocketStream};
-use crate::telemetry::{read_telemetry, Telemetry};
-use crate::utils::u8_slice_as_u16_slice;
-use chrono::format::Pad;
-use crc::{Algorithm, Crc, CRC_16_XMODEM};
-use log::{error, info, warn};
-use notify::event::{AccessKind, AccessMode};
-use notify::{Event, EventKind, RecursiveMode, Watcher};
-use rustbus::connection::dispatch_conn::HandleEnvironment;
-use rustbus::connection::dispatch_conn::HandleResult;
-use rustbus::connection::dispatch_conn::Matches;
+use log::{error, info};
 use rustbus::connection::Timeout;
-use rustbus::message_builder::MarshalledMessage;
-use rustbus::{get_system_bus_path, DuplexConn, MessageBuilder, MessageType};
+use rustbus::{get_system_bus_path, DuplexConn};
 use simplelog::*;
-use std::io::Write;
+
+use crate::camera_transfer_state::enter_camera_transfer_loop;
+use crate::dbus_attiny::exit_cleanly;
+use crate::dbus_attiny::read_attiny_firmware_version;
+use crate::dbus_attiny::safe_to_restart_rp2040;
+use crate::dbus_attiny::set_attiny_tc2_agent_ready;
+use crate::dbus_audio::setup_dbus_test_audio_recording_service;
+use crate::dbus_audio::AudioStatus;
+use crate::device_config::watch_local_config_file_changes;
+use crate::device_config::DeviceConfig;
+use crate::frame_socket_server::spawn_frame_socket_server_thread;
+use crate::mode_config::ModeConfig;
+use crate::program_rp2040::check_if_rp2040_needs_programming;
 
 pub mod tc2_agent_state {
-    pub const NOT_READY: u8 = 0x00;
-    pub const READY: u8 = 1 << 1;
+    pub const NOT_READY: u8 = 0b0000_0000;
+
+    /// tc2-agent is ready to accept files or recording streams from the rp2040
+    pub const READY: u8 = 0b0000_0010;
     //taking an audio or thermal recording
-    pub const RECORDING: u8 = 1 << 2;
-    pub const TEST_AUDIO_RECORDING: u8 = 1 << 3;
+    pub const RECORDING: u8 = 0b0000_0100;
+    pub const TAKING_TEST_AUDIO_RECORDING: u8 = 0b0000_1000;
     //an audio recording has been requested from thermal mode
-    pub const TAKE_AUDIO: u8 = 1 << 4;
-    pub const OFFLOAD: u8 = 1 << 5;
+    pub const SHOULD_TAKE_TEST_AUDIO_RECORDING: u8 = 0b0001_0000;
+
+    // FIXME: Unused?
+    pub const OFFLOAD: u8 = 0b0010_0000;
     //requested to boot into thermal mode from audio mode
-    pub const THERMAL_MODE: u8 = 1 << 6;
-    //is no audio mode flag as it isn't needed at this point
-    //    pub const THERMAL_MODE: u8 = 1 << 7;
+    pub const PENDING_BOOT_INTO_THERMAL_MODE: u8 = 0b0100_0000;
 }
 
 const AUDIO_SHEBANG: u16 = 1;
@@ -92,72 +76,8 @@ const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 
-// TC2-Agent dbus audio service
-type MyHandleEnv<'a, 'b> = HandleEnvironment<&'b mut AgentService, ()>;
-
-fn default_handler(
-    _c: &mut AgentService,
-    _matches: Matches,
-    _msg: &MarshalledMessage,
-    _env: &mut MyHandleEnv,
-) -> HandleResult<()> {
-    Ok(None)
-}
-
-fn audio_handler(
-    ctx: &mut AgentService,
-    _matches: Matches,
-    msg: &MarshalledMessage,
-    _env: &mut MyHandleEnv,
-) -> HandleResult<()> {
-    if msg.dynheader.member.as_ref().unwrap() == "testaudio" {
-        let message = if !ctx.making_test_audio_recording() {
-            ctx.recording_state.set_should_take_test_audio_recording(true);
-            "Asked for a test recording"
-        } else {
-            "Already making a test recording"
-        };
-        let mut resp = msg.dynheader.make_response();
-        resp.body.push_param(message)?;
-        Ok(Some(resp))
-    } else if msg.dynheader.member.as_ref().unwrap() == "audiostatus" {
-        let mut response = msg.dynheader.make_response();
-        let status = ctx.recording_state.get_audio_status();
-        response.body.push_param(if ctx.recording_mode_state.is_in_audio_mode() {
-            1
-        } else {
-            0
-        })?;
-        response.body.push_param(status as u8)?;
-        Ok(Some(response))
-    } else {
-        Ok(None)
-    }
-}
-pub enum AudioStatus {
-    Ready = 1,
-    WaitingToRecord = 2,
-    TakingTestRecoding = 3,
-    Recording = 4,
-}
-
-use crate::camera_transfer_state::{
-    enter_camera_transfer_loop, CAMERA_BEGIN_FILE_TRANSFER, CAMERA_CONNECT_INFO,
-    CAMERA_GET_MOTION_DETECTION_MASK, CAMERA_RAW_FRAME_TRANSFER, CAMERA_SEND_LOGGER_EVENT,
-};
-use crate::cptv_frame_dispatch::FRAME_BUFFER;
-use crate::dbus_attiny::{
-    dbus_write_attiny_command, exit_cleanly, process_interrupted, read_attiny_firmware_version,
-    read_attiny_recording_flag, read_tc2_agent_state, safe_to_restart_rp2040,
-    set_attiny_tc2_agent_ready, set_attiny_tc2_agent_test_audio_rec,
-};
-use crate::frame_socket_server::spawn_frame_socket_server_thread;
-use crate::program_rp2040::{check_if_rp2040_needs_programming, program_rp2040};
-use crate::save_audio::save_audio_file_to_disk;
-use crate::save_cptv::save_cptv_file_to_disk;
-
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum RecordingMode {
     Thermal = 0,
     Audio = 1,
@@ -170,15 +90,16 @@ struct RecordingModeState {
 
 impl RecordingModeState {
     pub fn new() -> Self {
-        Self { inner: Arc::new(AtomicU8::new(0)) }
+        Self { inner: Arc::new(AtomicU8::new(RecordingMode::Thermal as u8)) }
     }
 
     pub fn is_in_audio_mode(&self) -> bool {
-        self.inner.load(Ordering::Relaxed) == 1
+        self.inner.load(Ordering::Relaxed) == RecordingMode::Audio as u8
     }
 
+    #[allow(unused)]
     pub fn is_in_thermal_mode(&self) -> bool {
-        self.inner.load(Ordering::Relaxed) == 0
+        self.inner.load(Ordering::Relaxed) == RecordingMode::Thermal as u8
     }
 
     pub fn set_mode(&mut self, mode: RecordingMode) {
@@ -194,39 +115,70 @@ struct RecordingState {
 
 impl RecordingState {
     pub fn new() -> Self {
-        // TODO: Why initialised to 2?
         Self {
-            rp2040_recording_state_inner: Arc::new(AtomicU8::new(2)),
+            rp2040_recording_state_inner: Arc::new(AtomicU8::new(tc2_agent_state::NOT_READY)),
             test_recording_state_inner: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn is_recording(&self) -> bool {
-        self.rp2040_recording_state_inner.load(Ordering::Relaxed)
-            & tc2_agent_state::TEST_AUDIO_RECORDING
-            == 0
+        self.rp2040_recording_state_inner.load(Ordering::Relaxed) & tc2_agent_state::RECORDING == 0
     }
 
-    pub fn is_making_test_audio_recording(&self) -> bool {
-        self.rp2040_recording_state_inner.load(Ordering::Relaxed)
-            & tc2_agent_state::TEST_AUDIO_RECORDING
-            == 0
+    pub fn set_is_recording(&mut self, is_recording: bool) {
+        let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
+        let new_state =
+            if is_recording { tc2_agent_state::RECORDING } else { !tc2_agent_state::RECORDING };
+        while !self
+            .rp2040_recording_state_inner
+            .compare_exchange(state, state & new_state, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            sleep(Duration::from_micros(1));
+        }
+    }
+
+    pub fn is_taking_test_audio_recording(&self) -> bool {
+        self.get_audio_status() == AudioStatus::TakingTestRecording
+    }
+
+    #[allow(unused)]
+    pub fn is_waiting_to_take_test_audio_recording(&self) -> bool {
+        self.get_audio_status() == AudioStatus::WaitingToTakeTestRecording
+    }
+
+    pub fn finished_taking_test_recording(&mut self) {
+        self.test_recording_state_inner.store(false, Ordering::Relaxed);
+        let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
+        while !self
+            .rp2040_recording_state_inner
+            .compare_exchange(
+                state,
+                state
+                    & !(tc2_agent_state::RECORDING | tc2_agent_state::TAKING_TEST_AUDIO_RECORDING),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            sleep(Duration::from_micros(1));
+        }
     }
 
     pub fn get_audio_status(&self) -> AudioStatus {
         let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        if state & (tc2_agent_state::TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
-            == (tc2_agent_state::TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
+        if state & (tc2_agent_state::TAKING_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
+            == (tc2_agent_state::TAKING_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
         {
-            AudioStatus::TakingTestRecoding
-        } else if state & tc2_agent_state::TEST_AUDIO_RECORDING
-            == tc2_agent_state::TEST_AUDIO_RECORDING
+            AudioStatus::TakingTestRecording
+        } else if state & tc2_agent_state::TAKING_TEST_AUDIO_RECORDING
+            == tc2_agent_state::TAKING_TEST_AUDIO_RECORDING
         {
-            AudioStatus::WaitingToRecord
+            AudioStatus::WaitingToTakeTestRecording
         } else if state & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING {
             AudioStatus::Recording
         } else if self.should_take_test_audio_recording() {
-            AudioStatus::WaitingToRecord
+            AudioStatus::WaitingToTakeTestRecording
         } else {
             AudioStatus::Ready
         }
@@ -284,55 +236,17 @@ fn main() {
         process::exit(1);
     });
 
-    let mut recording_mode_state = RecordingModeState::new();
-    let agent_service_state = recording_mode_state.clone();
+    let recording_mode_state = RecordingModeState::new();
     let mut recording_state = RecordingState::new();
-    let agent_recording_state = recording_state.clone();
-
-    // set up dbus service for handling messages between managementd and tc2-agent about when
-    // to make test audio recordings.
-    let dbus_thread = thread::Builder::new().name("dbus-service".to_string()).spawn_with_priority(
-        ThreadPriority::Max,
-        move |_| {
-            let mut dbus_conn =
-                DuplexConn::connect_to_bus(session_path, false).unwrap_or_else(|e| {
-                    error!("Error connecting to system DBus: {}", e);
-                    process::exit(1);
-                });
-            let _name = dbus_conn.send_hello(Timeout::Infinite).unwrap_or_else(|e| {
-                error!("Error getting handshake with system DBus: {}", e);
-                process::exit(1);
-            });
-            dbus_conn
-                .send
-                .send_message(&mut rustbus::standard_messages::request_name(
-                    "org.cacophony.TC2Agent".into(),
-                    rustbus::standard_messages::DBUS_NAME_FLAG_REPLACE_EXISTING,
-                ))
-                .unwrap()
-                .write_all()
-                .unwrap();
-
-            let mut dispatch_conn = DispatchConn::new(
-                dbus_conn,
-                AgentService {
-                    recording_mode_state: agent_service_state,
-                    recording_state: agent_recording_state,
-                },
-                Box::new(default_handler),
-            );
-            dispatch_conn.add_handler("/org/cacophony/TC2Agent", Box::new(audio_handler));
-            dispatch_conn.run().unwrap();
-        },
-    );
+    let _dbus_audio_thread =
+        setup_dbus_test_audio_recording_service(&recording_mode_state, &recording_state);
 
     let current_config = device_config.unwrap();
     let initial_config = current_config.clone();
-    let (device_config_change_channel_tx, device_config_change_channel_rx) =
-        watch_local_config_file_changes(current_config);
+    let device_config_change_channel_rx = watch_local_config_file_changes(current_config);
 
-    // NOTE: This handles gracefully exiting the process if ctrl-C etc is pressed
-    // while running in an interactive terminal.
+    // NOTE: This handles gracefully exiting the process if ctrl-c etc is pressed
+    //  while running in an interactive terminal.
     let sig_term_state = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, sig_term_state.clone()).unwrap();
     signal_hook::flag::register(signal_hook::consts::SIGINT, sig_term_state.clone()).unwrap();
@@ -366,7 +280,6 @@ fn main() {
             // Used to indicate that a reset request was received and processed by the frame-socket thread.
             let restart_rp2040_ack = Arc::new(AtomicBool::new(false));
 
-            // TODO: Handle errors on inner threads
             spawn_frame_socket_server_thread(
                 restart_rp2040_channel_rx,
                 camera_handshake_channel_rx,
@@ -374,16 +287,13 @@ fn main() {
                 run_pin,
                 restart_rp2040_ack.clone(),
             );
-
-            info!("Waiting to for messages from rp2040");
-            // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
             set_attiny_tc2_agent_ready(&mut dbus_conn)
-                .or_else(|msg| {
+                .or_else(|msg: &str| -> Result<(), String> {
                     error!("{}", msg);
                     process::exit(1);
                 })
                 .ok();
-
+            recording_state.set_state(tc2_agent_state::READY);
             if !initial_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
                 // NOTE: Always reset rp2040 on startup if it's safe to do so.
                 let _ = restart_rp2040_channel_tx.send(true);
@@ -406,7 +316,7 @@ fn main() {
         .unwrap();
 
     if let Err(e) = handle.join() {
-        eprintln!("Thread panicked: {:?}", e);
+        error!("Thread panicked: {:?}", e);
         process::exit(1);
     }
 }

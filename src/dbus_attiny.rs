@@ -89,9 +89,8 @@ pub fn dbus_attiny_command_attempt(
     let mut attempts = 0;
     // Now wait for the reply that matches our call id
     loop {
-        if let Ok(message) = conn
-            .recv
-            .get_next_message(Timeout::Duration(Duration::from_millis(10)))
+        if let Ok(message) =
+            conn.recv.get_next_message(Timeout::Duration(Duration::from_millis(10)))
         {
             match message.typ {
                 MessageType::Reply => {
@@ -159,9 +158,8 @@ pub fn read_tc2_agent_state(conn: &mut DuplexConn) -> Result<u8, &'static str> {
 }
 
 pub fn read_attiny_recording_flag(conn: &mut DuplexConn) -> bool {
-    read_tc2_agent_state(conn).map_or(false, |x| {
-        x & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING
-    })
+    read_tc2_agent_state(conn)
+        .map_or(false, |x| x & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING)
 }
 pub fn safe_to_restart_rp2040(conn: &mut DuplexConn) -> bool {
     !read_attiny_recording_flag(conn)
@@ -180,10 +178,10 @@ pub fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn) -> Result<u8, 
             let res = dbus_write_attiny_command(
                 conn,
                 0x07,
-                state | tc2_agent_state::TEST_AUDIO_RECORDING,
+                state | tc2_agent_state::TAKING_TEST_AUDIO_RECORDING,
             );
             if res.is_ok() {
-                Ok(state | tc2_agent_state::TEST_AUDIO_RECORDING)
+                Ok(state | tc2_agent_state::TAKING_TEST_AUDIO_RECORDING)
             } else {
                 Err(res.unwrap_err())
             }
@@ -194,6 +192,7 @@ pub fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn) -> Result<u8, 
 }
 
 pub fn set_attiny_tc2_agent_ready(conn: &mut DuplexConn) -> Result<(), &'static str> {
+    // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
     let state = read_tc2_agent_state(conn);
     if let Ok(state) = state {
         dbus_write_attiny_command(conn, 0x07, state | tc2_agent_state::READY).map(|_| ())

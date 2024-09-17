@@ -1,10 +1,9 @@
 use crate::camera_transfer_state::CameraHandshakeInfo;
-use crate::mode_config::ModeConfig;
 use crate::program_rp2040::program_rp2040;
 use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
 use crate::{cptv_frame_dispatch, RecordingMode};
-use log::{info, warn};
+use log::{error, info, warn};
 use rppal::gpio::OutputPin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -52,13 +51,17 @@ pub fn spawn_frame_socket_server_thread(
             let management_address = "/var/spool/managementd".to_string();
             // Spawn a thread which can output the frames, converted to rgb grayscale
             // This is printed out from within the spawned thread.
-            assert!(
-                result.is_ok(),
-                "Thread must have permissions to run with realtime priority, run as root user"
-            );
+            if result.is_err() {
+                error!(
+                    "Thread must have permissions to run with realtime priority, run as root user"
+                );
+                process::exit(1);
+            }
 
             let mut reconnects = 0;
             let mut prev_frame_num = None;
+
+            // FIXME: Let's make this a bit more readable.
             let mut sockets: [(String, bool, Option<SocketStream>); 2] =
                 [(address, serve_frames_via_wifi, None), (management_address, false, None)];
             loop {
@@ -97,7 +100,8 @@ pub fn spawn_frame_socket_server_thread(
                         }
                     }
 
-                    handle_result(
+                    // FIXME: Not happy with the way audio mode is hacked in here.
+                    handle_payload_from_frame_acquire_thread(
                         camera_handshake_channel_rx
                             .recv_timeout(Duration::from_millis(recv_timeout_ms)),
                         &mut sockets,
@@ -113,7 +117,7 @@ pub fn spawn_frame_socket_server_thread(
     );
 }
 
-fn handle_result(
+fn handle_payload_from_frame_acquire_thread(
     result: Result<FrameSocketServerMessage, RecvTimeoutError>,
     sockets: &mut [(String, bool, Option<SocketStream>); 2],
     ms_elapsed: &mut u64,
@@ -149,12 +153,12 @@ fn handle_result(
             for (_, _, stream) in sockets.iter_mut().filter(|(_, use_wifi, stream)| {
                 stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header
             }) {
-                let stream = stream.as_mut().unwrap();
-                if let Err(_) = stream.write_all(header.as_bytes()) {
+                let stream = stream.as_mut().expect("Never fails, because we filtered already.");
+                if stream.write_all(header.as_bytes()).is_err() {
                     warn!("Failed sending header info");
                 }
                 // Clear existing
-                if let Err(_) = stream.write_all(b"clear") {
+                if stream.write_all(b"clear").is_err() {
                     warn!("Failed clearing buffer");
                 }
                 let _ = stream.flush();
@@ -174,13 +178,14 @@ fn handle_result(
                 for (address, use_wifi, stream) in
                     sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
                 {
-                    let sent = cptv_frame_dispatch::send_frame(fb, stream.as_mut().unwrap());
+                    let sent =
+                        cptv_frame_dispatch::send_frame(fb, stream.as_mut().expect("Never fails"));
                     if !sent {
                         warn!(
                             "Send to {} failed",
                             if *use_wifi { "tc2-frames server" } else { address }
                         );
-                        let _ = stream.take().unwrap().shutdown().is_ok();
+                        let _ = stream.take().expect("Never fails").shutdown().is_ok();
                     }
                 }
             }
@@ -193,14 +198,13 @@ fn handle_result(
                     if !telemetry.ffc_in_progress {
                         if telemetry.frame_num != *prev_frame_num + 1 {
                             // NOTE: Frames can be missed when the raspberry pi
-                            // blocks the thread with the
-                            // unix socket in `thermal-recorder`.
-                            // println!("====");
-                            // println!(
-                            //     "Missed {} frames after {}s on",
-                            //     telemetry.frame_num - (prev_frame_num + 1),
-                            //     telemetry.msec_on as f32 / 1000.0
-                            // );
+                            //  blocks the thread with the
+                            //  unix socket in `thermal-recorder`.
+                            warn!(
+                                "Missed {} frames after {}s on",
+                                telemetry.frame_num - (*prev_frame_num + 1),
+                                telemetry.msec_on as f32 / 1000.0
+                            );
                         }
                     }
                 }
@@ -226,7 +230,7 @@ fn handle_result(
                         sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
                     {
                         info!(
-                            "Shutting down socket {}",
+                            "Shutting down socket '{}'",
                             if *use_wifi { "tc2-frames server" } else { address }
                         );
                         let _ = stream.take().unwrap().shutdown().is_ok();
@@ -245,22 +249,25 @@ fn handle_result(
             *ms_elapsed = 0;
         }
         _ => {
-            if !recording_mode {
+            if let RecordingMode::Thermal = recording_mode {
                 const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
                 *ms_elapsed += *recv_timeout_ms;
-                if *ms_elapsed > 10000 {
+                if *ms_elapsed > 10_000 {
                     *ms_elapsed = 0;
                     *reconnects += 1;
                     if *reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
-                        let e = program_rp2040();
-                        if e.is_err() {
-                            warn!("Failed to reprogram RP2040: {}", e.unwrap_err());
-                            process::exit(1);
+                        match program_rp2040() {
+                            Ok(()) => process::exit(0),
+                            Err(e) => {
+                                error!("Failed to reprogram RP2040: {e}");
+                                process::exit(1);
+                            }
                         }
-                        process::exit(0);
                     } else {
-                        info!("-- #{reconnects} waiting to connect to rp2040 (reprogram RP2040 after {} more attempts)",
-                          NUM_ATTEMPTS_BEFORE_REPROGRAM - *reconnects
+                        info!(
+                            "-- #{reconnects} waiting to connect to rp2040 \
+                        (reprogram RP2040 after {} more attempts)",
+                            NUM_ATTEMPTS_BEFORE_REPROGRAM - *reconnects
                         );
                     }
                 }

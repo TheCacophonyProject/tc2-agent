@@ -1,4 +1,3 @@
-use crate::ModeConfig;
 use log::info;
 use std::io;
 use std::io::Write;
@@ -23,14 +22,8 @@ impl SocketStream {
         } else {
             TcpStream::connect(address).map(|stream| {
                 stream.set_nodelay(true).unwrap();
-                stream
-                    .set_write_timeout(Some(Duration::from_millis(1500)))
-                    .unwrap();
-                SocketStream {
-                    unix: None,
-                    tcp: Some(stream),
-                    sent_header: false,
-                }
+                stream.set_write_timeout(Some(Duration::from_millis(1500))).unwrap();
+                SocketStream { unix: None, tcp: Some(stream), sent_header: false }
             })
         }
     }

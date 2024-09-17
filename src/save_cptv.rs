@@ -1,5 +1,5 @@
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use log::{error, info};
 use std::{fs, thread};
 

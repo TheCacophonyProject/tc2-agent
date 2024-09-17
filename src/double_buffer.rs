@@ -1,4 +1,4 @@
-use crate::Frame;
+use crate::cptv_frame_dispatch::Frame;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;

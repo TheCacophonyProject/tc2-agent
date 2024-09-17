@@ -5,7 +5,7 @@ use std::process::Command;
 use std::{fs, io, process};
 
 pub fn program_rp2040() -> io::Result<()> {
-    let bytes = std::fs::read("/etc/cacophony/rp2040-firmware.elf")
+    let bytes = fs::read("/etc/cacophony/rp2040-firmware.elf")
         .expect("firmware file should exist at /etc/cacophony/rp2040-firmware.elf"); // Vec<u8>
     let hash = sha256::digest(&bytes);
     let expected_hash = EXPECTED_RP2040_FIRMWARE_HASH.trim();
@@ -18,10 +18,7 @@ pub fn program_rp2040() -> io::Result<()> {
         .status()?;
 
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Command execution failed",
-        ));
+        return Err(io::Error::new(io::ErrorKind::Other, "Command execution failed"));
     }
 
     info!("Updated RP2040 firmware.");

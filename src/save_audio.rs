@@ -1,128 +1,62 @@
 use crate::device_config::DeviceConfig;
-use byteorder::{ByteOrder, LittleEndian};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use byteorder::LittleEndian;
+use byteorder::{ByteOrder, WriteBytesExt};
+use chrono::{DateTime, Utc};
 use log::{error, info};
-use std::io::Write;
-use std::process::Command;
-use std::{fs, io, thread};
+use std::io::{Cursor, Read, Write};
+use std::process::{Command, Stdio};
+use std::{fs, thread};
 
-fn wav_header(audio_bytes: &Vec<u8>) -> [u8; 44] {
-    let mut header: [u8; 44] = [0u8; 44];
-    let mut cursor = 0;
-    for b in "RIFF".bytes() {
-        header[cursor] = b;
-        cursor += 1;
-    }
-    let file_size = (audio_bytes.len() - 12 + 36) as u32;
-    for b in file_size.to_le_bytes() {
-        header[cursor] = b;
-        cursor += 1;
-    }
+fn wav_header(audio_bytes: &[u8], sample_rate: u32) -> [u8; 44] {
+    let header_inner = [0u8; 44];
+    let bits_per_sample = 16;
+    let bytes_per_block = bits_per_sample / 8;
+    let bytes_per_second: u32 = sample_rate * bytes_per_block as u32;
+    let num_channels = 1;
+    let format_pcm = 1;
+    let file_size = (audio_bytes.len() + (header_inner.len() - 8)) as u32;
 
-    for b in "WAVEfmt".bytes() {
-        header[cursor] = b;
-        cursor += 1;
-    }
+    let mut cursor = Cursor::new(header_inner);
 
-    header[cursor] = 32;
-    cursor += 1;
-    header[cursor] = 16;
-    cursor += 4;
+    // RIFF header (12 bytes)
+    cursor.write_all(b"RIFF").unwrap();
+    // Overall file size minus 8 bytes
+    cursor.write_u32::<LittleEndian>(file_size).unwrap();
+    cursor.write_all(b"WAVE").unwrap();
 
-    // PCM
-    header[cursor] = 1;
-    cursor += 2;
+    // fmt block (24 bytes)
+    cursor.write_all(b"fmt ").unwrap();
+    // Size of format data after this point (minus "fmt " and 16u32, i.e. 8 bytes)
+    cursor.write_u32::<LittleEndian>(16).unwrap();
+    cursor.write_u16::<LittleEndian>(format_pcm).unwrap();
+    cursor.write_u16::<LittleEndian>(num_channels).unwrap();
+    cursor.write_u32::<LittleEndian>(sample_rate).unwrap();
+    cursor.write_u32::<LittleEndian>(bytes_per_second).unwrap();
+    cursor.write_u16::<LittleEndian>(bytes_per_block).unwrap();
+    cursor.write_u16::<LittleEndian>(bits_per_sample).unwrap();
 
-    // channels
-    header[cursor] = 1;
-    cursor += 2;
-
-    let sr = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
-    // SR
-    for b in sr.to_le_bytes() {
-        header[cursor] = b;
-        cursor += 1;
-    }
-
-    let sr = sr * 2;
-    for b in sr.to_le_bytes() {
-        header[cursor] = b;
-        cursor += 1;
-    }
-
-    header[cursor] = 16 / 2;
-    cursor += 2;
-
-    for b in 16u16.to_le_bytes() {
-        header[cursor] = b;
-        cursor += 1;
-    }
-
-    for b in "data".bytes() {
-        header[cursor] = b;
-        cursor += 1;
-    }
-
-    for b in ((audio_bytes.len() - 12) as u32).to_le_bytes() {
-        header[cursor] = b;
-        cursor += 1;
-    }
-    header
+    // Beginning of data block / end of header (8 bytes)
+    cursor.write_all(b"data").unwrap();
+    cursor.write_u32::<LittleEndian>(audio_bytes.len() as u32).unwrap();
+    cursor.into_inner()
 }
 
 pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig) {
-    let output_dir = String::from(device_config.output_dir());
-    let temp_dir = "/home/pi/audio-temp";
+    //let output_dir = String::from(device_config.output_dir());
+    let output_dir = String::from("/home/pi/temp");
     thread::spawn(move || {
-        let header = wav_header(&audio_bytes);
         let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
         let recording_date_time = DateTime::from_timestamp_millis(timestamp as i64 / 1000)
             .unwrap_or(chrono::Local::now().with_timezone(&Utc));
-        info!("Saving Audio file with header");
-        if fs::metadata(&output_dir).is_err() {
+        info!("Saving AAC file");
+        if !fs::exists(&output_dir).unwrap_or(false) {
             fs::create_dir(&output_dir)
-                .expect(&format!("Failed to create output directory {}", output_dir));
+                .expect(&format!("Failed to create AAC output directory {}", output_dir));
         }
-        if fs::metadata(temp_dir).is_err() {
-            fs::create_dir(temp_dir)
-                .expect(&format!("Failed to create audio temporary directory {}", temp_dir));
-        }
-        let temp_path: String =
-            format!("{}/{}.wav", temp_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
         let output_path: String =
             format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
         // If the file already exists, don't re-save it.
-        if !fs::exists(&output_path) {
-            match fs::write(&temp_path, &header) {
-                Ok(()) => {
-                    info!("Saved Audio file header {} bytes are {}", temp_path, header.len());
-                }
-                Err(e) => {
-                    error!("Failed writing Audio file to storage at {}, reason: {}", temp_path, e);
-                    return;
-                }
-            }
-
-            {
-                let mut f = fs::OpenOptions::new()
-                    .append(true)
-                    .create(false)
-                    .open(&temp_path)
-                    .expect("Unable to open file");
-                match f.write_all(&audio_bytes[12..]) {
-                    Ok(()) => {
-                        info!("Saved Audio file {} bytes are {}", temp_path, audio_bytes.len());
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed writing Audio file to storage at {}, reason: {}",
-                            temp_path, e
-                        );
-                        return;
-                    }
-                }
-            }
-
+        if !fs::exists(&output_path).unwrap_or(false) {
             let recording_date_time =
                 format!("recordingDateTime=\"{}\"", recording_date_time.to_rfc3339());
             let latitude = format!("latitude=\"{}\"", device_config.lat_lng().0);
@@ -134,10 +68,11 @@ pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig
             let location_timestamp =
                 format!("locTimestamp=\"{}\"", device_config.location_timestamp().unwrap_or(0));
             let device_id = format!("deviceId=\"{}\"", device_config.device_id());
+
             // Now transcode with ffmpeg
-            match Command::new("ffmpeg")
+            let mut cmd = Command::new("ffmpeg")
                 .arg("-i")
-                .arg(&temp_path)
+                .arg("pipe:0")
                 .arg("-metadata")
                 .arg(recording_date_time)
                 .arg("-metadata")
@@ -146,27 +81,63 @@ pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig
                 .arg(longitude)
                 .arg("-metadata")
                 .arg(device_id)
+                .arg("-metadata")
+                .arg(altitude)
+                .arg("-metadata")
+                .arg(location_timestamp)
+                .arg("-metadata")
+                .arg(location_accuracy)
                 .arg("-codec:a")
                 .arg("aac")
                 .arg("-b:a")
                 .arg("128k")
-                .arg(&output_path)
-                .status()
-            {
-                Ok(status) => {
-                    if !status.success() {
-                        error!("Failed transcoding {} to AAC", temp_path);
-                    } else {
-                        fs::remove_file(&temp_path)
-                            .expect("Should be able to remove temporary .wav file");
+                .arg("pipe:1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("Failed to spawn ffmpeg process");
+
+            // Write wav to stdin:
+            let stdin = cmd.stdin.as_mut().expect("Failed to open stdin");
+            let sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
+            let audio_bytes = &audio_bytes[12..];
+            stdin.write(&wav_header(&audio_bytes, sample_rate)).unwrap();
+            stdin.write_all(&audio_bytes).expect("Failed to write to stdin");
+            let stdout = cmd.stdout.as_mut().expect("Failed to open stdout");
+            let mut acc_data = Vec::new();
+            match stdout.read_to_end(&mut acc_data) {
+                Ok(size) => {
+                    // Write to disk
+                    match fs::write(&output_path, &acc_data) {
+                        Ok(()) => {
+                            info!("Saved AAC file {} bytes are {}", output_path, size);
+                        }
+                        Err(e) => {
+                            error!(
+                                "Failed writing AAC file to storage at {}, reason: {}",
+                                output_path, e
+                            );
+                            return;
+                        }
                     }
                 }
                 Err(e) => {
-                    error!("Failed invoking ffmpeg to transcode {}, reason: {}", temp_path, e);
+                    // Failed transcoding AAC
+                    error!("Failed reading AAC file from ffmpeg via stdout, reason: {}", e);
+                }
+            }
+            match cmd.wait() {
+                Ok(status) => {
+                    if !status.success() {
+                        error!("Failed transcoding {} to AAC", output_path);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed invoking ffmpeg to transcode {}, reason: {}", output_path, e);
                 }
             }
         } else {
-            error!("File {} already exists, discarding duplicate", temp_path);
+            error!("File {} already exists, discarding duplicate", output_path);
         }
     });
 }
