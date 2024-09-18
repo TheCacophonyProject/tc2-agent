@@ -100,7 +100,8 @@ pub fn spawn_frame_socket_server_thread(
                         }
                     }
 
-                    // FIXME: Not happy with the way audio mode is hacked in here.
+                    // FIXME: Not happy with the way audio mode is hacked in here, when it's
+                    //  really got nothing to do with the handshake etc.
                     handle_payload_from_frame_acquire_thread(
                         camera_handshake_channel_rx
                             .recv_timeout(Duration::from_millis(recv_timeout_ms)),

@@ -17,7 +17,7 @@ use std::io::{Cursor, Write};
 use std::ops::Add;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::{fs, process};
 use sun_times::sun_times;
 use toml::value::Offset;
@@ -870,8 +870,11 @@ impl DeviceConfig {
     }
 }
 
-pub fn watch_local_config_file_changes(mut current_config: DeviceConfig) -> Receiver<DeviceConfig> {
-    let (config_tx, config_rx) = channel();
+pub fn watch_local_config_file_changes(
+    mut current_config: DeviceConfig,
+    config_tx: &Sender<DeviceConfig>,
+) {
+    let config_tx = config_tx.clone();
     let mut watcher = notify::recommended_watcher(move |res| match res {
         Ok(Event { kind, .. }) => {
             match kind {
@@ -914,7 +917,6 @@ pub fn watch_local_config_file_changes(mut current_config: DeviceConfig) -> Rece
             process::exit(1);
         })
         .unwrap();
-    config_rx
 }
 
 // FIXME: Use RecordingModeState here?

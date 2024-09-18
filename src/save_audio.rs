@@ -3,7 +3,8 @@ use byteorder::LittleEndian;
 use byteorder::{ByteOrder, WriteBytesExt};
 use chrono::{DateTime, Utc};
 use log::{error, info};
-use std::io::{Cursor, Read, Write};
+use std::io::Cursor;
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::{fs, thread};
 
@@ -91,6 +92,8 @@ pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig
                 .arg("aac")
                 .arg("-b:a")
                 .arg("128k")
+                .arg("-f")
+                .arg("adts")
                 .arg("pipe:1")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -98,37 +101,43 @@ pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig
                 .expect("Failed to spawn ffmpeg process");
 
             // Write wav to stdin:
-            let stdin = cmd.stdin.as_mut().expect("Failed to open stdin");
+            let mut stdin = cmd.stdin.take().expect("Failed to open stdin");
             let sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
             let audio_bytes = &audio_bytes[12..];
-            stdin.write(&wav_header(&audio_bytes, sample_rate)).unwrap();
-            stdin.write_all(&audio_bytes).expect("Failed to write to stdin");
-            let stdout = cmd.stdout.as_mut().expect("Failed to open stdout");
-            let mut acc_data = Vec::new();
-            match stdout.read_to_end(&mut acc_data) {
-                Ok(size) => {
-                    // Write to disk
-                    match fs::write(&output_path, &acc_data) {
-                        Ok(()) => {
-                            info!("Saved AAC file {} bytes are {}", output_path, size);
+            let mut wav = Vec::with_capacity(audio_bytes.len() + 44);
+
+            // TODO: Is it better to just output the sample rate as 48_000?
+            wav.extend_from_slice(&wav_header(audio_bytes, sample_rate));
+            wav.extend_from_slice(&audio_bytes);
+            fs::write(
+                format!(
+                    "/home/pi/temp/{}.wav",
+                    DateTime::from_timestamp_millis(timestamp as i64 / 1000)
+                        .unwrap_or(chrono::Local::now().with_timezone(&Utc))
+                        .format("%Y-%m-%d--%H-%M-%S")
+                ),
+                &wav,
+            )
+            .unwrap();
+            // TODO: Maybe once working try to avoid allocating the intermediate vec for the wav
+            stdin.write(&wav).expect("Failed to write to stdin");
+            drop(stdin);
+            match cmd.wait_with_output() {
+                Ok(output) => {
+                    if output.status.success() {
+                        match fs::write(&output_path, &output.stdout) {
+                            Ok(()) => {
+                                info!("Saved AAC file {}", output_path);
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed writing AAC file to storage at {}, reason: {}",
+                                    output_path, e
+                                );
+                                return;
+                            }
                         }
-                        Err(e) => {
-                            error!(
-                                "Failed writing AAC file to storage at {}, reason: {}",
-                                output_path, e
-                            );
-                            return;
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Failed transcoding AAC
-                    error!("Failed reading AAC file from ffmpeg via stdout, reason: {}", e);
-                }
-            }
-            match cmd.wait() {
-                Ok(status) => {
-                    if !status.success() {
+                    } else {
                         error!("Failed transcoding {} to AAC", output_path);
                     }
                 }

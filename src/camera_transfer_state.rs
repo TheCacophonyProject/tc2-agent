@@ -1,5 +1,5 @@
 use crate::cptv_frame_dispatch::FRAME_BUFFER;
-use crate::dbus_attiny::{
+use crate::dbus_attiny_i2c::{
     exit_cleanly, process_interrupted, read_attiny_recording_flag, read_tc2_agent_state,
     safe_to_restart_rp2040, set_attiny_tc2_agent_test_audio_rec,
 };
@@ -17,6 +17,7 @@ use crate::{
 };
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz::Pacific__Auckland;
 use crc::{Crc, CRC_16_XMODEM};
 use log::{error, info, warn};
 use rppal::gpio::Trigger;
@@ -490,7 +491,11 @@ pub fn enter_camera_transfer_loop(
                                                 } else {
                                                     None
                                                 };
-                                            info!("Got logger event {:?} at {}", event_kind, time);
+                                            info!(
+                                                "Got logger event {:?} at {}",
+                                                event_kind,
+                                                time.with_timezone(&Pacific__Auckland)
+                                            );
                                             let event =
                                                 LoggerEvent::new(event_kind, event_timestamp);
                                             event.log(&mut dbus_conn, payload_json);
@@ -613,8 +618,8 @@ pub fn enter_camera_transfer_loop(
                                     part_count = 0;
                                     let mut file = Vec::new();
                                     file.extend_from_slice(&chunk);
-                                    let shebang = u8_slice_as_u16_slice(&file[0..2]);
-                                    if shebang[0] == AUDIO_SHEBANG {
+                                    let shebang = LittleEndian::read_u16(&file[0..2]);
+                                    if shebang == AUDIO_SHEBANG {
                                         save_audio_file_to_disk(file, device_config.clone());
                                     } else {
                                         save_cptv_file_to_disk(file, device_config.output_dir())

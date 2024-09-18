@@ -3,7 +3,7 @@ extern crate core;
 mod camera_transfer_state;
 mod cptv_frame_dispatch;
 mod cptv_header;
-mod dbus_attiny;
+mod dbus_attiny_i2c;
 mod dbus_audio;
 mod detection_mask;
 mod device_config;
@@ -38,10 +38,9 @@ use rustbus::{get_system_bus_path, DuplexConn};
 use simplelog::*;
 
 use crate::camera_transfer_state::enter_camera_transfer_loop;
-use crate::dbus_attiny::exit_cleanly;
-use crate::dbus_attiny::read_attiny_firmware_version;
-use crate::dbus_attiny::safe_to_restart_rp2040;
-use crate::dbus_attiny::set_attiny_tc2_agent_ready;
+use crate::dbus_attiny_i2c::exit_if_attiny_version_is_not_as_expected;
+use crate::dbus_attiny_i2c::safe_to_restart_rp2040;
+use crate::dbus_attiny_i2c::set_attiny_tc2_agent_ready;
 use crate::dbus_audio::setup_dbus_test_audio_recording_service;
 use crate::dbus_audio::AudioStatus;
 use crate::device_config::watch_local_config_file_changes;
@@ -243,7 +242,8 @@ fn main() {
 
     let current_config = device_config.unwrap();
     let initial_config = current_config.clone();
-    let device_config_change_channel_rx = watch_local_config_file_changes(current_config);
+    let (device_config_change_channel_tx, device_config_change_channel_rx) = channel();
+    watch_local_config_file_changes(current_config, &device_config_change_channel_tx);
 
     // NOTE: This handles gracefully exiting the process if ctrl-c etc is pressed
     //  while running in an interactive terminal.
@@ -261,8 +261,9 @@ fn main() {
                 "Thread must have permissions to run with realtime priority, run as root user"
             );
 
-            // For some reason when running periph.io host.ini function, needed to use the I2C in the attiny-controller,
-            // it 'holds/exports' some of the GPIO pins, so we manually 'release/unexport' them with the following.
+            // For some reason when running periph.io host.ini function,
+            // needed to use the I2C in the attiny-controller, it 'holds/exports' some of the
+            // GPIO pins, so we manually 'release/unexport' them with the following.
             let gpio_number = "7";
             let _ = fs::write("/sys/class/gpio/unexport", gpio_number);
 
@@ -277,7 +278,8 @@ fn main() {
             let (camera_handshake_channel_tx, camera_handshake_channel_rx) = channel();
             let (restart_rp2040_channel_tx, restart_rp2040_channel_rx) = channel();
 
-            // Used to indicate that a reset request was received and processed by the frame-socket thread.
+            // Used to indicate that a reset request was received and processed by the
+            // frame-socket thread.
             let restart_rp2040_ack = Arc::new(AtomicBool::new(false));
 
             spawn_frame_socket_server_thread(
@@ -318,27 +320,5 @@ fn main() {
     if let Err(e) = handle.join() {
         error!("Thread panicked: {:?}", e);
         process::exit(1);
-    }
-}
-
-fn exit_if_attiny_version_is_not_as_expected(dbus_conn: &mut DuplexConn) {
-    let version = read_attiny_firmware_version(dbus_conn);
-    match version {
-        Ok(version) => match version {
-            EXPECTED_ATTINY_FIRMWARE_VERSION => {}
-            _ => {
-                error!(
-                    "Mismatched attiny firmware version, expected {}, got {}",
-                    EXPECTED_ATTINY_FIRMWARE_VERSION, version
-                );
-                exit_cleanly(dbus_conn);
-                process::exit(1);
-            }
-        },
-        Err(msg) => {
-            error!("{}", msg);
-            exit_cleanly(dbus_conn);
-            process::exit(1);
-        }
     }
 }

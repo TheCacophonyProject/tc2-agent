@@ -1,8 +1,10 @@
-use crate::tc2_agent_state;
+use crate::{tc2_agent_state, EXPECTED_ATTINY_FIRMWARE_VERSION};
 use byteorder::{BigEndian, ByteOrder};
 use crc::{Algorithm, Crc};
+use log::error;
 use rustbus::connection::Timeout;
 use rustbus::{DuplexConn, MessageBuilder, MessageType};
+use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,7 +38,7 @@ pub fn dbus_attiny_command(
     value: Option<u8>,
 ) -> Result<u8, &'static str> {
     let max_attempts = 10;
-    let retry_delay = std::time::Duration::from_secs(2);
+    let retry_delay = Duration::from_secs(2);
 
     for attempt in 1..=max_attempts {
         match dbus_attiny_command_attempt(conn, command, value) {
@@ -45,7 +47,7 @@ pub fn dbus_attiny_command(
                 if attempt == max_attempts {
                     return Err("Max attempts reached: failed to execute i2c dbus command");
                 }
-                eprintln!(
+                error!(
                     "Attempt {}/{} failed: {}. Retrying in {:?}...",
                     attempt, max_attempts, e, retry_delay
                 );
@@ -198,5 +200,27 @@ pub fn set_attiny_tc2_agent_ready(conn: &mut DuplexConn) -> Result<(), &'static 
         dbus_write_attiny_command(conn, 0x07, state | tc2_agent_state::READY).map(|_| ())
     } else {
         Err("Failed reading ready state from attiny")
+    }
+}
+
+pub fn exit_if_attiny_version_is_not_as_expected(dbus_conn: &mut DuplexConn) {
+    let version = read_attiny_firmware_version(dbus_conn);
+    match version {
+        Ok(version) => match version {
+            EXPECTED_ATTINY_FIRMWARE_VERSION => {}
+            _ => {
+                error!(
+                    "Mismatched attiny firmware version, expected {}, got {}",
+                    EXPECTED_ATTINY_FIRMWARE_VERSION, version
+                );
+                exit_cleanly(dbus_conn);
+                process::exit(1);
+            }
+        },
+        Err(msg) => {
+            error!("{}", msg);
+            exit_cleanly(dbus_conn);
+            process::exit(1);
+        }
     }
 }
