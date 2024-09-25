@@ -1,6 +1,6 @@
 use crate::cptv_frame_dispatch::FRAME_BUFFER;
 use crate::dbus_attiny_i2c::{
-    exit_cleanly, process_interrupted, read_attiny_recording_flag, read_tc2_agent_state,
+    exit_cleanly, process_interrupted, read_attiny_is_recording_state, read_tc2_agent_state,
     safe_to_restart_rp2040, set_attiny_tc2_agent_test_audio_rec,
 };
 use crate::dbus_audio::AudioStatus;
@@ -187,11 +187,7 @@ pub fn enter_camera_transfer_loop(
         }
         if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
-
-            warn!(
-                "Requesting reset of rp2040 due to config change, {}",
-                date.format("%Y-%m-%d--%H:%M:%S")
-            );
+            warn!("Requesting reset of rp2040 at {}", date.with_timezone(&Pacific__Auckland));
             rp2040_needs_reset = false;
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
@@ -367,7 +363,7 @@ pub fn enter_camera_transfer_loop(
                                     radiometry enabled: {radiometry_enabled}, \
                                     firmware version: {firmware_version}, \
                                     lepton serial #{lepton_serial_number} \
-                                    audio mode {:?}",
+                                    recording mode {:?}",
                                         recording_mode
                                     );
 
@@ -717,7 +713,7 @@ fn maybe_make_test_audio_recording(
     }
     if recording_state.should_take_test_audio_recording() {
         // if already recording don't take test rec
-        let is_recording = read_attiny_recording_flag(dbus_conn);
+        let is_recording = read_attiny_is_recording_state(dbus_conn);
         if is_recording {
             // Is it correct that this clobbers any other state?
             recording_state.set_state(tc2_agent_state::RECORDING);

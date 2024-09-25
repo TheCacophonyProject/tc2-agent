@@ -159,12 +159,12 @@ pub fn read_tc2_agent_state(conn: &mut DuplexConn) -> Result<u8, &'static str> {
     dbus_read_attiny_command(conn, 0x07)
 }
 
-pub fn read_attiny_recording_flag(conn: &mut DuplexConn) -> bool {
+pub fn read_attiny_is_recording_state(conn: &mut DuplexConn) -> bool {
     read_tc2_agent_state(conn)
         .map_or(false, |x| x & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING)
 }
 pub fn safe_to_restart_rp2040(conn: &mut DuplexConn) -> bool {
-    !read_attiny_recording_flag(conn)
+    !read_attiny_is_recording_state(conn)
 }
 
 pub fn read_attiny_firmware_version(conn: &mut DuplexConn) -> Result<u8, &'static str> {

@@ -76,7 +76,7 @@ const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 
 #[repr(u8)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum RecordingMode {
     Thermal = 0,
     Audio = 1,
@@ -121,7 +121,8 @@ impl RecordingState {
     }
 
     pub fn is_recording(&self) -> bool {
-        self.rp2040_recording_state_inner.load(Ordering::Relaxed) & tc2_agent_state::RECORDING == 0
+        self.rp2040_recording_state_inner.load(Ordering::Relaxed) & tc2_agent_state::RECORDING
+            == tc2_agent_state::RECORDING
     }
 
     pub fn set_is_recording(&mut self, is_recording: bool) {

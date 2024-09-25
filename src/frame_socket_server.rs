@@ -3,7 +3,7 @@ use crate::program_rp2040::program_rp2040;
 use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
 use crate::{cptv_frame_dispatch, RecordingMode};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use rppal::gpio::OutputPin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -71,6 +71,7 @@ pub fn spawn_frame_socket_server_thread(
                     &mut restart_rp2040_ack,
                 );
                 let mut recv_recording_mode = RecordingMode::Thermal;
+                let initial_recording_mode = recv_recording_mode;
                 let mut recv_timeout_ms = 10;
                 info!("Connecting to frame sockets");
                 let mut ms_elapsed = 0;
@@ -80,6 +81,12 @@ pub fn spawn_frame_socket_server_thread(
                         &mut run_pin,
                         &mut restart_rp2040_ack,
                     );
+                    if initial_recording_mode != recv_recording_mode {
+                        info!(
+                            "Recording mode changed from {:?} to {:?}",
+                            initial_recording_mode, recv_recording_mode
+                        );
+                    }
                     if let RecordingMode::Thermal = recv_recording_mode {
                         for (address, use_wifi, stream) in
                             sockets.iter_mut().filter(|(_, _, stream)| stream.is_none())
@@ -201,7 +208,7 @@ fn handle_payload_from_frame_acquire_thread(
                             // NOTE: Frames can be missed when the raspberry pi
                             //  blocks the thread with the
                             //  unix socket in `thermal-recorder`.
-                            warn!(
+                            debug!(
                                 "Missed {} frames after {}s on",
                                 telemetry.frame_num - (*prev_frame_num + 1),
                                 telemetry.msec_on as f32 / 1000.0
