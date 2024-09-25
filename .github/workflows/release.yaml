@@ -1,0 +1,72 @@
+name: Rust CI and release
+
+on:
+  push:
+    branches: 
+      - '**'
+    tags:
+      - '*'
+  pull_request:
+    branches: 
+      - '**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      RP2040_FIRMWARE_VERSION: 0.2.14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y \
+          gcc-aarch64-linux-gnu \
+          libc6-arm64-cross \
+          libc6-dev-arm64-cross \
+          binutils-aarch64-linux-gnu
+
+      - name: Add target for cross-compilation
+        run: rustup target add aarch64-unknown-linux-musl
+
+      - name: Configure Cargo for cross-compilation
+        run: |
+          mkdir -p ~/.cargo
+          echo '[target.aarch64-unknown-linux-musl]' > ~/.cargo/config
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config
+
+      - name: Update version in Cargo.toml if tag exists
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          sed -i "s/version = \"0.0.0-snapshot\"/version = \"${TAG#v}\"/g" Cargo.toml
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --version 2.3.0
+
+      - name: Download firmware files
+        run: |
+          mkdir -p _releases
+          wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware.sha256
+          wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
+
+      - name: Build the project
+        run: cargo build --release --target=aarch64-unknown-linux-musl
+
+      - name: Create Debian package
+        run: cargo deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
+          replacesArtifacts: true
