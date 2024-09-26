@@ -75,4 +75,4 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           artifacts: tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
-          replacesArtifacts: true
+          allowUpdates: true
