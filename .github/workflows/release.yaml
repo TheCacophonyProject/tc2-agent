@@ -24,7 +24,7 @@ jobs:
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.77.1
           override: true
 
       - name: Display Rust and Cargo version
