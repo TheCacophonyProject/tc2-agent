@@ -1,4 +1,4 @@
-use crate::{tc2_agent_state, EXPECTED_ATTINY_FIRMWARE_VERSION};
+use crate::EXPECTED_ATTINY_FIRMWARE_VERSION;
 use byteorder::{BigEndian, ByteOrder};
 use crc::{Algorithm, Crc};
 use log::error;
@@ -159,48 +159,8 @@ pub fn read_tc2_agent_state(conn: &mut DuplexConn) -> Result<u8, &'static str> {
     dbus_read_attiny_command(conn, 0x07)
 }
 
-pub fn read_attiny_is_recording_state(conn: &mut DuplexConn) -> bool {
-    read_tc2_agent_state(conn)
-        .map_or(false, |x| x & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING)
-}
-pub fn safe_to_restart_rp2040(conn: &mut DuplexConn) -> bool {
-    !read_attiny_is_recording_state(conn)
-}
-
 pub fn read_attiny_firmware_version(conn: &mut DuplexConn) -> Result<u8, &'static str> {
     dbus_read_attiny_command(conn, 0x01)
-}
-
-pub fn set_attiny_tc2_agent_test_audio_rec(conn: &mut DuplexConn) -> Result<u8, &'static str> {
-    let state = read_tc2_agent_state(conn);
-    if let Ok(state) = state {
-        if (state & tc2_agent_state::RECORDING) == tc2_agent_state::RECORDING {
-            Err("Already recording so not doing test rec")
-        } else {
-            let res = dbus_write_attiny_command(
-                conn,
-                0x07,
-                state | tc2_agent_state::TAKING_TEST_AUDIO_RECORDING,
-            );
-            if res.is_ok() {
-                Ok(state | tc2_agent_state::TAKING_TEST_AUDIO_RECORDING)
-            } else {
-                Err(res.unwrap_err())
-            }
-        }
-    } else {
-        Err("Failed reading ready state from attiny")
-    }
-}
-
-pub fn set_attiny_tc2_agent_ready(conn: &mut DuplexConn) -> Result<(), &'static str> {
-    // Poke register 0x07 of the attiny letting the rp2040 know that we're ready:
-    let state = read_tc2_agent_state(conn);
-    if let Ok(state) = state {
-        dbus_write_attiny_command(conn, 0x07, state | tc2_agent_state::READY).map(|_| ())
-    } else {
-        Err("Failed reading ready state from attiny")
-    }
 }
 
 pub fn exit_if_attiny_version_is_not_as_expected(dbus_conn: &mut DuplexConn) {

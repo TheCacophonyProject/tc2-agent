@@ -12,9 +12,9 @@ mod event_logger;
 mod frame_socket_server;
 mod mode_config;
 mod program_rp2040;
+mod recording_state;
 mod save_audio;
 mod save_cptv;
-mod service;
 mod socket_stream;
 mod telemetry;
 mod utils;
@@ -23,7 +23,7 @@ use rppal::gpio::Gpio;
 
 use std::fs;
 use std::process;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::thread::sleep;
@@ -39,32 +39,13 @@ use simplelog::*;
 
 use crate::camera_transfer_state::enter_camera_transfer_loop;
 use crate::dbus_attiny_i2c::exit_if_attiny_version_is_not_as_expected;
-use crate::dbus_attiny_i2c::safe_to_restart_rp2040;
-use crate::dbus_attiny_i2c::set_attiny_tc2_agent_ready;
 use crate::dbus_audio::setup_dbus_test_audio_recording_service;
-use crate::dbus_audio::AudioStatus;
 use crate::device_config::watch_local_config_file_changes;
 use crate::device_config::DeviceConfig;
 use crate::frame_socket_server::spawn_frame_socket_server_thread;
 use crate::mode_config::ModeConfig;
 use crate::program_rp2040::check_if_rp2040_needs_programming;
-
-pub mod tc2_agent_state {
-    pub const NOT_READY: u8 = 0b0000_0000;
-
-    /// tc2-agent is ready to accept files or recording streams from the rp2040
-    pub const READY: u8 = 0b0000_0010;
-    //taking an audio or thermal recording
-    pub const RECORDING: u8 = 0b0000_0100;
-    pub const TAKING_TEST_AUDIO_RECORDING: u8 = 0b0000_1000;
-    //an audio recording has been requested from thermal mode
-    pub const SHOULD_TAKE_TEST_AUDIO_RECORDING: u8 = 0b0001_0000;
-
-    // FIXME: Unused?
-    pub const OFFLOAD: u8 = 0b0010_0000;
-    //requested to boot into thermal mode from audio mode
-    pub const PENDING_BOOT_INTO_THERMAL_MODE: u8 = 0b0100_0000;
-}
+use crate::recording_state::RecordingState;
 
 const AUDIO_SHEBANG: u16 = 1;
 
@@ -74,128 +55,6 @@ const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
-
-#[repr(u8)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum RecordingMode {
-    Thermal = 0,
-    Audio = 1,
-}
-
-#[derive(Clone)]
-struct RecordingModeState {
-    inner: Arc<AtomicU8>,
-}
-
-impl RecordingModeState {
-    pub fn new() -> Self {
-        Self { inner: Arc::new(AtomicU8::new(RecordingMode::Thermal as u8)) }
-    }
-
-    pub fn is_in_audio_mode(&self) -> bool {
-        self.inner.load(Ordering::Relaxed) == RecordingMode::Audio as u8
-    }
-
-    #[allow(unused)]
-    pub fn is_in_thermal_mode(&self) -> bool {
-        self.inner.load(Ordering::Relaxed) == RecordingMode::Thermal as u8
-    }
-
-    pub fn set_mode(&mut self, mode: RecordingMode) {
-        self.inner.store(mode as u8, Ordering::Relaxed);
-    }
-}
-
-#[derive(Clone)]
-struct RecordingState {
-    rp2040_recording_state_inner: Arc<AtomicU8>,
-    test_recording_state_inner: Arc<AtomicBool>,
-}
-
-impl RecordingState {
-    pub fn new() -> Self {
-        Self {
-            rp2040_recording_state_inner: Arc::new(AtomicU8::new(tc2_agent_state::NOT_READY)),
-            test_recording_state_inner: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    pub fn is_recording(&self) -> bool {
-        self.rp2040_recording_state_inner.load(Ordering::Relaxed) & tc2_agent_state::RECORDING
-            == tc2_agent_state::RECORDING
-    }
-
-    pub fn set_is_recording(&mut self, is_recording: bool) {
-        let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        let new_state =
-            if is_recording { tc2_agent_state::RECORDING } else { !tc2_agent_state::RECORDING };
-        while !self
-            .rp2040_recording_state_inner
-            .compare_exchange(state, state & new_state, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            sleep(Duration::from_micros(1));
-        }
-    }
-
-    pub fn is_taking_test_audio_recording(&self) -> bool {
-        self.get_audio_status() == AudioStatus::TakingTestRecording
-    }
-
-    #[allow(unused)]
-    pub fn is_waiting_to_take_test_audio_recording(&self) -> bool {
-        self.get_audio_status() == AudioStatus::WaitingToTakeTestRecording
-    }
-
-    pub fn finished_taking_test_recording(&mut self) {
-        self.test_recording_state_inner.store(false, Ordering::Relaxed);
-        let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        while !self
-            .rp2040_recording_state_inner
-            .compare_exchange(
-                state,
-                state
-                    & !(tc2_agent_state::RECORDING | tc2_agent_state::TAKING_TEST_AUDIO_RECORDING),
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
-            .is_ok()
-        {
-            sleep(Duration::from_micros(1));
-        }
-    }
-
-    pub fn get_audio_status(&self) -> AudioStatus {
-        let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        if state & (tc2_agent_state::TAKING_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
-            == (tc2_agent_state::TAKING_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
-        {
-            AudioStatus::TakingTestRecording
-        } else if state & tc2_agent_state::TAKING_TEST_AUDIO_RECORDING
-            == tc2_agent_state::TAKING_TEST_AUDIO_RECORDING
-        {
-            AudioStatus::WaitingToTakeTestRecording
-        } else if state & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING {
-            AudioStatus::Recording
-        } else if self.should_take_test_audio_recording() {
-            AudioStatus::WaitingToTakeTestRecording
-        } else {
-            AudioStatus::Ready
-        }
-    }
-
-    pub fn set_state(&mut self, state: u8) {
-        self.rp2040_recording_state_inner.store(state, Ordering::Relaxed);
-    }
-
-    pub fn set_should_take_test_audio_recording(&mut self, state: bool) {
-        self.test_recording_state_inner.store(state, Ordering::Relaxed);
-    }
-
-    pub fn should_take_test_audio_recording(&self) -> bool {
-        self.test_recording_state_inner.load(Ordering::Relaxed)
-    }
-}
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -236,10 +95,8 @@ fn main() {
         process::exit(1);
     });
 
-    let recording_mode_state = RecordingModeState::new();
     let mut recording_state = RecordingState::new();
-    let _dbus_audio_thread =
-        setup_dbus_test_audio_recording_service(&recording_mode_state, &recording_state);
+    let _dbus_audio_thread = setup_dbus_test_audio_recording_service(&recording_state);
 
     let current_config = device_config.unwrap();
     let initial_config = current_config.clone();
@@ -283,6 +140,10 @@ fn main() {
             // frame-socket thread.
             let restart_rp2040_ack = Arc::new(AtomicBool::new(false));
 
+            // The frame socket server takes frames from the main camera transfer loop,
+            // and serves them to various consumers of frames.
+            // For mostly historical reasons, it's also the thread that handles actually restarting
+            // the rp2040 – but it would perhaps be cleaner to handle this in a separate thread?
             spawn_frame_socket_server_thread(
                 restart_rp2040_channel_rx,
                 camera_handshake_channel_rx,
@@ -290,14 +151,8 @@ fn main() {
                 run_pin,
                 restart_rp2040_ack.clone(),
             );
-            set_attiny_tc2_agent_ready(&mut dbus_conn)
-                .or_else(|msg: &str| -> Result<(), String> {
-                    error!("{}", msg);
-                    process::exit(1);
-                })
-                .ok();
-            recording_state.set_state(tc2_agent_state::READY);
-            if !initial_config.use_low_power_mode() || safe_to_restart_rp2040(&mut dbus_conn) {
+            recording_state.set_ready(&mut dbus_conn);
+            if !initial_config.use_low_power_mode() || !recording_state.is_recording() {
                 // NOTE: Always reset rp2040 on startup if it's safe to do so.
                 let _ = restart_rp2040_channel_tx.send(true);
             }
@@ -310,7 +165,6 @@ fn main() {
                 sig_term_state,
                 camera_handshake_channel_tx,
                 restart_rp2040_ack,
-                recording_mode_state,
                 recording_state,
             );
             info!("Exiting gracefully");

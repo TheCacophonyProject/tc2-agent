@@ -9,14 +9,14 @@ use std::process::{Command, Stdio};
 use std::{fs, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
-fn wav_header(audio_bytes: &[u8], sample_rate: u32) -> [u8; 44] {
+fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
     let header_inner = [0u8; 44];
     let bits_per_sample = 16;
     let bytes_per_block = bits_per_sample / 8;
     let bytes_per_second: u32 = sample_rate * bytes_per_block as u32;
     let num_channels = 1;
     let format_pcm = 1;
-    let file_size = (audio_bytes.len() + (header_inner.len() - 8)) as u32;
+    let file_size = (audio_length + (header_inner.len() - 8)) as u32;
 
     let mut cursor = Cursor::new(header_inner);
 
@@ -39,16 +39,17 @@ fn wav_header(audio_bytes: &[u8], sample_rate: u32) -> [u8; 44] {
 
     // Beginning of data block / end of header (8 bytes)
     cursor.write_all(b"data").unwrap();
-    cursor.write_u32::<LittleEndian>(audio_bytes.len() as u32).unwrap();
+    cursor.write_u32::<LittleEndian>(audio_length as u32).unwrap();
     cursor.into_inner()
 }
 
-pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig) {
-    //let output_dir = String::from(device_config.output_dir());
-    let output_dir = String::from("/home/pi/temp");
+pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig) {
+    let output_dir = String::from(device_config.output_dir());
     let _ = thread::Builder::new().name("audio-transcode".to_string()).spawn_with_priority(
         ThreadPriority::Min,
         move |_| {
+            // Reclaim some memory
+            audio_bytes.shrink_to_fit();
             let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
             let recording_date_time = DateTime::from_timestamp_millis(timestamp as i64 / 1000)
                 .unwrap_or(chrono::Local::now().with_timezone(&Utc))
@@ -59,7 +60,7 @@ pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig
                     .expect(&format!("Failed to create AAC output directory {}", output_dir));
             }
             let output_path: String =
-                format!("{}/{}.m4a", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
+                format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
             // If the file already exists, don't re-save it.
             if !fs::exists(&output_path).unwrap_or(false) {
                 let recording_date_time =
@@ -74,7 +75,8 @@ pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig
                     format!("locTimestamp=\"{}\"", device_config.location_timestamp().unwrap_or(0));
                 let device_id = format!("deviceId=\"{}\"", device_config.device_id());
 
-                // Now transcode with ffmpeg
+                // Now transcode with ffmpeg – we create an aac stream in an m4a wrapper in order
+                // to support adding metadata tags.
                 let mut cmd = Command::new("ffmpeg")
                     .arg("-i")
                     .arg("pipe:0")
@@ -97,9 +99,9 @@ pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig
                     .arg("-b:a")
                     .arg("128k")
                     .arg("-movflags")
-                    .arg("faststart")
+                    .arg("faststart") // Move the metadata to the beginning of file
                     .arg("-movflags")
-                    .arg("+use_metadata_tags")
+                    .arg("+use_metadata_tags") // Allow custom metadata tags
                     .arg("-f")
                     .arg("mp4")
                     .arg(output_path.clone())
@@ -114,7 +116,7 @@ pub fn save_audio_file_to_disk(audio_bytes: Vec<u8>, device_config: DeviceConfig
                 thread::spawn(move || {
                     // Write wav to stdin:
                     let audio_bytes = &audio_bytes[12..];
-                    stdin.write_all(&wav_header(&audio_bytes, sample_rate)).unwrap();
+                    stdin.write_all(&wav_header(audio_bytes.len(), sample_rate)).unwrap();
                     stdin.write_all(&audio_bytes).unwrap();
                 });
                 match cmd.wait() {

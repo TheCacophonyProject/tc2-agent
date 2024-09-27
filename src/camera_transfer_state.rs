@@ -1,20 +1,15 @@
 use crate::cptv_frame_dispatch::FRAME_BUFFER;
-use crate::dbus_attiny_i2c::{
-    exit_cleanly, process_interrupted, read_attiny_is_recording_state, read_tc2_agent_state,
-    safe_to_restart_rp2040, set_attiny_tc2_agent_test_audio_rec,
-};
-use crate::dbus_audio::AudioStatus;
+use crate::dbus_attiny_i2c::{exit_cleanly, process_interrupted};
+
 use crate::device_config::{check_for_device_config_changes, DeviceConfig};
 use crate::event_logger::{LoggerEvent, LoggerEventKind, WakeReason};
 use crate::frame_socket_server::FrameSocketServerMessage;
 use crate::program_rp2040::program_rp2040;
+use crate::recording_state::RecordingMode;
 use crate::save_audio::save_audio_file_to_disk;
 use crate::save_cptv::save_cptv_file_to_disk;
 use crate::utils::u8_slice_as_u16_slice;
-use crate::{
-    tc2_agent_state, RecordingMode, RecordingModeState, RecordingState, AUDIO_SHEBANG,
-    EXPECTED_RP2040_FIRMWARE_VERSION, FRAME_LENGTH,
-};
+use crate::{RecordingState, AUDIO_SHEBANG, EXPECTED_RP2040_FIRMWARE_VERSION, FRAME_LENGTH};
 use byteorder::{BigEndian, ByteOrder, LittleEndian};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz::Pacific__Auckland;
@@ -89,7 +84,6 @@ pub fn enter_camera_transfer_loop(
     sig_term: Arc<AtomicBool>,
     camera_handshake_channel_tx: Sender<FrameSocketServerMessage>,
     restart_rp2040_ack: Arc<AtomicBool>,
-    mut recording_mode_state: RecordingModeState,
     mut recording_state: RecordingState,
 ) {
     let spi_speed = spi_speed_mhz * 1_000_000;
@@ -167,7 +161,6 @@ pub fn enter_camera_transfer_loop(
     let mut radiometry_enabled = false;
     let mut firmware_version = 0;
     let mut lepton_serial_number = String::from("");
-    let mut test_audio_state_thread: Option<thread::JoinHandle<()>> = None;
     let mut is_audio_device = device_config.is_audio_device();
     info!("Waiting for messages from rp2040");
     'transfer: loop {
@@ -182,7 +175,6 @@ pub fn enter_camera_transfer_loop(
                 &mut dbus_conn,
                 &restart_rp2040_channel_tx,
                 &mut recording_state,
-                &mut test_audio_state_thread,
             );
         }
         if !recording_state.is_recording() && rp2040_needs_reset {
@@ -357,7 +349,7 @@ pub fn enter_camera_transfer_loop(
                                         } else {
                                             RecordingMode::Thermal
                                         };
-                                    recording_mode_state.set_mode(recording_mode);
+                                    recording_state.set_mode(recording_mode);
                                     info!(
                                         "Got startup info: \
                                     radiometry enabled: {radiometry_enabled}, \
@@ -390,7 +382,9 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
-                                            receive_recording_mode: Some(recording_mode),
+                                            receive_recording_mode: Some(
+                                                recording_state.recording_mode(),
+                                            ),
                                         },
                                     );
                                 }
@@ -556,7 +550,9 @@ pub fn enter_camera_transfer_loop(
                                     } else {
                                         warn!("Trying to continue file with no open file");
                                         if !got_startup_info {
-                                            if safe_to_restart_rp2040(&mut dbus_conn) {
+                                            if recording_state
+                                                .safe_to_restart_rp2040(&mut dbus_conn)
+                                            {
                                                 let date = chrono::Local::now();
                                                 error!(
                                                     "1) Requesting reset of rp2040 to \
@@ -669,7 +665,7 @@ pub fn enter_camera_transfer_loop(
                             crc_from_remote == 1 && !device_config.use_low_power_mode();
                         recording_state.set_is_recording(is_recording);
                         if !got_startup_info {
-                            error!("1) Requesting reset of rp2040 to force handshake");
+                            warn!("Requesting reset of rp2040 to force handshake");
                             rp2040_needs_reset = true;
                         } else if !rp2040_needs_reset {
                             FRAME_BUFFER.swap();
@@ -681,7 +677,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_serial: lepton_serial_number.clone(),
                                 }),
                                 camera_file_transfer_in_progress: false,
-                                receive_recording_mode: None,
+                                receive_recording_mode: Some(recording_state.recording_mode()),
                             });
                         }
                     }
@@ -698,42 +694,30 @@ fn maybe_make_test_audio_recording(
     dbus_conn: &mut DuplexConn,
     restart_rp2040_channel_tx: &Sender<bool>,
     recording_state: &mut RecordingState,
-    test_audio_state_thread: &mut Option<thread::JoinHandle<()>>,
 ) {
-    // If we're making an audio recording already, we can't be making a test audio recording – but
-    // maybe we can queue it up to happen once the current recording is finished?
-    if recording_state.is_taking_test_audio_recording() {
-        if test_audio_state_thread.is_none()
-            || (test_audio_state_thread.is_some()
-                && test_audio_state_thread.as_mut().unwrap().is_finished())
+    // If the rp2040 is making a recording, and a user test audio recording was requested,
+    // do nothing.
+
+    // If the user requested a test audio recording, trigger the test audio recording, and
+    // launch a thread to track when that recording has completed.
+    if recording_state.user_requested_test_audio_recording() {
+        recording_state.sync_state_from_attiny(dbus_conn);
+        if !recording_state.is_recording()
+            && recording_state.request_test_audio_recording_from_rp2040(dbus_conn)
         {
-            recording_state.finished_taking_test_recording();
-            *test_audio_state_thread = None;
-        }
-    }
-    if recording_state.should_take_test_audio_recording() {
-        // if already recording don't take test rec
-        let is_recording = read_attiny_is_recording_state(dbus_conn);
-        if is_recording {
-            // Is it correct that this clobbers any other state?
-            recording_state.set_state(tc2_agent_state::RECORDING);
-        } else if let Ok(state) = set_attiny_tc2_agent_test_audio_rec(dbus_conn) {
-            if safe_to_restart_rp2040(dbus_conn) {
-                let _ = restart_rp2040_channel_tx.send(true);
-                recording_state.set_should_take_test_audio_recording(true);
-                info!("Telling rp2040 to take test recording and restarting");
-            }
-            recording_state.set_state(state);
-        }
-        if is_recording || recording_state.should_take_test_audio_recording() {
+            let _ = restart_rp2040_channel_tx.send(true);
+            info!("Telling rp2040 to take test recording and restarting");
             let mut inner_recording_state = recording_state.clone();
-            *test_audio_state_thread = Some(thread::spawn(move || {
+            let _ = thread::spawn(move || {
                 let dbus_session_path = get_system_bus_path().unwrap_or_else(|e| {
                     error!("Error getting system DBus: {}", e);
                     process::exit(1);
                 });
                 match DuplexConn::connect_to_bus(dbus_session_path, true) {
-                    Err(e) => error!("Error connecting to system DBus: {}", e),
+                    Err(e) => {
+                        error!("Error connecting to system DBus: {}", e);
+                        process::exit(1);
+                    }
                     Ok(mut conn) => {
                         let _unique_name = conn.send_hello(Timeout::Infinite);
                         if _unique_name.is_err() {
@@ -741,29 +725,34 @@ fn maybe_make_test_audio_recording(
                                 "Error getting handshake with system DBus: {}",
                                 _unique_name.err().unwrap()
                             );
+                            process::exit(1);
                         } else {
-                            //be a bit lazy if doing a recording
-                            let sleep_duration = if is_recording { 2000 } else { 1000 };
                             loop {
-                                // Update our internal rp2040 state once every 1-2 seconds until
+                                // Re-sync our internal rp2040 state once every 1-2 seconds until
                                 // we see that the state has entered taking_test_audio_recording.
-                                if let Ok(state) = read_tc2_agent_state(&mut conn) {
-                                    inner_recording_state.set_state(state);
-                                    if let AudioStatus::TakingTestRecording =
-                                        inner_recording_state.get_audio_status()
-                                    {
-                                        break;
-                                    }
-                                } else {
-                                    warn!("error reading tc2 agent state");
+                                inner_recording_state.sync_state_from_attiny(&mut conn);
+                                let sleep_duration_ms =
+                                    if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                                if inner_recording_state.is_taking_test_audio_recording() {
+                                    break;
                                 }
-                                sleep(Duration::from_millis(sleep_duration));
+                                sleep(Duration::from_millis(sleep_duration_ms));
+                            }
+                            loop {
+                                // Now wait until we've exited taking_test_audio_recording.
+                                inner_recording_state.sync_state_from_attiny(&mut conn);
+                                let sleep_duration_ms =
+                                    if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                                if !inner_recording_state.is_taking_test_audio_recording() {
+                                    inner_recording_state.finished_taking_test_recording();
+                                    break;
+                                }
+                                sleep(Duration::from_millis(sleep_duration_ms));
                             }
                         }
                     }
                 }
-            }));
+            });
         }
-        recording_state.finished_taking_test_recording();
     }
 }
