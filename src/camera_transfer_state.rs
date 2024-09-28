@@ -382,9 +382,6 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
-                                            receive_recording_mode: Some(
-                                                recording_state.recording_mode(),
-                                            ),
                                         },
                                     );
                                 }
@@ -515,7 +512,6 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: true,
-                                            receive_recording_mode: None,
                                         },
                                     );
                                 }
@@ -544,7 +540,6 @@ pub fn enter_camera_transfer_loop(
                                             FrameSocketServerMessage {
                                                 camera_handshake_info: None,
                                                 camera_file_transfer_in_progress: true,
-                                                receive_recording_mode: None,
                                             },
                                         );
                                     } else {
@@ -593,7 +588,6 @@ pub fn enter_camera_transfer_loop(
                                             FrameSocketServerMessage {
                                                 camera_handshake_info: None,
                                                 camera_file_transfer_in_progress: false,
-                                                receive_recording_mode: None,
                                             },
                                         );
                                     } else {
@@ -620,7 +614,6 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
-                                            receive_recording_mode: None,
                                         },
                                     );
                                 }
@@ -677,7 +670,6 @@ pub fn enter_camera_transfer_loop(
                                     camera_serial: lepton_serial_number.clone(),
                                 }),
                                 camera_file_transfer_in_progress: false,
-                                receive_recording_mode: Some(recording_state.recording_mode()),
                             });
                         }
                     }

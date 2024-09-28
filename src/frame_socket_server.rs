@@ -1,7 +1,7 @@
 use crate::camera_transfer_state::CameraHandshakeInfo;
 use crate::cptv_frame_dispatch;
 use crate::program_rp2040::program_rp2040;
-use crate::recording_state::RecordingMode;
+use crate::recording_state::{RecordingMode, RecordingState};
 use crate::socket_stream::{get_socket_address, SocketStream};
 use crate::telemetry::{read_telemetry, Telemetry};
 use log::{debug, error, info, warn};
@@ -17,7 +17,6 @@ use thread_priority::{ThreadBuilderExt, ThreadPriority};
 pub struct FrameSocketServerMessage {
     pub(crate) camera_handshake_info: Option<CameraHandshakeInfo>,
     pub(crate) camera_file_transfer_in_progress: bool,
-    pub(crate) receive_recording_mode: Option<RecordingMode>,
 }
 
 fn restart_rp2040_if_requested(
@@ -45,7 +44,9 @@ pub fn spawn_frame_socket_server_thread(
     serve_frames_via_wifi: bool,
     mut run_pin: OutputPin,
     mut restart_rp2040_ack: Arc<AtomicBool>,
+    recording_state: &RecordingState,
 ) {
+    let recording_state = recording_state.clone();
     let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(
         ThreadPriority::Max,
         move |result| {
@@ -70,8 +71,6 @@ pub fn spawn_frame_socket_server_thread(
                     &mut run_pin,
                     &mut restart_rp2040_ack,
                 );
-                let mut recv_recording_mode = RecordingMode::Thermal;
-                let initial_recording_mode = recv_recording_mode;
                 let mut recv_timeout_ms = 10;
                 info!("Connecting to frame sockets");
                 let mut ms_elapsed = 0;
@@ -81,13 +80,7 @@ pub fn spawn_frame_socket_server_thread(
                         &mut run_pin,
                         &mut restart_rp2040_ack,
                     );
-                    if initial_recording_mode != recv_recording_mode {
-                        info!(
-                            "Recording mode changed from {:?} to {:?}",
-                            initial_recording_mode, recv_recording_mode
-                        );
-                    }
-                    if let RecordingMode::Thermal = recv_recording_mode {
+                    if recording_state.recording_mode() == RecordingMode::Thermal {
                         for (address, use_wifi, stream) in
                             sockets.iter_mut().filter(|(_, _, stream)| stream.is_none())
                         {
@@ -114,7 +107,7 @@ pub fn spawn_frame_socket_server_thread(
                         &mut ms_elapsed,
                         &mut reconnects,
                         &mut prev_frame_num,
-                        &mut recv_recording_mode,
+                        &recording_state,
                         &mut recv_timeout_ms,
                     );
                 }
@@ -129,7 +122,7 @@ fn handle_payload_from_frame_acquire_thread(
     ms_elapsed: &mut u64,
     reconnects: &mut usize,
     prev_frame_num: &mut Option<u32>,
-    recording_mode: &mut RecordingMode,
+    recording_state: &RecordingState,
     recv_timeout_ms: &mut u64,
 ) {
     match result {
@@ -142,16 +135,7 @@ fn handle_payload_from_frame_acquire_thread(
                     camera_serial,
                 }),
             camera_file_transfer_in_progress: false,
-            receive_recording_mode: Some(connect_recording_mode),
         }) => {
-            if connect_recording_mode != *recording_mode {
-                info!(
-                    "Recording mode changed from {:?} to {:?}",
-                    *recording_mode, connect_recording_mode
-                );
-                *recording_mode = connect_recording_mode;
-            }
-
             let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
             let header = format!(
                 "ResX: 160\n\
@@ -232,44 +216,29 @@ fn handle_payload_from_frame_acquire_thread(
         Ok(FrameSocketServerMessage {
             camera_handshake_info: None,
             camera_file_transfer_in_progress: true,
-            receive_recording_mode: Some(connect_recording_mode),
         }) => {
             // There's a file transfer in progress, and we got a recording mode change?
             *ms_elapsed = 0;
-            if connect_recording_mode != *recording_mode {
-                info!(
-                    "Recording mode changed from {:?} to {:?}",
-                    *recording_mode, connect_recording_mode
-                );
-                *recording_mode = connect_recording_mode;
-                match recording_mode {
-                    RecordingMode::Audio => {
-                        *recv_timeout_ms = 1000;
-                        for (address, use_wifi, stream) in
-                            sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
-                        {
-                            info!(
-                                "Shutting down socket '{}'",
-                                if *use_wifi { "tc2-frames server" } else { address }
-                            );
-                            let _ = stream.take().unwrap().shutdown().is_ok();
-                        }
+            match recording_state.recording_mode() {
+                RecordingMode::Audio => {
+                    *recv_timeout_ms = 1000;
+                    for (address, use_wifi, stream) in
+                        sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
+                    {
+                        info!(
+                            "Shutting down socket '{}'",
+                            if *use_wifi { "tc2-frames server" } else { address }
+                        );
+                        let _ = stream.take().unwrap().shutdown().is_ok();
                     }
-                    RecordingMode::Thermal => {
-                        *recv_timeout_ms = 10;
-                    }
+                }
+                RecordingMode::Thermal => {
+                    *recv_timeout_ms = 10;
                 }
             }
         }
-        Ok(FrameSocketServerMessage {
-            camera_handshake_info: None,
-            camera_file_transfer_in_progress: true,
-            receive_recording_mode: None,
-        }) => {
-            *ms_elapsed = 0;
-        }
         _ => {
-            if *recording_mode == RecordingMode::Thermal {
+            if recording_state.recording_mode() == RecordingMode::Thermal {
                 const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
                 *ms_elapsed += *recv_timeout_ms;
                 if *ms_elapsed > 10_000 {

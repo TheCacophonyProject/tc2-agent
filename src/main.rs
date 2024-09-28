@@ -150,6 +150,7 @@ fn main() {
                 serve_frames_via_wifi,
                 run_pin,
                 restart_rp2040_ack.clone(),
+                &recording_state,
             );
             recording_state.set_ready(&mut dbus_conn);
             if !initial_config.use_low_power_mode() || !recording_state.is_recording() {
