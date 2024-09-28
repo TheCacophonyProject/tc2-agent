@@ -2,12 +2,12 @@ name: Rust CI and release
 
 on:
   push:
-    branches: 
+    branches:
       - '**'
     tags:
       - '*'
   pull_request:
-    branches: 
+    branches:
       - '**'
 
 jobs:
@@ -23,7 +23,10 @@ jobs:
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
-  
+        with:
+          toolchain: 1.81.0
+          override: true
+
       - name: Display Rust and Cargo version
         run: |
           rustc --version
