@@ -89,8 +89,12 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     .arg("pipe:0")
                     .arg("-codec:a")
                     .arg("aac")
-                    .arg("-b:a")
-                    .arg("128k")
+                    .arg("-q:a")
+                    .arg("1.2") // VBR, more appropriate for audio with lots of nothing
+                    // Faster perceptual coder that should give faster +
+                    // better results at the higher bitrates we're using.
+                    .arg("-aac_coder")
+                    .arg("fast")
                     .arg("-movflags")
                     .arg("faststart") // Move the metadata to the beginning of file
                     .arg("-movflags")
