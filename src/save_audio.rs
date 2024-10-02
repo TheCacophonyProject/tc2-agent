@@ -44,8 +44,8 @@ fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
 }
 
 pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig) {
-    //let output_dir = String::from(device_config.output_dir());
-    let output_dir = String::from("/home/pi/temp");
+    let output_dir = String::from(device_config.output_dir());
+    //let output_dir = String::from("/home/pi/temp");
     let _ = thread::Builder::new().name("audio-transcode".to_string()).spawn_with_priority(
         ThreadPriority::Min,
         move |_| {
