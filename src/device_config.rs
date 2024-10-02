@@ -1,3 +1,4 @@
+use core::fmt;
 use std::collections::HashMap;
 // Read camera config file
 use crate::detection_mask::DetectionMask;
@@ -5,17 +6,22 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{
     DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
 };
-use log::{error, info};
+use log::{error, info, warn};
+use louvre::triangulate;
+use notify::event::{AccessKind, AccessMode};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::de::Error;
 use serde::{Deserialize, Deserializer};
-use std::fs;
+use std::fmt::{Debug, Formatter};
 use std::io::{Cursor, Write};
 use std::ops::Add;
+use std::path::Path;
 use std::str::FromStr;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::{fs, process};
 use sun_times::sun_times;
 use toml::value::Offset;
 use toml::Value;
-use triangulate::{ListFormat, Polygon};
 
 fn default_constant_recorder() -> bool {
     false
@@ -47,17 +53,11 @@ fn default_activate_thermal_throttler() -> bool {
 }
 
 fn default_recording_start_time() -> AbsRelTime {
-    AbsRelTime {
-        relative_time_seconds: Some(-(60 * 30)),
-        absolute_time: None,
-    }
+    AbsRelTime { relative_time_seconds: Some(-(60 * 30)), absolute_time: None }
 }
 
 fn default_recording_stop_time() -> AbsRelTime {
-    AbsRelTime {
-        relative_time_seconds: Some(60 * 30),
-        absolute_time: None,
-    }
+    AbsRelTime { relative_time_seconds: Some(60 * 30), absolute_time: None }
 }
 
 #[derive(Debug)]
@@ -66,11 +66,11 @@ struct TimeUnit(char);
 #[derive(Debug)]
 struct NumberString(String, Option<TimeUnit>, bool);
 
-fn sign(p1: (f32, f32), p2: (f32, f32), p3: (f32, f32)) -> f32 {
+fn sign(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64)) -> f64 {
     (p1.0 - p3.0) * (p2.1 - p3.1) - (p2.0 - p3.0) * (p1.1 - p3.1)
 }
 
-fn point_in_triangle(triangle: ((f32, f32), (f32, f32), (f32, f32)), point: (f32, f32)) -> bool {
+fn point_in_triangle(triangle: ((f64, f64), (f64, f64), (f64, f64)), point: (f64, f64)) -> bool {
     let d1 = sign(point, triangle.0, triangle.1);
     let d2 = sign(point, triangle.1, triangle.2);
     let d3 = sign(point, triangle.2, triangle.0);
@@ -78,15 +78,15 @@ fn point_in_triangle(triangle: ((f32, f32), (f32, f32), (f32, f32)), point: (f32
     let has_neg = (d1 < 0.) || (d2 < 0.) || (d3 < 0.);
     let has_pos = (d1 > 0.) || (d2 > 0.) || (d3 > 0.);
 
-    return !(has_neg && has_pos);
+    !(has_neg && has_pos)
 }
 
 fn deserialize_mask_regions<'de, D>(deserializer: D) -> Result<DetectionMask, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let masks: toml::map::Map<String, toml::Value> = Deserialize::deserialize(deserializer)?;
-    let mut regions: HashMap<String, Vec<[f32; 2]>> = HashMap::new();
+    let masks: toml::map::Map<String, Value> = Deserialize::deserialize(deserializer)?;
+    let mut regions: HashMap<String, Vec<[f64; 2]>> = HashMap::new();
     for (label, mask_region) in masks {
         let mut region = Vec::new();
         match mask_region {
@@ -106,8 +106,8 @@ where
                                 let mut y;
                                 for (idx, el) in coord.iter().enumerate() {
                                     let el_val = match &el {
-                                        Value::Float(float_val) => Some(*float_val as f32),
-                                        Value::Integer(int_val) => Some(*int_val as f32),
+                                        Value::Float(float_val) => Some(*float_val as f64),
+                                        Value::Integer(int_val) => Some(*int_val as f64),
                                         _ => {
                                             error!("Region '{}'[{}].{}: Unsupported coordinate value, expected Float or Integer", label, i, if idx == 0 {'x'} else { 'y' });
                                             None
@@ -131,10 +131,7 @@ where
                     }
                 }
             }
-            _ => error!(
-                "Region '{}': Must be an array of [[x, y], ...] coordinates",
-                label
-            ),
+            _ => error!("Region '{}': Must be an array of [[x, y], ...] coordinates", label),
         }
         regions.insert(label.clone(), region);
     }
@@ -143,19 +140,14 @@ where
     let w = 160.0;
     let h = 120.0;
     for (_label, polygon) in regions {
-        let mut triangulated_indices: Vec<usize> = Vec::new();
-        polygon
-            .triangulate(
-                triangulate::formats::IndexedListFormat::new(&mut triangulated_indices)
-                    .into_fan_format(),
-            )
-            .expect("Triangulation failed");
-        for corners in triangulated_indices.chunks_exact(3) {
+        let mut polygon = polygon.concat();
+        let (polygon, triangulated_indices) = triangulate(&mut polygon, 2);
+        for corners in triangulated_indices.chunks_exact(6) {
             // Map each triangle into the frame space, then do 'point-in triangle checks for each pixel of the frame.
             triangles.push((
-                (polygon[corners[0]][0] * w, polygon[corners[0]][1] * h),
-                (polygon[corners[1]][0] * w, polygon[corners[1]][1] * h),
-                (polygon[corners[2]][0] * w, polygon[corners[2]][1] * h),
+                (polygon[corners[0]] * w, polygon[corners[1]] * h),
+                (polygon[corners[2]] * w, polygon[corners[3]] * h),
+                (polygon[corners[4]] * w, polygon[corners[5]] * h),
             ));
         }
     }
@@ -163,7 +155,7 @@ where
     for y in 0..120 {
         for x in 0..160 {
             for triangle in &triangles {
-                if point_in_triangle(*triangle, (x as f32, y as f32)) {
+                if point_in_triangle(*triangle, (x as f64, y as f64)) {
                     mask.set_pos(x, y);
                 }
             }
@@ -278,10 +270,7 @@ where
     if absolute_time.is_none() && relative_time_seconds.is_none() {
         Err(Error::custom(format!("Failed to parse window time: {}", s)))
     } else {
-        Ok(AbsRelTime {
-            absolute_time,
-            relative_time_seconds,
-        })
+        Ok(AbsRelTime { absolute_time, relative_time_seconds })
     }
 }
 
@@ -339,15 +328,9 @@ struct LocationSettings {
     longitude: Option<f32>,
     altitude: Option<f32>,
 
-    #[serde(
-        deserialize_with = "timestamp_to_u64",
-        default = "default_location_timestamp"
-    )]
+    #[serde(deserialize_with = "timestamp_to_u64", default = "default_location_timestamp")]
     timestamp: Option<u64>,
-    #[serde(
-        deserialize_with = "location_accuracy_to_f32",
-        default = "default_location_accuracy"
-    )]
+    #[serde(deserialize_with = "location_accuracy_to_f32", default = "default_location_accuracy")]
     accuracy: Option<f32>,
 }
 
@@ -362,14 +345,30 @@ fn timezone_offset_seconds() -> i32 {
     // devices' GPS coordinates to work out correct absolute start/end recording window times.
     let now = Local::now();
     let local_tz = now.timezone();
-    local_tz
-        .offset_from_utc_datetime(&now.naive_utc())
-        .local_minus_utc()
+    local_tz.offset_from_utc_datetime(&now.naive_utc()).local_minus_utc()
 }
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 pub struct AbsRelTime {
     absolute_time: Option<HourMin>,
     relative_time_seconds: Option<i32>,
+}
+
+impl Debug for AbsRelTime {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let absolute_time = self.absolute_time.clone();
+        let relative_time = self.relative_time_seconds.clone();
+        if let Some(time) = absolute_time {
+            return f
+                .debug_struct("AbsoluteTime")
+                .field("hour", &time.hour)
+                .field("min", &time.min)
+                .finish();
+        }
+        if let Some(time) = relative_time {
+            return f.debug_struct("RelativeOffset").field("secs", &time).finish();
+        }
+        Err(fmt::Error::default())
+    }
 }
 
 impl AbsRelTime {
@@ -474,9 +473,7 @@ pub struct AudioSettings {
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        AudioSettings {
-            audio_mode: default_audio_mode(),
-        }
+        AudioSettings { audio_mode: default_audio_mode() }
     }
 }
 
@@ -492,10 +489,7 @@ where
     if let Ok(mode) = AudioMode::from_str(&audio_mode_raw) {
         Ok(mode)
     } else {
-        Err(Error::custom(format!(
-            "Failed to parse audio mode: {}",
-            audio_mode_raw
-        )))
+        Err(Error::custom(format!("Failed to parse audio mode: {}", audio_mode_raw)))
     }
 }
 
@@ -578,13 +572,7 @@ impl DeviceConfig {
     }
 
     pub fn device_name(&self) -> &[u8] {
-        self.device_info
-            .as_ref()
-            .unwrap()
-            .name
-            .as_ref()
-            .unwrap()
-            .as_bytes()
+        self.device_info.as_ref().unwrap().name.as_ref().unwrap().as_bytes()
     }
 
     pub fn lat_lng(&self) -> (f32, f32) {
@@ -626,11 +614,7 @@ impl DeviceConfig {
 
     pub fn is_continuous_recorder(&self) -> bool {
         self.recording_settings.constant_recorder
-            || (self
-                .recording_window
-                .start_recording
-                .absolute_time
-                .is_some()
+            || (self.recording_window.start_recording.absolute_time.is_some()
                 && self.recording_window.stop_recording.absolute_time.is_some()
                 && self.recording_window.start_recording == self.recording_window.stop_recording)
     }
@@ -652,12 +636,15 @@ impl DeviceConfig {
                 "No location set for this device. To enter recording mode, a location must be set."
             );
                     // TODO: Event log error?
-                    std::process::exit(1);
+                    process::exit(1);
                 }
                 if !device_config.is_registered() {
-                    error!("This device is not yet registered.  To enter recording mode the device must be named assigned to a project.");
+                    error!(
+                        "This device is not yet registered.  \
+                    To enter recording mode the device must be named assigned to a project."
+                    );
                     // TODO: Event log error?
-                    std::process::exit(1);
+                    process::exit(1);
                 }
                 info!("Got config {:?}", device_config);
                 if device_config.audio_info.audio_mode != AudioMode::AudioOnly {
@@ -688,17 +675,11 @@ impl DeviceConfig {
             start_offset = 86_400 + start_offset;
         }
         let (window_start, window_end) = if !is_absolute_start || !is_absolute_end {
-            let location = self
-                .location
-                .as_ref()
-                .expect("Relative recording windows require a location");
+            let location =
+                self.location.as_ref().expect("Relative recording windows require a location");
             let (lat, lng) = (
-                location
-                    .latitude
-                    .expect("Relative recording windows require a valid latitude"),
-                location
-                    .longitude
-                    .expect("Relative recording windows require a valid longitude"),
+                location.latitude.expect("Relative recording windows require a valid latitude"),
+                location.longitude.expect("Relative recording windows require a valid longitude"),
             );
             let altitude = location.altitude;
             let yesterday_utc = *now_utc - Duration::days(1);
@@ -711,13 +692,9 @@ impl DeviceConfig {
             .unwrap();
             let yesterday_sunset =
                 yesterday_sunset.naive_utc() + Duration::seconds(start_offset as i64);
-            let (today_sunrise, today_sunset) = sun_times(
-                now_utc.date(),
-                lat as f64,
-                lng as f64,
-                altitude.unwrap_or(0.0) as f64,
-            )
-            .unwrap();
+            let (today_sunrise, today_sunset) =
+                sun_times(now_utc.date(), lat as f64, lng as f64, altitude.unwrap_or(0.0) as f64)
+                    .unwrap();
             let today_sunrise = today_sunrise.naive_utc() + Duration::seconds(end_offset as i64);
             let today_sunset = today_sunset.naive_utc() + Duration::seconds(start_offset as i64);
             let tomorrow_utc = *now_utc + Duration::days(1);
@@ -833,47 +810,17 @@ impl DeviceConfig {
             "Next recording window will start in {}h{}m and end in {}h{}m, window duration {}h{}m",
             starts_in_hours, starts_in_mins, ends_in_hours, ends_in_mins, window_hours, window_mins
         );
-
-        info!(
-            "Next recording window will end in {}h{}m, window duration {}h{}m",
-            ends_in_hours, ends_in_mins, window_hours, window_mins
-        );
     }
     pub fn time_is_in_recording_window(&self, date_time_utc: &NaiveDateTime) -> bool {
         if self.is_continuous_recorder() {
             return true;
         }
         let (start_time, end_time) = self.next_recording_window(date_time_utc);
-        let starts_in = start_time - *date_time_utc;
-        let starts_in_hours = starts_in.num_hours();
-        let starts_in_mins = starts_in.num_minutes() - (starts_in_hours * 60);
-        let ends_in = end_time - *date_time_utc;
-        let ends_in_hours = ends_in.num_hours();
-        let ends_in_mins = ends_in.num_minutes() - (ends_in_hours * 60);
-        let window = end_time - start_time;
-        let window_hours = window.num_hours();
-        let window_mins = window.num_minutes() - (window_hours * 60);
-        if start_time > *date_time_utc && end_time > *date_time_utc {
-            info!(
-                "Recording will start in {}h{}m and end in {}h{}m, window duration {}h{}m",
-                starts_in_hours,
-                starts_in_mins,
-                ends_in_hours,
-                ends_in_mins,
-                window_hours,
-                window_mins
-            );
-        } else if end_time > *date_time_utc {
-            info!(
-                "Recording will end in {}h{}m, window duration {}h{}m",
-                ends_in_hours, ends_in_mins, window_hours, window_mins
-            );
-        }
         *date_time_utc >= start_time && *date_time_utc <= end_time
     }
 
     pub fn is_audio_device(&self) -> bool {
-        return self.audio_info.audio_mode != AudioMode::Disabled;
+        self.audio_info.audio_mode != AudioMode::Disabled
     }
 
     pub fn write_to_slice(&self, output: &mut [u8]) {
@@ -913,14 +860,92 @@ impl DeviceConfig {
         buf.write_i32::<LittleEndian>(start_seconds_offset).unwrap();
         buf.write_u8(if end_is_abs { 1 } else { 0 }).unwrap();
         buf.write_i32::<LittleEndian>(end_seconds_offset).unwrap();
-        buf.write_u8(if self.is_continuous_recorder() { 1 } else { 0 })
-            .unwrap();
-        buf.write_u8(if self.use_low_power_mode() { 1 } else { 0 })
-            .unwrap();
+        buf.write_u8(if self.is_continuous_recorder() { 1 } else { 0 }).unwrap();
+        buf.write_u8(if self.use_low_power_mode() { 1 } else { 0 }).unwrap();
 
         let device_name = self.device_name();
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write(&device_name[0..device_name_length]).unwrap();
+    }
+}
+
+pub fn watch_local_config_file_changes(
+    mut current_config: DeviceConfig,
+    config_tx: &Sender<DeviceConfig>,
+) {
+    let config_tx = config_tx.clone();
+    let mut watcher = notify::recommended_watcher(move |res| match res {
+        Ok(Event { kind, .. }) => {
+            match kind {
+                EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
+                    // File got written to
+                    // Send event to
+                    match DeviceConfig::load_from_fs() {
+                        Ok(config) => {
+                            // Send to rp2040 to write via a channel somehow.
+                            // Maybe we have to restart the rp2040 here so that it re-handshakes
+                            // and picks up the new info
+                            if config != current_config {
+                                current_config = config;
+                                warn!("Config updated");
+                                let _ = config_tx.send(current_config.clone());
+                            }
+                        }
+                        Err(msg) => {
+                            error!("Load config error: {}", msg);
+                            process::exit(1);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err(e) => error!("file watch error for /etc/cacophony/config.toml: {:?}", e),
+    })
+    .map_err(|e| {
+        error!("{}", e);
+        process::exit(1);
+    })
+    .unwrap();
+    // Add a path to be watched. All files and directories at that path and
+    // below will be monitored for changes.
+    watcher
+        .watch(Path::new("/etc/cacophony/config.toml"), RecursiveMode::NonRecursive)
+        .map_err(|e| {
+            error!("File watcher setup error: {e}");
+            process::exit(1);
+        })
+        .unwrap();
+}
+
+// FIXME: Use RecordingModeState here?
+pub fn check_for_device_config_changes(
+    device_config_change_channel_rx: &Receiver<DeviceConfig>,
+    device_config: &mut DeviceConfig,
+    is_audio_device: &mut bool,
+    rp2040_needs_reset: &mut bool,
+) {
+    // Check once per frame to see if the config file may have been changed
+    let updated_config = device_config_change_channel_rx.try_recv();
+    match updated_config {
+        Ok(config) => {
+            // NOTE: Defer this till a time we know the rp2040 isn't writing to flash memory.
+            if *device_config != config {
+                info!("Config updated, should update rp2040");
+                *device_config = config;
+                if !*is_audio_device {
+                    //will update after reset request if in audio mode
+                    *is_audio_device = device_config.is_audio_device();
+                }
+            }
+            *rp2040_needs_reset = true;
+        }
+        Err(kind) => match kind {
+            TryRecvError::Empty => {}
+            TryRecvError::Disconnected => {
+                warn!("Disconnected from config file watcher channel");
+            }
+        },
     }
 }

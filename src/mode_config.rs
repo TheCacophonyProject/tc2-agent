@@ -1,6 +1,6 @@
 use argh::FromArgs;
 
-fn default_spi_speed() -> u32 {
+fn default_spi_speed_mhz() -> u32 {
     12
 }
 
@@ -13,6 +13,6 @@ pub struct ModeConfig {
     pub(crate) use_wifi: bool,
 
     /// raspberry pi SPI speed in Mhz, defaults to 12
-    #[argh(option, default = "default_spi_speed()")]
-    pub(crate) spi_speed: u32,
+    #[argh(option, default = "default_spi_speed_mhz()")]
+    pub(crate) spi_speed_mhz: u32,
 }
