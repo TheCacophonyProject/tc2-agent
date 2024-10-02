@@ -10,7 +10,6 @@ authors = ["Cacophony Developers <coredev@cacophony.org.nz>"]
 
 [dependencies]
 framebuffer = "0.3.1"
-bmp = "0.5.0"
 rppal = "0.19.0"
 chrono = { version = "0.4.38", features = ["serde"] }
 byteorder = "1.4.3"
@@ -30,7 +29,6 @@ signal-hook = "0.3.17"
 sun-times = "0.2.0"
 louvre = "0.2.1"
 rustbus = "0.19.3"
-lazy_static = "1.4.0"
 sha256 = "1.5.0"
 
 [target.aarch64-unknown-linux-musl]
@@ -51,3 +49,6 @@ assets = [
 ]
 maintainer-scripts = "_releases/scripts"
 revision = ""
+
+[profile.release]
+lto = true

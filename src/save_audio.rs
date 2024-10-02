@@ -44,7 +44,8 @@ fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
 }
 
 pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig) {
-    let output_dir = String::from(device_config.output_dir());
+    //let output_dir = String::from(device_config.output_dir());
+    let output_dir = String::from("/home/pi/temp");
     let _ = thread::Builder::new().name("audio-transcode".to_string()).spawn_with_priority(
         ThreadPriority::Min,
         move |_| {
@@ -59,29 +60,47 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 fs::create_dir(&output_dir)
                     .expect(&format!("Failed to create AAC output directory {}", output_dir));
             }
+
             let output_path: String =
                 format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
             // If the file already exists, don't re-save it.
             if !fs::exists(&output_path).unwrap_or(false) {
                 let recording_date_time =
-                    format!("recordingDateTime=\"{}\"", recording_date_time.to_rfc3339());
-                let latitude = format!("latitude=\"{}\"", device_config.lat_lng().0);
-                let longitude = format!("longitude=\"{}\"", device_config.lat_lng().1);
+                    format!("recordingDateTime={}", recording_date_time.to_rfc3339());
+                let latitude = format!("latitude={}", device_config.lat_lng().0);
+                let longitude = format!("longitude={}", device_config.lat_lng().1);
                 let altitude =
-                    format!("locAltitude=\"{}\"", device_config.location_altitude().unwrap_or(0.0));
+                    format!("locAltitude={}", device_config.location_altitude().unwrap_or(0.0));
                 let location_accuracy =
-                    format!("locAccuracy=\"{}\"", device_config.location_accuracy().unwrap_or(0.0));
+                    format!("locAccuracy={}", device_config.location_accuracy().unwrap_or(0.0));
                 let location_timestamp =
-                    format!("locTimestamp=\"{}\"", device_config.location_timestamp().unwrap_or(0));
-                let device_id = format!("deviceId=\"{}\"", device_config.device_id());
+                    format!("locTimestamp={}", device_config.location_timestamp().unwrap_or(0));
+                let device_id = format!("deviceId={}", device_config.device_id());
+                let sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
+                let duration = format!(
+                    "duration={}",
+                    audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0
+                );
 
                 // Now transcode with ffmpeg – we create an aac stream in an m4a wrapper in order
                 // to support adding metadata tags.
                 let mut cmd = Command::new("ffmpeg")
                     .arg("-i")
                     .arg("pipe:0")
+                    .arg("-codec:a")
+                    .arg("aac")
+                    .arg("-b:a")
+                    .arg("128k")
+                    .arg("-movflags")
+                    .arg("faststart") // Move the metadata to the beginning of file
+                    .arg("-movflags")
+                    .arg("+use_metadata_tags") // Allow custom metadata tags
+                    .arg("-map_metadata") // Keep existing metadata?
+                    .arg("0")
                     .arg("-metadata")
                     .arg(recording_date_time)
+                    .arg("-metadata")
+                    .arg(duration)
                     .arg("-metadata")
                     .arg(latitude)
                     .arg("-metadata")
@@ -94,14 +113,6 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     .arg(location_timestamp)
                     .arg("-metadata")
                     .arg(location_accuracy)
-                    .arg("-codec:a")
-                    .arg("aac")
-                    .arg("-b:a")
-                    .arg("128k")
-                    .arg("-movflags")
-                    .arg("faststart") // Move the metadata to the beginning of file
-                    .arg("-movflags")
-                    .arg("+use_metadata_tags") // Allow custom metadata tags
                     .arg("-f")
                     .arg("mp4")
                     .arg(output_path.clone())
@@ -111,7 +122,6 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     .spawn()
                     .expect("Failed to spawn ffmpeg process");
 
-                let sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
                 let mut stdin = cmd.stdin.take().expect("Failed to open stdin");
                 thread::spawn(move || {
                     // Write wav to stdin:
