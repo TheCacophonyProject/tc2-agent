@@ -164,13 +164,25 @@ pub fn enter_camera_transfer_loop(
     let mut is_audio_device = device_config.is_audio_device();
     info!("Waiting for messages from rp2040");
     'transfer: loop {
-        check_for_device_config_changes(&device_config_change_channel_rx, &mut device_config, &mut is_audio_device, &mut rp2040_needs_reset);
+        check_for_device_config_changes(
+            &device_config_change_channel_rx,
+            &mut device_config,
+            &mut is_audio_device,
+            &mut rp2040_needs_reset,
+        );
         if is_audio_device {
-            maybe_make_test_audio_recording(&mut dbus_conn, &restart_rp2040_channel_tx, &mut recording_state);
+            maybe_make_test_audio_recording(
+                &mut dbus_conn,
+                &restart_rp2040_channel_tx,
+                &mut recording_state,
+            );
         }
         if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
-            warn!("Requesting reset of rp2040 at {}", date.with_timezone(&Pacific__Auckland));
+            warn!(
+                "Requesting reset of rp2040 at {}",
+                date.with_timezone(&Pacific__Auckland)
+            );
             rp2040_needs_reset = false;
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
@@ -241,7 +253,9 @@ pub fn enter_camera_transfer_loop(
                     let crc_from_remote_inv_dup = LittleEndian::read_u16(&header_slice[16..=17]);
 
                     let num_bytes_check = num_bytes == num_bytes_dup;
-                    let header_crc_check = crc_from_remote == crc_from_remote_dup && crc_from_remote_inv_dup == crc_from_remote_inv && crc_from_remote_inv.not() == crc_from_remote;
+                    let header_crc_check = crc_from_remote == crc_from_remote_dup
+                        && crc_from_remote_inv_dup == crc_from_remote_inv
+                        && crc_from_remote_inv.not() == crc_from_remote;
                     let transfer_type_check = transfer_type == transfer_type_dup;
                     if !num_bytes_check || !header_crc_check || !transfer_type_check {
                         // Just log the *first* time the header integrity check fails in a session.
@@ -269,7 +283,9 @@ pub fn enter_camera_transfer_loop(
                         }
                         continue 'transfer;
                     }
-                    if transfer_type < CAMERA_CONNECT_INFO || transfer_type > CAMERA_SEND_LOGGER_EVENT {
+                    if transfer_type < CAMERA_CONNECT_INFO
+                        || transfer_type > CAMERA_SEND_LOGGER_EVENT
+                    {
                         warn!("unknown transfer type {}", transfer_type);
                         LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                         LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
@@ -306,7 +322,8 @@ pub fn enter_camera_transfer_loop(
                             let crc = crc_check.checksum(&piece_with_length[0..1 + piece.len()]);
                             LittleEndian::write_u16(&mut return_payload_buf[8..10], crc);
                             //info!("Sending piece({}) {:?}", piece.len(), piece_with_length);
-                            return_payload_buf[10..10 + piece.len() + 1].copy_from_slice(&piece_with_length);
+                            return_payload_buf[10..10 + piece.len() + 1]
+                                .copy_from_slice(&piece_with_length);
                         }
                         // Always write the return buffer
                         spi.write(&return_payload_buf).unwrap();
@@ -315,7 +332,8 @@ pub fn enter_camera_transfer_loop(
                                 CAMERA_CONNECT_INFO => {
                                     radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 2;
                                     firmware_version = LittleEndian::read_u32(&chunk[4..8]);
-                                    lepton_serial_number = format!("{}", LittleEndian::read_u32(&chunk[8..12]));
+                                    lepton_serial_number =
+                                        format!("{}", LittleEndian::read_u32(&chunk[8..12]));
                                     got_startup_info = true;
                                     if firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION {
                                         exit_cleanly(&mut dbus_conn);
@@ -331,11 +349,12 @@ pub fn enter_camera_transfer_loop(
                                         process::exit(0);
                                     }
 
-                                    let recording_mode = if LittleEndian::read_u32(&chunk[12..16]) != 0 {
-                                        RecordingMode::Audio
-                                    } else {
-                                        RecordingMode::Thermal
-                                    };
+                                    let recording_mode =
+                                        if LittleEndian::read_u32(&chunk[12..16]) != 0 {
+                                            RecordingMode::Audio
+                                        } else {
+                                            RecordingMode::Thermal
+                                        };
                                     recording_state.set_mode(recording_mode);
                                     info!(
                                         "Got startup info: \
@@ -346,7 +365,10 @@ pub fn enter_camera_transfer_loop(
                                         recording_mode
                                     );
 
-                                    if device_config.use_low_power_mode() && !radiometry_enabled && !device_config.is_audio_device() {
+                                    if device_config.use_low_power_mode()
+                                        && !radiometry_enabled
+                                        && !device_config.is_audio_device()
+                                    {
                                         exit_cleanly(&mut dbus_conn);
                                         error!(
                                             "Low power mode is currently only supported on \
@@ -357,74 +379,128 @@ pub fn enter_camera_transfer_loop(
                                     // Terminate any existing file download.
                                     let in_progress_file_transfer = file_download.take();
                                     if let Some(file) = in_progress_file_transfer {
-                                        warn!("Aborting in progress file transfer with {} bytes", file.len());
+                                        warn!(
+                                            "Aborting in progress file transfer with {} bytes",
+                                            file.len()
+                                        );
                                     }
-                                    let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
-                                        camera_handshake_info: None,
-                                        camera_file_transfer_in_progress: false,
-                                    });
+                                    let _ = camera_handshake_channel_tx.send(
+                                        FrameSocketServerMessage {
+                                            camera_handshake_info: None,
+                                            camera_file_transfer_in_progress: false,
+                                        },
+                                    );
                                 }
                                 CAMERA_SEND_LOGGER_EVENT => {
                                     let event_kind = LittleEndian::read_u16(&chunk[0..2]);
-                                    let mut event_timestamp = LittleEndian::read_u64(&chunk[2..2 + 8]);
+                                    let mut event_timestamp =
+                                        LittleEndian::read_u64(&chunk[2..2 + 8]);
                                     let event_payload = LittleEndian::read_u64(&chunk[10..18]);
-                                    if let Ok(mut event_kind) = LoggerEventKind::try_from(event_kind) {
-                                        if let Some(mut time) = DateTime::from_timestamp_micros(event_timestamp as i64) {
-                                            if let LoggerEventKind::SetAlarm(alarm_time) = &mut event_kind {
-                                                if DateTime::from_timestamp_micros(event_payload as i64).is_some() {
+                                    if let Ok(mut event_kind) =
+                                        LoggerEventKind::try_from(event_kind)
+                                    {
+                                        if let Some(mut time) =
+                                            DateTime::from_timestamp_micros(event_timestamp as i64)
+                                        {
+                                            if let LoggerEventKind::SetAlarm(alarm_time) =
+                                                &mut event_kind
+                                            {
+                                                if DateTime::from_timestamp_micros(
+                                                    event_payload as i64,
+                                                )
+                                                .is_some()
+                                                {
                                                     *alarm_time = event_payload;
                                                 } else {
-                                                    warn!("Wakeup alarm from event was invalid {}", event_payload);
+                                                    warn!(
+                                                        "Wakeup alarm from event was invalid {}",
+                                                        event_payload
+                                                    );
                                                 }
-                                            } else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm_time) = &mut event_kind {
-                                                if DateTime::from_timestamp_micros(event_payload as i64).is_some() {
+                                            } else if let LoggerEventKind::Rp2040MissedAudioAlarm(
+                                                alarm_time,
+                                            ) = &mut event_kind
+                                            {
+                                                if DateTime::from_timestamp_micros(
+                                                    event_payload as i64,
+                                                )
+                                                .is_some()
+                                                {
                                                     *alarm_time = event_payload;
                                                 } else {
-                                                    warn!("Missed alarm from event was invalid {}", event_payload);
+                                                    warn!(
+                                                        "Missed alarm from event was invalid {}",
+                                                        event_payload
+                                                    );
                                                 }
-                                            } else if let LoggerEventKind::ToldRpiToWake(reason) = &mut event_kind {
-                                                if let Ok(wake_reason) = WakeReason::try_from(event_payload as u8) {
+                                            } else if let LoggerEventKind::ToldRpiToWake(reason) =
+                                                &mut event_kind
+                                            {
+                                                if let Ok(wake_reason) =
+                                                    WakeReason::try_from(event_payload as u8)
+                                                {
                                                     *reason = wake_reason;
                                                 } else {
-                                                    warn!("Told rpi to wake invalid reason {}", event_payload);
+                                                    warn!(
+                                                        "Told rpi to wake invalid reason {}",
+                                                        event_payload
+                                                    );
                                                 }
-                                            } else if let LoggerEventKind::RtcCommError = &mut event_kind {
+                                            } else if let LoggerEventKind::RtcCommError =
+                                                &mut event_kind
+                                            {
                                                 if event_timestamp == 0 {
                                                     time = chrono::Local::now().with_timezone(&Utc);
-                                                    event_timestamp = time.timestamp_micros() as u64;
+                                                    event_timestamp =
+                                                        time.timestamp_micros() as u64;
                                                 }
-                                            } else if let LoggerEventKind::LostFrames(lost_frames) = &mut event_kind {
+                                            } else if let LoggerEventKind::LostFrames(lost_frames) =
+                                                &mut event_kind
+                                            {
                                                 *lost_frames = event_payload as u64;
                                             }
-                                            let payload_json = if let LoggerEventKind::SavedNewConfig = event_kind {
-                                                // If we get saved new config, the rp2040 would have just been
-                                                // restarted after the config change, so we can log the current
-                                                // config in relation to that event.
-                                                let json_inner = format!(
-                                                    r#""continuous-recorder": {},
+                                            let payload_json =
+                                                if let LoggerEventKind::SavedNewConfig = event_kind
+                                                {
+                                                    // If we get saved new config, the rp2040 would have just been
+                                                    // restarted after the config change, so we can log the current
+                                                    // config in relation to that event.
+                                                    let json_inner = format!(
+                                                        r#""continuous-recorder": {},
                                                         "use-low-power-mode": {},
                                                         "start-recording": "{:?}",
                                                         "stop-recording": "{:?}",
                                                         "location": "({}, {}, {})"
                                                         "#,
-                                                    device_config.is_continuous_recorder(),
-                                                    device_config.use_low_power_mode(),
-                                                    device_config.recording_window().0,
-                                                    device_config.recording_window().1,
-                                                    device_config.lat_lng().0,
-                                                    device_config.lat_lng().1,
-                                                    device_config.location_altitude().unwrap_or(0.0)
-                                                );
-                                                let json = String::from(format!("{{{}}}", json_inner));
-                                                Some(json)
-                                            } else {
-                                                None
-                                            };
-                                            info!("Got logger event {:?} at {}", event_kind, time.with_timezone(&Pacific__Auckland));
-                                            let event = LoggerEvent::new(event_kind, event_timestamp);
+                                                        device_config.is_continuous_recorder(),
+                                                        device_config.use_low_power_mode(),
+                                                        device_config.recording_window().0,
+                                                        device_config.recording_window().1,
+                                                        device_config.lat_lng().0,
+                                                        device_config.lat_lng().1,
+                                                        device_config
+                                                            .location_altitude()
+                                                            .unwrap_or(0.0)
+                                                    );
+                                                    let json =
+                                                        String::from(format!("{{{}}}", json_inner));
+                                                    Some(json)
+                                                } else {
+                                                    None
+                                                };
+                                            info!(
+                                                "Got logger event {:?} at {}",
+                                                event_kind,
+                                                time.with_timezone(&Pacific__Auckland)
+                                            );
+                                            let event =
+                                                LoggerEvent::new(event_kind, event_timestamp);
                                             event.log(&mut dbus_conn, payload_json);
                                         } else {
-                                            warn!("Event had invalid timestamp {}", event_timestamp);
+                                            warn!(
+                                                "Event had invalid timestamp {}",
+                                                event_timestamp
+                                            );
                                         }
                                     } else {
                                         warn!("Unknown logger event kind {}", event_kind);
@@ -442,17 +518,24 @@ pub fn enter_camera_transfer_loop(
                                     let mut file = Vec::with_capacity(150_000_000);
                                     file.extend_from_slice(&chunk);
                                     file_download = Some(file);
-                                    let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
-                                        camera_handshake_info: None,
-                                        camera_file_transfer_in_progress: true,
-                                    });
+                                    let _ = camera_handshake_channel_tx.send(
+                                        FrameSocketServerMessage {
+                                            camera_handshake_info: None,
+                                            camera_file_transfer_in_progress: true,
+                                        },
+                                    );
                                 }
                                 CAMERA_RESUME_FILE_TRANSFER => {
                                     if let Some(file) = &mut file_download {
                                         // Continue current file transfer
                                         //println!("Continue file transfer");
                                         if part_count % 100 == 0 {
-                                            let megabytes_per_second = (file.len() + chunk.len()) as f32 / Instant::now().duration_since(start).as_secs_f32() / (1024.0 * 1024.0);
+                                            let megabytes_per_second = (file.len() + chunk.len())
+                                                as f32
+                                                / Instant::now()
+                                                    .duration_since(start)
+                                                    .as_secs_f32()
+                                                / (1024.0 * 1024.0);
                                             info!(
                                                 "Transferring part #{} {:?} for {} bytes, {}MB/s",
                                                 part_count,
@@ -463,14 +546,18 @@ pub fn enter_camera_transfer_loop(
                                         }
                                         part_count += 1;
                                         file.extend_from_slice(&chunk);
-                                        let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
-                                            camera_handshake_info: None,
-                                            camera_file_transfer_in_progress: true,
-                                        });
+                                        let _ = camera_handshake_channel_tx.send(
+                                            FrameSocketServerMessage {
+                                                camera_handshake_info: None,
+                                                camera_file_transfer_in_progress: true,
+                                            },
+                                        );
                                     } else {
                                         warn!("Trying to continue file with no open file");
                                         if !got_startup_info {
-                                            if recording_state.safe_to_restart_rp2040(&mut dbus_conn) {
+                                            if recording_state
+                                                .safe_to_restart_rp2040(&mut dbus_conn)
+                                            {
                                                 let date = chrono::Local::now();
                                                 error!(
                                                     "1) Requesting reset of rp2040 to \
@@ -489,7 +576,10 @@ pub fn enter_camera_transfer_loop(
                                     }
                                     if let Some(mut file) = file_download.take() {
                                         // Continue current file transfer
-                                        let megabytes_per_second = (file.len() + chunk.len()) as f32 / Instant::now().duration_since(start).as_secs_f32() / (1024.0 * 1024.0);
+                                        let megabytes_per_second = (file.len() + chunk.len())
+                                            as f32
+                                            / Instant::now().duration_since(start).as_secs_f32()
+                                            / (1024.0 * 1024.0);
                                         info!(
                                             "End file transfer, took {:?} for {} bytes, {}MB/s",
                                             Instant::now().duration_since(start),
@@ -504,17 +594,21 @@ pub fn enter_camera_transfer_loop(
                                         } else {
                                             save_cptv_file_to_disk(file, device_config.output_dir())
                                         }
-                                        let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
-                                            camera_handshake_info: None,
-                                            camera_file_transfer_in_progress: false,
-                                        });
+                                        let _ = camera_handshake_channel_tx.send(
+                                            FrameSocketServerMessage {
+                                                camera_handshake_info: None,
+                                                camera_file_transfer_in_progress: false,
+                                            },
+                                        );
                                     } else {
                                         warn!("Trying to end file with no open file");
                                     }
                                 }
                                 CAMERA_BEGIN_AND_END_FILE_TRANSFER => {
                                     if file_download.is_some() {
-                                        info!("Trying to begin (and end) file without ending current");
+                                        info!(
+                                            "Trying to begin (and end) file without ending current"
+                                        );
                                     }
                                     // Open and end new file transfer
                                     part_count = 0;
@@ -526,10 +620,12 @@ pub fn enter_camera_transfer_loop(
                                     } else {
                                         save_cptv_file_to_disk(file, device_config.output_dir())
                                     }
-                                    let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
-                                        camera_handshake_info: None,
-                                        camera_file_transfer_in_progress: false,
-                                    });
+                                    let _ = camera_handshake_channel_tx.send(
+                                        FrameSocketServerMessage {
+                                            camera_handshake_info: None,
+                                            camera_file_transfer_in_progress: false,
+                                        },
+                                    );
                                 }
                                 CAMERA_GET_MOTION_DETECTION_MASK => {
                                     // Already handled
@@ -552,15 +648,24 @@ pub fn enter_camera_transfer_loop(
                             .unwrap();
                         // Frame
                         let mut frame = [0u8; FRAME_LENGTH];
-                        BigEndian::write_u16_into(u8_slice_as_u16_slice(&raw_read_buffer[header_length..header_length + FRAME_LENGTH]), &mut frame);
+                        BigEndian::write_u16_into(
+                            u8_slice_as_u16_slice(
+                                &raw_read_buffer[header_length..header_length + FRAME_LENGTH],
+                            ),
+                            &mut frame,
+                        );
                         let back = FRAME_BUFFER.get_back().lock().unwrap();
                         back.replace(Some(frame));
                         if !got_first_frame {
                             got_first_frame = true;
-                            info!("Got first frame from rp2040, got startup info {}", got_startup_info);
+                            info!(
+                                "Got first frame from rp2040, got startup info {}",
+                                got_startup_info
+                            );
                         }
                         // FIXME: Should is_recording bit only be set in high power mode?
-                        let is_recording = crc_from_remote == 1 && !device_config.use_low_power_mode();
+                        let is_recording =
+                            crc_from_remote == 1 && !device_config.use_low_power_mode();
                         recording_state.set_is_recording(is_recording);
                         if !got_startup_info {
                             warn!("Requesting reset of rp2040 to force handshake");
@@ -587,7 +692,11 @@ pub fn enter_camera_transfer_loop(
     }
 }
 
-fn maybe_make_test_audio_recording(dbus_conn: &mut DuplexConn, restart_rp2040_channel_tx: &Sender<bool>, recording_state: &mut RecordingState) {
+fn maybe_make_test_audio_recording(
+    dbus_conn: &mut DuplexConn,
+    restart_rp2040_channel_tx: &Sender<bool>,
+    recording_state: &mut RecordingState,
+) {
     // If the rp2040 is making a recording, and a user test audio recording was requested,
     // do nothing.
 
@@ -595,7 +704,9 @@ fn maybe_make_test_audio_recording(dbus_conn: &mut DuplexConn, restart_rp2040_ch
     // launch a thread to track when that recording has completed.
     if recording_state.user_requested_test_audio_recording() {
         recording_state.sync_state_from_attiny(dbus_conn);
-        if !recording_state.is_recording() && recording_state.request_test_audio_recording_from_rp2040(dbus_conn) {
+        if !recording_state.is_recording()
+            && recording_state.request_test_audio_recording_from_rp2040(dbus_conn)
+        {
             let _ = restart_rp2040_channel_tx.send(true);
             info!("Telling rp2040 to take test recording and restarting");
             let mut inner_recording_state = recording_state.clone();
@@ -612,14 +723,21 @@ fn maybe_make_test_audio_recording(dbus_conn: &mut DuplexConn, restart_rp2040_ch
                     Ok(mut conn) => {
                         let _unique_name = conn.send_hello(Timeout::Infinite);
                         if _unique_name.is_err() {
-                            error!("Error getting handshake with system DBus: {}", _unique_name.err().unwrap());
+                            error!(
+                                "Error getting handshake with system DBus: {}",
+                                _unique_name.err().unwrap()
+                            );
                             process::exit(1);
                         } else {
                             loop {
                                 // Re-sync our internal rp2040 state once every 1-2 seconds until
                                 // we see that the state has entered taking_test_audio_recording.
                                 inner_recording_state.sync_state_from_attiny(&mut conn);
-                                let sleep_duration_ms = if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                                let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                    2000
+                                } else {
+                                    1000
+                                };
                                 if inner_recording_state.is_taking_test_audio_recording() {
                                     break;
                                 }
@@ -628,7 +746,11 @@ fn maybe_make_test_audio_recording(dbus_conn: &mut DuplexConn, restart_rp2040_ch
                             loop {
                                 // Now wait until we've exited taking_test_audio_recording.
                                 inner_recording_state.sync_state_from_attiny(&mut conn);
-                                let sleep_duration_ms = if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                                let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                    2000
+                                } else {
+                                    1000
+                                };
                                 if !inner_recording_state.is_taking_test_audio_recording() {
                                     inner_recording_state.finished_taking_test_recording();
                                     break;
