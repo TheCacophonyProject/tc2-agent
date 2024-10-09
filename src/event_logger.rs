@@ -161,22 +161,37 @@ impl LoggerEvent {
     }
 
     pub fn log(&self, conn: &mut DuplexConn, json_payload: Option<String>) {
-        let mut call = MessageBuilder::new().call("Add").with_interface("org.cacophony.Events").on("/org/cacophony/Events").at("org.cacophony.Events").build();
+        let mut call = MessageBuilder::new()
+            .call("Add")
+            .with_interface("org.cacophony.Events")
+            .on("/org/cacophony/Events")
+            .at("org.cacophony.Events")
+            .build();
         // If the type is SavedNewConfig, maybe make the payload the config?
         if let LoggerEventKind::SetAlarm(alarm) = self.event {
-            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap(); // Microseconds to nanoseconds
+            call.body
+                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
+                .unwrap(); // Microseconds to nanoseconds
             call.body.push_param("SetAlarm").unwrap();
         } else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm) = self.event {
-            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap(); // Microseconds to nanoseconds
+            call.body
+                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
+                .unwrap(); // Microseconds to nanoseconds
             call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
         } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
-            call.body.push_param(format!(r#"{{ "wakeup-reason": "{}" }}"#, reason)).unwrap();
+            call.body
+                .push_param(format!(r#"{{ "wakeup-reason": "{}" }}"#, reason))
+                .unwrap();
             call.body.push_param("ToldRpiToWake").unwrap();
         } else if let LoggerEventKind::LostFrames(lost_frames) = self.event {
-            call.body.push_param(format!(r#"{{ "lost-frames": "{}" }}"#, lost_frames)).unwrap();
+            call.body
+                .push_param(format!(r#"{{ "lost-frames": "{}" }}"#, lost_frames))
+                .unwrap();
             call.body.push_param("LostFrames").unwrap();
         } else {
-            call.body.push_param(json_payload.unwrap_or(String::from("{}"))).unwrap();
+            call.body
+                .push_param(json_payload.unwrap_or(String::from("{}")))
+                .unwrap();
             call.body.push_param(format!("{:?}", self.event)).unwrap();
         }
 
