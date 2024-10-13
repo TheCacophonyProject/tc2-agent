@@ -101,7 +101,8 @@ fn main() {
     let current_config = device_config.unwrap();
     let initial_config = current_config.clone();
     let (device_config_change_channel_tx, device_config_change_channel_rx) = channel();
-    watch_local_config_file_changes(current_config, &device_config_change_channel_tx);
+    let _file_watcher =
+        watch_local_config_file_changes(current_config, &device_config_change_channel_tx);
 
     // NOTE: This handles gracefully exiting the process if ctrl-c etc is pressed
     //  while running in an interactive terminal.
