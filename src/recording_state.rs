@@ -1,6 +1,7 @@
 use crate::dbus_attiny_i2c::{dbus_write_attiny_command, read_tc2_agent_state};
 use crate::dbus_audio::AudioStatus;
 use log::error;
+use log::{debug, info, warn};
 use rustbus::DuplexConn;
 use std::process;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -78,7 +79,6 @@ pub struct RecordingState {
     rp2040_recording_state_inner: Arc<AtomicU8>,
     test_recording_state_inner: Arc<AtomicU8>,
     recording_mode_state: RecordingModeState,
-
 }
 
 impl RecordingState {
@@ -95,7 +95,8 @@ impl RecordingState {
     }
 
     pub fn is_recording(&self) -> bool {
-        self.rp2040_recording_state_inner.load(Ordering::Relaxed) & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING
+        self.rp2040_recording_state_inner.load(Ordering::Relaxed) & tc2_agent_state::RECORDING
+            == tc2_agent_state::RECORDING
     }
 
     pub fn sync_state_from_attiny(&mut self, conn: &mut DuplexConn) -> u8 {
@@ -111,8 +112,21 @@ impl RecordingState {
 
     pub fn set_is_recording(&mut self, is_recording: bool) {
         let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        let new_state = if is_recording { tc2_agent_state::RECORDING } else { !tc2_agent_state::RECORDING };
-        while !self.rp2040_recording_state_inner.compare_exchange(state, state & new_state, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+        let new_state = if is_recording {
+            tc2_agent_state::RECORDING
+        } else {
+            !tc2_agent_state::RECORDING
+        };
+        while !self
+            .rp2040_recording_state_inner
+            .compare_exchange(
+                state,
+                state & new_state,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
             sleep(Duration::from_micros(1));
         }
     }
@@ -133,17 +147,29 @@ impl RecordingState {
         self.get_audio_status() == AudioStatus::TakingTestRecording
     }
 
+    pub fn is_taking_long_audio_recording(&self) -> bool {
+        self.get_audio_status() == AudioStatus::TakingLongRecording
+    }
+
     #[allow(unused)]
     pub fn is_waiting_to_take_test_audio_recording(&self) -> bool {
         self.get_audio_status() == AudioStatus::WaitingToTakeTestRecording
     }
 
     pub fn finished_taking_test_recording(&mut self) {
-        self.test_recording_state_inner.store(TestRecordingState::NotRequested as u8, Ordering::Relaxed);
+        self.test_recording_state_inner
+            .store(TestRecordingState::NotRequested as u8, Ordering::Relaxed);
         let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
         while !self
             .rp2040_recording_state_inner
-            .compare_exchange(state, state & !(tc2_agent_state::RECORDING | tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING), Ordering::Relaxed, Ordering::Relaxed)
+            .compare_exchange(
+                state,
+                state
+                    & !(tc2_agent_state::RECORDING
+                        | tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
             .is_ok()
         {
             sleep(Duration::from_micros(1));
@@ -152,10 +178,23 @@ impl RecordingState {
 
     pub fn get_audio_status(&self) -> AudioStatus {
         let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        if state & (tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING) == (tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING) {
+        if state & (tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING | tc2_agent_state::RECORDING)
+            == (tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING | tc2_agent_state::RECORDING)
+        {
+            AudioStatus::TakingLongRecording
+        } else if state
+            & (tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
+            == (tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
+        {
             AudioStatus::TakingTestRecording
-        } else if state & tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING == tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING {
+        } else if state & tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING
+            == tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING
+        {
             AudioStatus::WaitingToTakeTestRecording
+        } else if state & tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING
+            == tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING
+        {
+            AudioStatus::WaitingToTakeLongRecording
         } else if state & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING {
             AudioStatus::Recording
         } else if self.user_requested_audio_recording() {
@@ -166,20 +205,26 @@ impl RecordingState {
     }
 
     pub(crate) fn set_state(&mut self, new_state: u8) {
-        self.rp2040_recording_state_inner.store(new_state, Ordering::Relaxed);
+        self.rp2040_recording_state_inner
+            .store(new_state, Ordering::Relaxed);
     }
 
     pub fn request_long_audio_recording(&mut self) {
-        self.test_recording_state_inner.store(TestRecordingState::RecRequested as u8, Ordering::Relaxed);
+        self.test_recording_state_inner
+            .store(TestRecordingState::RecRequested as u8, Ordering::Relaxed);
     }
 
     pub fn request_test_audio_recording(&mut self) {
-        self.test_recording_state_inner.store(TestRecordingState::TestRecRequested as u8, Ordering::Relaxed);
+        self.test_recording_state_inner.store(
+            TestRecordingState::TestRecRequested as u8,
+            Ordering::Relaxed,
+        );
     }
 
     pub fn user_requested_audio_recording(&self) -> bool {
         let state: u8 = self.test_recording_state_inner.load(Ordering::Relaxed);
-        state == TestRecordingState::TestRecRequested as u8 || state == TestRecordingState::RecRequested as u8
+        state == TestRecordingState::TestRecRequested as u8
+            || state == TestRecordingState::RecRequested as u8
     }
 
     pub fn merge_state_to_attiny(&mut self, state_bits_to_set: u8, conn: &mut DuplexConn) {
@@ -204,7 +249,7 @@ impl RecordingState {
         !self.is_recording()
     }
 
-    pub fn request_test_audio_recording_from_rp2040(&mut self, conn: &mut DuplexConn) -> bool {
+    pub fn request_audio_recording_from_rp2040(&mut self, conn: &mut DuplexConn) -> bool {
         self.sync_state_from_attiny(conn);
         if self.is_recording() {
             false
@@ -212,11 +257,12 @@ impl RecordingState {
             let state: u8 = self.test_recording_state_inner.load(Ordering::Relaxed);
 
             if state == TestRecordingState::TestRecRequested as u8 {
-                self.merge_state_to_attiny(tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING, conn);
-            } else if state == TestRecordingState::RecRequested as u8 {
                 self.merge_state_to_attiny(tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING, conn);
+            } else if state == TestRecordingState::RecRequested as u8 {
+                self.merge_state_to_attiny(tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING, conn);
             }
-            self.test_recording_state_inner.store(TestRecordingState::Rp2040Requested as u8, Ordering::Relaxed);
+            self.test_recording_state_inner
+                .store(TestRecordingState::Rp2040Requested as u8, Ordering::Relaxed);
             true
         }
     }
