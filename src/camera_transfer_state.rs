@@ -700,7 +700,7 @@ fn maybe_make_test_audio_recording(
         if !recording_state.is_recording()
             && recording_state.request_audio_recording_from_rp2040(dbus_conn)
         {
-            // let _ = restart_rp2040_channel_tx.send(true);
+            let _ = restart_rp2040_channel_tx.send(true);
             info!("Telling rp2040 to take test recording and restarting");
             let mut inner_recording_state = recording_state.clone();
             let _ = thread::spawn(move || {
