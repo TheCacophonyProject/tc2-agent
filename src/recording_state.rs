@@ -1,7 +1,6 @@
 use crate::dbus_attiny_i2c::{dbus_write_attiny_command, read_tc2_agent_state};
 use crate::dbus_audio::AudioStatus;
 use log::error;
-use log::{debug, info, warn};
 use rustbus::DuplexConn;
 use std::process;
 use std::sync::atomic::{AtomicU8, Ordering};

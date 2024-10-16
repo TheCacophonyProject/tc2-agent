@@ -18,7 +18,6 @@ fn default_handler(
 ) -> HandleResult<()> {
     Ok(None)
 }
-use log::{debug, info, warn};
 
 fn audio_handler(
     recording_state_ctx: &mut RecordingState,
