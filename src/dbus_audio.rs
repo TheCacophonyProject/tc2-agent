@@ -43,7 +43,7 @@ fn audio_handler(
         } else if recording_state_ctx.is_taking_test_audio_recording() {
             "Already making a 5 test recording"
         } else {
-            recording_state_ctx.request_test_audio_recording();
+            recording_state_ctx.request_long_audio_recording();
             "Asked for a 5 minute recording"
         };
         let mut resp = msg.dynheader.make_response();
