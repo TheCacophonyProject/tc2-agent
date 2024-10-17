@@ -39,16 +39,18 @@ fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
 
     // Beginning of data block / end of header (8 bytes)
     cursor.write_all(b"data").unwrap();
-    cursor.write_u32::<LittleEndian>(audio_length as u32).unwrap();
+    cursor
+        .write_u32::<LittleEndian>(audio_length as u32)
+        .unwrap();
     cursor.into_inner()
 }
 
 pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig) {
     let output_dir = String::from(device_config.output_dir());
     //let output_dir = String::from("/home/pi/temp");
-    let _ = thread::Builder::new().name("audio-transcode".to_string()).spawn_with_priority(
-        ThreadPriority::Min,
-        move |_| {
+    let _ = thread::Builder::new()
+        .name("audio-transcode".to_string())
+        .spawn_with_priority(ThreadPriority::Min, move |_| {
             // Reclaim some memory
             audio_bytes.shrink_to_fit();
             let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
@@ -57,30 +59,42 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 .with_timezone(&chrono::Local);
             info!("Saving AAC file");
             if !fs::exists(&output_dir).unwrap_or(false) {
-                fs::create_dir(&output_dir)
-                    .expect(&format!("Failed to create AAC output directory {}", output_dir));
+                fs::create_dir(&output_dir).expect(&format!(
+                    "Failed to create AAC output directory {}",
+                    output_dir
+                ));
             }
 
-            let output_path: String =
-                format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
+            let output_path: String = format!(
+                "{}/{}.aac",
+                output_dir,
+                recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+            );
             // If the file already exists, don't re-save it.
             if !fs::exists(&output_path).unwrap_or(false) {
                 let recording_date_time =
                     format!("recordingDateTime={}", recording_date_time.to_rfc3339());
                 let latitude = format!("latitude={}", device_config.lat_lng().0);
                 let longitude = format!("longitude={}", device_config.lat_lng().1);
-                let altitude =
-                    format!("locAltitude={}", device_config.location_altitude().unwrap_or(0.0));
-                let location_accuracy =
-                    format!("locAccuracy={}", device_config.location_accuracy().unwrap_or(0.0));
-                let location_timestamp =
-                    format!("locTimestamp={}", device_config.location_timestamp().unwrap_or(0));
+                let altitude = format!(
+                    "locAltitude={}",
+                    device_config.location_altitude().unwrap_or(0.0)
+                );
+                let location_accuracy = format!(
+                    "locAccuracy={}",
+                    device_config.location_accuracy().unwrap_or(0.0)
+                );
+                let location_timestamp = format!(
+                    "locTimestamp={}",
+                    device_config.location_timestamp().unwrap_or(0)
+                );
                 let device_id = format!("deviceId={}", device_config.device_id());
                 let sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
                 let duration = format!(
                     "duration={}",
                     audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0
                 );
+                info!("Sample rate is {}", sample_rate);
 
                 // Now transcode with ffmpeg – we create an aac stream in an m4a wrapper in order
                 // to support adding metadata tags.
@@ -130,27 +144,73 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 thread::spawn(move || {
                     // Write wav to stdin:
                     let audio_bytes = &audio_bytes[12..];
-                    stdin.write_all(&wav_header(audio_bytes.len(), sample_rate)).unwrap();
-                    stdin.write_all(&audio_bytes).unwrap();
-                });
-                match cmd.wait() {
-                    Ok(exit_status) => {
-                        if exit_status.success() {
-                            info!("Saved AAC file {}", output_path);
-                        } else {
-                            error!("Failed transcoding {} to AAC", output_path);
+                    // let header = &wav_header(audio_bytes.len(), sample_rate);
+
+                    let path: String = format!("{}/test.wav", output_dir);
+                    // If the file already exists, don't re-save it.
+                    let is_existing_file = match fs::metadata(&path) {
+                        Ok(metadata) => metadata.len() as usize == audio_bytes.len() - 12,
+                        Err(_) => false,
+                    };
+                    if !is_existing_file {
+                        match fs::write(&path, &audio_bytes) {
+                            Ok(()) => {
+                                info!(
+                                    "Saved Audio file header {} bytes are {}",
+                                    path,
+                                    audio_bytes.len()
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed writing Audio file to storage at {}, reason: {}",
+                                    path, e
+                                );
+                            }
                         }
+
+                        // let mut f = fs::OpenOptions::new()
+                        //     .append(true)
+                        //     .create(false)
+                        //     .open(&path)
+                        //     .expect("Unable to open file");
+                        // match f.write_all(&audio_bytes) {
+                        //     Ok(()) => {
+                        //         info!("Saved Audio file {} bytes are {}", path, audio_bytes.len());
+                        //     }
+                        //     Err(e) => {
+                        //         error!(
+                        //             "Failed writing Audio file to storage at {}, reason: {}",
+                        //             path, e
+                        //         );
+                        //     }
+                        // }
+                    } else {
+                        error!("File {} already exists, discarding duplicate", path);
                     }
-                    Err(e) => {
-                        error!(
-                            "Failed invoking ffmpeg to transcode {}, reason: {}",
-                            output_path, e
-                        );
-                    }
-                }
+
+                    // stdin
+                    //     .write_all(&wav_header(audio_bytes.len(), sample_rate))
+                    //     .unwrap();
+                    // stdin.write_all(&audio_bytes).unwrap();
+                });
+                // match cmd.wait() {
+                //     Ok(exit_status) => {
+                //         if exit_status.success() {
+                //             info!("Saved AAC file {}", output_path);
+                //         } else {
+                //             error!("Failed transcoding {} to AAC", output_path);
+                //         }
+                //     }
+                //     Err(e) => {
+                //         error!(
+                //             "Failed invoking ffmpeg to transcode {}, reason: {}",
+                //             output_path, e
+                //         );
+                //     }
+                // }
             } else {
                 error!("File {} already exists, discarding duplicate", output_path);
             }
-        },
-    );
+        });
 }

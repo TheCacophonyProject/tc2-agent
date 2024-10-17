@@ -301,6 +301,7 @@ pub fn enter_camera_transfer_loop(
                             start = Instant::now();
                         }
                         let chunk = &raw_read_buffer[header_length..header_length + num_bytes];
+                        info!("Reading bytes {}", num_bytes);
                         // Write back the crc we calculated.
                         let crc = crc_check.checksum(chunk);
                         LittleEndian::write_u16(&mut return_payload_buf[4..6], crc);
@@ -582,11 +583,9 @@ pub fn enter_camera_transfer_loop(
                                         part_count = 0;
                                         file.extend_from_slice(&chunk);
                                         let shebang = LittleEndian::read_u16(&file[0..2]);
-                                        if shebang == AUDIO_SHEBANG {
-                                            save_audio_file_to_disk(file, device_config.clone());
-                                        } else {
-                                            save_cptv_file_to_disk(file, device_config.output_dir())
-                                        }
+                                        // if shebang == AUDIO_SHEBANG {
+                                        save_audio_file_to_disk(file, device_config.clone());
+                                        //  ]
                                         let _ = camera_handshake_channel_tx.send(
                                             FrameSocketServerMessage {
                                                 camera_handshake_info: None,
