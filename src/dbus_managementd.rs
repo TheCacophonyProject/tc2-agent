@@ -26,11 +26,25 @@ fn managementd_handler(
     _env: &mut MyHandleEnv,
 ) -> HandleResult<()> {
     if msg.dynheader.member.as_ref().unwrap() == "testaudio" {
-        let message = if !recording_state_ctx.is_taking_test_audio_recording() {
+        let message = if recording_state_ctx.is_taking_test_audio_recording() {
+            "Already making a test recording"
+        } else if recording_state_ctx.is_taking_long_audio_recording() {
+            "Already making a 5 minute recording"
+        } else {
             recording_state_ctx.request_test_audio_recording();
             "Asked for a test recording"
+        };
+        let mut resp = msg.dynheader.make_response();
+        resp.body.push_param(message)?;
+        Ok(Some(resp))
+    } else if msg.dynheader.member.as_ref().unwrap() == "longaudiorecording" {
+        let message = if recording_state_ctx.is_taking_long_audio_recording() {
+            "Already making a 5 minute recording"
+        } else if recording_state_ctx.is_taking_test_audio_recording() {
+            "Already making a 5 test recording"
         } else {
-            "Already making a test recording"
+            recording_state_ctx.request_long_audio_recording();
+            "Asked for a 5 minute recording"
         };
         let mut resp = msg.dynheader.make_response();
         resp.body.push_param(message)?;
@@ -38,7 +52,13 @@ fn managementd_handler(
     } else if msg.dynheader.member.as_ref().unwrap() == "audiostatus" {
         let mut response = msg.dynheader.make_response();
         let status = recording_state_ctx.get_audio_status();
-        response.body.push_param(if recording_state_ctx.is_in_audio_mode() { 1 } else { 0 })?;
+        response
+            .body
+            .push_param(if recording_state_ctx.is_in_audio_mode() {
+                1
+            } else {
+                0
+            })?;
         response.body.push_param(status as u8)?;
         Ok(Some(response))
     } else if msg.dynheader.member.as_ref().unwrap() == "offloadstatus" {
@@ -65,6 +85,8 @@ pub enum AudioStatus {
     WaitingToTakeTestRecording = 2,
     TakingTestRecording = 3,
     Recording = 4,
+    TakingLongRecording = 5,
+    WaitingToTakeLongRecording = 6,
 }
 
 pub fn setup_dbus_managementd_recording_service(recording_state: &RecordingState) {

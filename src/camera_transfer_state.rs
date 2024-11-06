@@ -179,7 +179,10 @@ pub fn enter_camera_transfer_loop(
         }
         if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
-            warn!("Requesting reset of rp2040 at {}", date.with_timezone(&Pacific__Auckland));
+            warn!(
+                "Requesting reset of rp2040 at {}",
+                date.with_timezone(&Pacific__Auckland)
+            );
             rp2040_needs_reset = false;
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
@@ -711,10 +714,10 @@ fn maybe_make_test_audio_recording(
 
     // If the user requested a test audio recording, trigger the test audio recording, and
     // launch a thread to track when that recording has completed.
-    if recording_state.user_requested_test_audio_recording() {
+    if recording_state.user_requested_audio_recording() {
         recording_state.sync_state_from_attiny(dbus_conn);
         if !recording_state.is_recording()
-            && recording_state.request_test_audio_recording_from_rp2040(dbus_conn)
+            && recording_state.request_audio_recording_from_rp2040(dbus_conn)
         {
             let _ = restart_rp2040_channel_tx.send(true);
             info!("Telling rp2040 to take test recording and restarting");
@@ -742,8 +745,11 @@ fn maybe_make_test_audio_recording(
                                 // Re-sync our internal rp2040 state once every 1-2 seconds until
                                 // we see that the state has entered taking_test_audio_recording.
                                 inner_recording_state.sync_state_from_attiny(&mut conn);
-                                let sleep_duration_ms =
-                                    if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                                let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                    2000
+                                } else {
+                                    1000
+                                };
                                 if inner_recording_state.is_taking_test_audio_recording() {
                                     break;
                                 }
@@ -752,8 +758,11 @@ fn maybe_make_test_audio_recording(
                             loop {
                                 // Now wait until we've exited taking_test_audio_recording.
                                 inner_recording_state.sync_state_from_attiny(&mut conn);
-                                let sleep_duration_ms =
-                                    if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                                let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                    2000
+                                } else {
+                                    1000
+                                };
                                 if !inner_recording_state.is_taking_test_audio_recording() {
                                     inner_recording_state.finished_taking_test_recording();
                                     break;
