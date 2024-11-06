@@ -179,7 +179,10 @@ pub fn enter_camera_transfer_loop(
         }
         if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
-            warn!("Requesting reset of rp2040 at {}", date.with_timezone(&Pacific__Auckland));
+            warn!(
+                "Requesting reset of rp2040 at {}",
+                date.with_timezone(&Pacific__Auckland)
+            );
             rp2040_needs_reset = false;
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
@@ -353,7 +356,10 @@ pub fn enter_camera_transfer_loop(
                                     got_startup_info = true;
                                     if firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION {
                                         exit_cleanly(&mut dbus_conn);
-                                        info!("Unsupported firmware version, expected {}, got {}. Will reprogram RP2040.", EXPECTED_RP2040_FIRMWARE_VERSION, firmware_version);
+                                        info!(
+                                            "Unsupported firmware version, expected {}, got {}. Will reprogram RP2040.",
+                                            EXPECTED_RP2040_FIRMWARE_VERSION, firmware_version
+                                        );
                                         let e = program_rp2040();
                                         if e.is_err() {
                                             warn!("Failed to reprogram rp2040: {}", e.unwrap_err());
@@ -467,6 +473,10 @@ pub fn enter_camera_transfer_loop(
                                                     event_timestamp =
                                                         time.timestamp_micros() as u64;
                                                 }
+                                            } else if let LoggerEventKind::LostFrames(lost_frames) =
+                                                &mut event_kind
+                                            {
+                                                *lost_frames = event_payload as u64;
                                             }
                                             let payload_json =
                                                 if let LoggerEventKind::SavedNewConfig = event_kind
@@ -742,8 +752,11 @@ fn maybe_make_test_audio_recording(
                                 // Re-sync our internal rp2040 state once every 1-2 seconds until
                                 // we see that the state has entered taking_test_audio_recording.
                                 inner_recording_state.sync_state_from_attiny(&mut conn);
-                                let sleep_duration_ms =
-                                    if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                                let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                    2000
+                                } else {
+                                    1000
+                                };
                                 if inner_recording_state.is_taking_test_audio_recording() {
                                     break;
                                 }
@@ -752,8 +765,11 @@ fn maybe_make_test_audio_recording(
                             loop {
                                 // Now wait until we've exited taking_test_audio_recording.
                                 inner_recording_state.sync_state_from_attiny(&mut conn);
-                                let sleep_duration_ms =
-                                    if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                                let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                    2000
+                                } else {
+                                    1000
+                                };
                                 if !inner_recording_state.is_taking_test_audio_recording() {
                                     inner_recording_state.finished_taking_test_recording();
                                     break;

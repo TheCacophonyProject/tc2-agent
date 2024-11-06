@@ -67,6 +67,7 @@ pub enum LoggerEventKind {
     LogOffloadFailed,
     OffloadedLogs,
     CorruptFile,
+    LostFrames(u64),
 }
 
 impl Into<u16> for LoggerEventKind {
@@ -103,6 +104,7 @@ impl Into<u16> for LoggerEventKind {
             OffloadedLogs => 28,
             LogOffloadFailed => 29,
             CorruptFile => 30,
+            LostFrames(_) => 31,
         }
     }
 }
@@ -143,6 +145,7 @@ impl TryFrom<u16> for LoggerEventKind {
             28 => Ok(OffloadedLogs),
             29 => Ok(LogOffloadFailed),
             30 => Ok(CorruptFile),
+            31 => Ok(LostFrames(0)),
             _ => Err(()),
         }
     }
@@ -180,6 +183,11 @@ impl LoggerEvent {
                 .push_param(format!(r#"{{ "wakeup-reason": "{}" }}"#, reason))
                 .unwrap();
             call.body.push_param("ToldRpiToWake").unwrap();
+        } else if let LoggerEventKind::LostFrames(lost_frames) = self.event {
+            call.body
+                .push_param(format!(r#"{{ "lost-frames": "{}" }}"#, lost_frames))
+                .unwrap();
+            call.body.push_param("LostFrames").unwrap();
         } else {
             call.body
                 .push_param(json_payload.unwrap_or(String::from("{}")))
