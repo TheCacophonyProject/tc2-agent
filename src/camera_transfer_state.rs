@@ -721,10 +721,10 @@ fn maybe_make_test_audio_recording(
 
     // If the user requested a test audio recording, trigger the test audio recording, and
     // launch a thread to track when that recording has completed.
-    if recording_state.user_requested_test_audio_recording() {
+    if recording_state.user_requested_audio_recording() {
         recording_state.sync_state_from_attiny(dbus_conn);
         if !recording_state.is_recording()
-            && recording_state.request_test_audio_recording_from_rp2040(dbus_conn)
+            && recording_state.request_audio_recording_from_rp2040(dbus_conn)
         {
             let _ = restart_rp2040_channel_tx.send(true);
             info!("Telling rp2040 to take test recording and restarting");
