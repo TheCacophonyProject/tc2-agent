@@ -1,9 +1,9 @@
 use crate::dbus_attiny_i2c::{dbus_write_attiny_command, read_tc2_agent_state};
-use crate::dbus_audio::AudioStatus;
+use crate::dbus_managementd::AudioStatus;
 use log::error;
 use rustbus::DuplexConn;
 use std::process;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
@@ -68,11 +68,18 @@ impl RecordingModeState {
     }
 }
 
+struct OffloadProgress {
+    remaining_offload_bytes: AtomicU32,
+    total_offload_bytes: AtomicU32,
+    start_time: AtomicU64,
+}
+
 #[derive(Clone)]
 pub struct RecordingState {
     rp2040_recording_state_inner: Arc<AtomicU8>,
     test_recording_state_inner: Arc<AtomicU8>,
     recording_mode_state: RecordingModeState,
+    offload_state: Arc<OffloadProgress>,
 }
 
 impl RecordingState {
@@ -81,6 +88,11 @@ impl RecordingState {
             rp2040_recording_state_inner: Arc::new(AtomicU8::new(tc2_agent_state::NOT_READY)),
             test_recording_state_inner: Arc::new(AtomicU8::new(0)),
             recording_mode_state: RecordingModeState::new(),
+            offload_state: Arc::new(OffloadProgress {
+                remaining_offload_bytes: AtomicU32::new(0),
+                total_offload_bytes: AtomicU32::new(0),
+                start_time: AtomicU64::new(0),
+            }),
         }
     }
 
@@ -91,6 +103,56 @@ impl RecordingState {
     pub fn is_recording(&self) -> bool {
         self.rp2040_recording_state_inner.load(Ordering::Relaxed) & tc2_agent_state::RECORDING
             == tc2_agent_state::RECORDING
+    }
+
+    pub fn is_offloading(&self) -> bool {
+        self.offload_state.start_time.load(Ordering::Relaxed) != 0
+    }
+
+    pub fn get_offload_status(&self) -> Option<(u32, u32)> {
+        if self.is_offloading() {
+            // Return estimated time remaining in seconds
+            let transfer_start_time = self.offload_state.start_time.load(Ordering::Relaxed);
+            let now_ms = chrono::Local::now().timestamp_millis() as u64;
+            let elapsed = now_ms - transfer_start_time;
+            let remaining_bytes =
+                self.offload_state.remaining_offload_bytes.load(Ordering::Relaxed);
+            let total_bytes = self.offload_state.total_offload_bytes.load(Ordering::Relaxed);
+            let bytes_transferred = total_bytes - remaining_bytes;
+            let bytes_per_second = bytes_transferred as f32 / ((elapsed as f32) / 1000.0);
+            let remaining_seconds = remaining_bytes as f32 / bytes_per_second;
+            let percent_complete = (remaining_bytes as f32 / total_bytes as f32) * 100.0;
+            Some((percent_complete as u32, remaining_seconds as u32))
+        } else {
+            None
+        }
+    }
+
+    pub fn update_offload_progress(&mut self, block: u16) {
+        // Block is from 0..2047
+        // Page is from 0..63
+        // Page size is 2048 bytes
+        let pages_remaining = (block as u32 + 1) * 64;
+        let bytes_remaining = pages_remaining * 2048;
+        if self.offload_state.start_time.load(Ordering::Relaxed) == 0 {
+            self.offload_state
+                .start_time
+                .store(chrono::Local::now().timestamp_millis() as u64, Ordering::Relaxed);
+            self.offload_state.total_offload_bytes.store(bytes_remaining, Ordering::Relaxed);
+        }
+        let pages_remaining = block as u32 * 64;
+        let bytes_remaining = pages_remaining * 2048;
+        let last_remaining = self.offload_state.remaining_offload_bytes.load(Ordering::Relaxed);
+        if bytes_remaining < last_remaining && last_remaining != 0 {
+            // Make sure the number can only go down once offload has started.
+            self.offload_state.remaining_offload_bytes.store(bytes_remaining, Ordering::Relaxed);
+        }
+    }
+
+    pub fn end_offload(&mut self) {
+        self.offload_state.start_time.store(0, Ordering::Relaxed);
+        self.offload_state.total_offload_bytes.store(0, Ordering::Relaxed);
+        self.offload_state.remaining_offload_bytes.store(0, Ordering::Relaxed);
     }
 
     pub fn sync_state_from_attiny(&mut self, conn: &mut DuplexConn) -> u8 {

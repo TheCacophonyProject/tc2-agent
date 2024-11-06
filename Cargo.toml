@@ -9,7 +9,6 @@ authors = ["Cacophony Developers <coredev@cacophony.org.nz>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-framebuffer = "0.3.1"
 rppal = "0.19.0"
 chrono = { version = "0.4.38", features = ["serde"] }
 byteorder = "1.4.3"
@@ -33,7 +32,6 @@ sha256 = "1.5.0"
 
 [target.aarch64-unknown-linux-musl]
 # applies to target-specific builds
-
 # rPi3
 rustflags = "-C target-cpu=cortex-a53"
 
