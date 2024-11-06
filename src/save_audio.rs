@@ -77,49 +77,52 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     format!("locTimestamp={}", device_config.location_timestamp().unwrap_or(0));
                 let device_id = format!("deviceId={}", device_config.device_id());
                 let sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
-                let duration = format!(
-                    "duration={}",
-                    audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0
-                );
-
+                let duration_seconds = audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0;
+                let duration = format!("duration={}", duration_seconds);
+                let is_test_recording = duration_seconds < 3.0;
+                let mut args = Vec::from([
+                    "-i",
+                    "pipe:0",
+                    "-codec:a",
+                    "aac",
+                    "-q:a",
+                    "1.2",
+                    "-aac_coder",
+                    "fast",
+                    "-movflags",
+                    "faststart",
+                    "-movflags",
+                    "+use_metadata_tags",
+                    "-map_metadata",
+                    "0",
+                    "-metadata",
+                    &recording_date_time,
+                    "-metadata",
+                    &duration,
+                    "-metadata",
+                    &latitude,
+                    "-metadata",
+                    &longitude,
+                    "-metadata",
+                    &device_id,
+                    "-metadata",
+                    &altitude,
+                    "-metadata",
+                    &location_timestamp,
+                    "-metadata",
+                    &location_accuracy,
+                ]);
+                if is_test_recording {
+                    args.push("-metadata");
+                    args.push("testRecording=true");
+                }
+                args.push("-f");
+                args.push("mp4");
+                args.push(&output_path);
                 // Now transcode with ffmpeg – we create an aac stream in an m4a wrapper in order
                 // to support adding metadata tags.
                 let mut cmd = Command::new("ffmpeg")
-                    .arg("-i")
-                    .arg("pipe:0")
-                    .arg("-codec:a")
-                    .arg("aac")
-                    .arg("-q:a")
-                    .arg("1.2") // VBR, more appropriate for audio with lots of nothing
-                    // Faster perceptual coder that should give faster +
-                    // better results at the higher bitrates we're using.
-                    .arg("-aac_coder")
-                    .arg("fast")
-                    .arg("-movflags")
-                    .arg("faststart") // Move the metadata to the beginning of file
-                    .arg("-movflags")
-                    .arg("+use_metadata_tags") // Allow custom metadata tags
-                    .arg("-map_metadata") // Keep existing metadata?
-                    .arg("0")
-                    .arg("-metadata")
-                    .arg(recording_date_time)
-                    .arg("-metadata")
-                    .arg(duration)
-                    .arg("-metadata")
-                    .arg(latitude)
-                    .arg("-metadata")
-                    .arg(longitude)
-                    .arg("-metadata")
-                    .arg(device_id)
-                    .arg("-metadata")
-                    .arg(altitude)
-                    .arg("-metadata")
-                    .arg(location_timestamp)
-                    .arg("-metadata")
-                    .arg(location_accuracy)
-                    .arg("-f")
-                    .arg("mp4")
-                    .arg(output_path.clone())
+                    .args(args.iter())
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())

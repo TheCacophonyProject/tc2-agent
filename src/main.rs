@@ -4,7 +4,7 @@ mod camera_transfer_state;
 mod cptv_frame_dispatch;
 mod cptv_header;
 mod dbus_attiny_i2c;
-mod dbus_audio;
+mod dbus_managementd;
 mod detection_mask;
 mod device_config;
 mod double_buffer;
@@ -39,7 +39,7 @@ use simplelog::*;
 
 use crate::camera_transfer_state::enter_camera_transfer_loop;
 use crate::dbus_attiny_i2c::exit_if_attiny_version_is_not_as_expected;
-use crate::dbus_audio::setup_dbus_test_audio_recording_service;
+use crate::dbus_managementd::setup_dbus_managementd_recording_service;
 use crate::device_config::watch_local_config_file_changes;
 use crate::device_config::DeviceConfig;
 use crate::frame_socket_server::spawn_frame_socket_server_thread;
@@ -50,7 +50,7 @@ use crate::recording_state::RecordingState;
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 14;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 15;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 
 const SEGMENT_LENGTH: usize = 9760;
@@ -96,12 +96,13 @@ fn main() {
     });
 
     let mut recording_state = RecordingState::new();
-    let _dbus_audio_thread = setup_dbus_test_audio_recording_service(&recording_state);
+    let _dbus_audio_thread = setup_dbus_managementd_recording_service(&recording_state);
 
     let current_config = device_config.unwrap();
     let initial_config = current_config.clone();
     let (device_config_change_channel_tx, device_config_change_channel_rx) = channel();
-    watch_local_config_file_changes(current_config, &device_config_change_channel_tx);
+    let _file_watcher =
+        watch_local_config_file_changes(current_config, &device_config_change_channel_tx);
 
     // NOTE: This handles gracefully exiting the process if ctrl-c etc is pressed
     //  while running in an interactive terminal.

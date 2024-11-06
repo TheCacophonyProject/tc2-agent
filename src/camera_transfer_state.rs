@@ -248,12 +248,25 @@ pub fn enter_camera_transfer_loop(
                     let crc_from_remote_dup = LittleEndian::read_u16(&header_slice[12..14]);
                     let crc_from_remote_inv = LittleEndian::read_u16(&header_slice[14..16]);
                     let crc_from_remote_inv_dup = LittleEndian::read_u16(&header_slice[16..=17]);
-
-                    let num_bytes_check = num_bytes == num_bytes_dup;
-                    let header_crc_check = crc_from_remote == crc_from_remote_dup
-                        && crc_from_remote_inv_dup == crc_from_remote_inv
-                        && crc_from_remote_inv.not() == crc_from_remote;
                     let transfer_type_check = transfer_type == transfer_type_dup;
+                    let mut transfer_block = 0;
+                    let is_file_transfer_message = transfer_type_check
+                        && transfer_type >= CAMERA_BEGIN_FILE_TRANSFER
+                        && transfer_type <= CAMERA_BEGIN_AND_END_FILE_TRANSFER;
+                    let is_file_transfer_progress_message = transfer_type_check
+                        && (transfer_type == CAMERA_BEGIN_FILE_TRANSFER
+                            || transfer_type == CAMERA_END_FILE_TRANSFER);
+                    let header_crc_check = if is_file_transfer_progress_message {
+                        transfer_block = crc_from_remote_dup;
+
+                        crc_from_remote_inv_dup == crc_from_remote_inv
+                            && crc_from_remote_inv.not() == crc_from_remote
+                    } else {
+                        crc_from_remote == crc_from_remote_dup
+                            && crc_from_remote_inv_dup == crc_from_remote_inv
+                            && crc_from_remote_inv.not() == crc_from_remote
+                    };
+                    let num_bytes_check = num_bytes == num_bytes_dup;
                     if !num_bytes_check || !header_crc_check || !transfer_type_check {
                         // Just log the *first* time the header integrity check fails in a session.
                         if !header_integrity_check_has_failed {
@@ -325,6 +338,12 @@ pub fn enter_camera_transfer_loop(
                         // Always write the return buffer
                         spi.write(&return_payload_buf).unwrap();
                         if crc == crc_from_remote {
+                            if is_file_transfer_progress_message {
+                                recording_state.update_offload_progress(transfer_block);
+                            } else if !is_file_transfer_message && recording_state.is_offloading() {
+                                recording_state.end_offload();
+                            }
+
                             match transfer_type {
                                 CAMERA_CONNECT_INFO => {
                                     radiometry_enabled = LittleEndian::read_u32(&chunk[0..4]) == 2;

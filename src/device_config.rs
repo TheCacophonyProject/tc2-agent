@@ -9,7 +9,7 @@ use chrono::{
 use log::{error, info, warn};
 use louvre::triangulate;
 use notify::event::{AccessKind, AccessMode};
-use notify::{Event, EventKind, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::de::Error;
 use serde::{Deserialize, Deserializer};
 use std::fmt::{Debug, Formatter};
@@ -873,7 +873,7 @@ impl DeviceConfig {
 pub fn watch_local_config_file_changes(
     mut current_config: DeviceConfig,
     config_tx: &Sender<DeviceConfig>,
-) {
+) -> RecommendedWatcher {
     let config_tx = config_tx.clone();
     let mut watcher = notify::recommended_watcher(move |res| match res {
         Ok(Event { kind, .. }) => {
@@ -917,6 +917,7 @@ pub fn watch_local_config_file_changes(
             process::exit(1);
         })
         .unwrap();
+    watcher
 }
 
 // FIXME: Use RecordingModeState here?
