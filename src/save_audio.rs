@@ -51,9 +51,6 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
         move |_| {
             // Reclaim some memory
             audio_bytes.shrink_to_fit();
-            let debug_dir = String::from("/home/pi/temp");
-            fs::write(&debug_dir, &audio_bytes).unwrap();
-
             let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
             let recording_date_time = DateTime::from_timestamp_millis(timestamp as i64 / 1000)
                 .unwrap_or(chrono::Local::now().with_timezone(&Utc))
