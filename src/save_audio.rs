@@ -45,7 +45,6 @@ fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
 
 pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig) {
     let output_dir = String::from(device_config.output_dir());
-    //let output_dir = String::from("/home/pi/temp");
     let _ = thread::Builder::new().name("audio-transcode".to_string()).spawn_with_priority(
         ThreadPriority::Min,
         move |_| {
@@ -56,15 +55,15 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 .unwrap_or(chrono::Local::now().with_timezone(&Utc))
                 .with_timezone(&chrono::Local);
             info!("Saving AAC file");
-            if !fs::exists(&output_dir).unwrap_or(false) {
-                fs::create_dir(&output_dir)
+            if !fs::metadata(&output_dir).is_ok() {
+                fs::create_dir_all(&output_dir)
                     .expect(&format!("Failed to create AAC output directory {}", output_dir));
             }
 
             let output_path: String =
                 format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
             // If the file already exists, don't re-save it.
-            if !fs::exists(&output_path).unwrap_or(false) {
+            if !fs::metadata(&output_path).is_ok() {
                 let recording_date_time =
                     format!("recordingDateTime={}", recording_date_time.to_rfc3339());
                 let latitude = format!("latitude={}", device_config.lat_lng().0);
@@ -80,7 +79,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 let duration_seconds = audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0;
                 let duration = format!("duration={}", duration_seconds);
                 let is_test_recording = duration_seconds < 3.0;
-                let mut args = Vec::from([
+                let mut args = vec![
                     "-i",
                     "pipe:0",
                     "-codec:a",
@@ -111,31 +110,45 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     &location_timestamp,
                     "-metadata",
                     &location_accuracy,
-                ]);
+                ];
                 if is_test_recording {
-                    args.push("-metadata");
-                    args.push("testRecording=true");
+                    args.extend(&["-metadata", "testRecording=true"]);
                 }
-                args.push("-f");
-                args.push("mp4");
-                args.push(&output_path);
-                // Now transcode with ffmpeg – we create an aac stream in an m4a wrapper in order
-                // to support adding metadata tags.
-                let mut cmd = Command::new("ffmpeg")
-                    .args(args.iter())
+                args.extend(&["-f", "mp4", &output_path]);
+                // Now transcode with ffmpeg – we create an AAC stream in an M4A wrapper to support adding metadata tags.
+                // Spawn ffmpeg process with stderr captured
+                let mut cmd = match Command::new("ffmpeg")
+                    .args(&args)
                     .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped()) // Capture stderr
                     .spawn()
-                    .expect("Failed to spawn ffmpeg process");
+                {
+                    Ok(child) => child,
+                    Err(e) => {
+                        error!("Failed to spawn ffmpeg process for {:?}: {}", output_path, e);
+                        return;
+                    }
+                };
 
-                let mut stdin = cmd.stdin.take().expect("Failed to open stdin");
-                thread::spawn(move || {
-                    // Write wav to stdin:
-                    let audio_bytes = &audio_bytes[12..];
-                    stdin.write_all(&wav_header(audio_bytes.len(), sample_rate)).unwrap();
-                    stdin.write_all(&audio_bytes).unwrap();
-                });
+                // Write WAV data to ffmpeg's stdin
+                {
+                    let mut stdin = match cmd.stdin.take() {
+                        Some(stdin) => stdin,
+                        None => {
+                            error!("Failed to open stdin for ffmpeg process");
+                            return;
+                        }
+                    };
+                    let audio_data = &audio_bytes[12..];
+                    stdin
+                        .write_all(&wav_header(audio_data.len(), sample_rate))
+                        .expect("Failed to write WAV header to stdin");
+                    stdin.write_all(audio_data).expect("Failed to write audio data to stdin");
+                    // Explicitly close stdin to signal EOF to ffmpeg
+                    stdin.flush().expect("Failed to flush stdin");
+                }
+
                 match cmd.wait() {
                     Ok(exit_status) => {
                         if exit_status.success() {
