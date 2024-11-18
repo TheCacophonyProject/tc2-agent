@@ -59,6 +59,17 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 fs::create_dir_all(&output_dir)
                     .expect(&format!("Failed to create AAC output directory {}", output_dir));
             }
+            let debug_dir = String::from("/home/pi/temp");
+            if !fs::exists(&debug_dir).unwrap_or(false) {
+                fs::create_dir(&debug_dir)
+                    .expect(&format!("Failed to create debug output directory {}", debug_dir));
+                let output_path: String = format!(
+                    "{}/{}.raw",
+                    output_dir,
+                    recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+                );
+                fs::write(&output_path, &audio_bytes).unwrap();
+            }
 
             let output_path: String =
                 format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
