@@ -50,22 +50,18 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
         move |_| {
             // Reclaim some memory
             audio_bytes.shrink_to_fit();
-            if audio_bytes.len() < 12 {
-                error!("Audio data too short: {} bytes", audio_bytes.len());
-                return;
-            }
             let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
             let recording_date_time = DateTime::from_timestamp_millis(timestamp as i64 / 1000)
                 .unwrap_or(chrono::Local::now().with_timezone(&Utc))
                 .with_timezone(&chrono::Local);
             info!("Saving AAC file");
-            if fs::metadata(&output_dir).is_err() {
+            if !fs::exists(&output_dir).unwrap_or(false) {
                 fs::create_dir_all(&output_dir)
                     .expect(&format!("Failed to create AAC output directory {}", output_dir));
             }
             let debug_dir = String::from("/home/pi/temp");
             // Separate debug directory creation from raw file writing
-            if !fs::exists(&debug_dir).unwrap_or(false) {
+            if !fs::exists(&output_dir).unwrap_or(false) {
                 fs::create_dir(&debug_dir)
                     .expect(&format!("Failed to create debug output directory {}", debug_dir));
                 let output_path: String = format!(
@@ -76,11 +72,10 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 fs::write(&output_path, &audio_bytes).unwrap();
             }
 
-
             let output_path: String =
                 format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
             // If the file already exists, don't re-save it.
-            if fs::metadata(&output_path).is_err() {
+            if !fs::exists(&debug_dir).unwrap_or(false) {
                 let recording_date_time =
                     format!("recordingDateTime={}", recording_date_time.to_rfc3339());
                 let latitude = format!("latitude={}", device_config.lat_lng().0);
