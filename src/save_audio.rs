@@ -133,21 +133,37 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 info!("Saving AAC file with args {:#?}", args);
                 // Now transcode with ffmpeg – we create an aac stream in an m4a wrapper in order
                 // to support adding metadata tags.
-                let mut cmd = Command::new("ffmpeg")
+                let mut cmd = match Command::new("ffmpeg")
                     .args(args.iter())
                     .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
+                    .stdout(Stdio::null())
                     .stderr(Stdio::piped())
                     .spawn()
-                    .expect("Failed to spawn ffmpeg process");
+                {
+                    Ok(child) => child,
+                    Err(e) => {
+                        error!("Failed to spawn ffmpeg process for {:?}: {}", output_path, e);
+                        return;
+                    }
+                };
 
-                let mut stdin = cmd.stdin.take().expect("Failed to open stdin");
-                thread::spawn(move || {
-                    // Write wav to stdin:
-                    let audio_bytes = &audio_bytes[12..];
-                    stdin.write_all(&wav_header(audio_bytes.len(), sample_rate)).unwrap();
-                    stdin.write_all(&audio_bytes).unwrap();
-                });
+                {
+                    let mut stdin = match cmd.stdin.take() {
+                        Some(stdin) => stdin,
+                        None => {
+                            error!("Failed to open stdin for ffmpeg process");
+                            return;
+                        }
+                    };
+                    let audio_data = &audio_bytes[12..];
+                    stdin
+                        .write_all(&wav_header(audio_data.len(), sample_rate))
+                        .expect("Failed to write WAV header to stdin");
+                    stdin.write_all(audio_data).expect("Failed to write audio data to stdin");
+                    // Explicitly close stdin to signal EOF to ffmpeg
+                    stdin.flush().expect("Failed to flush stdin");
+                }
+
                 match cmd.wait() {
                     Ok(exit_status) => {
                         if exit_status.success() {
