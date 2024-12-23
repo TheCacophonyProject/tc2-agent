@@ -163,7 +163,10 @@ pub fn enter_camera_transfer_loop(
     let mut lepton_serial_number = String::from("");
     let mut is_audio_device = device_config.is_audio_device();
     info!("Waiting for messages from rp2040");
+    let now = Instant::now();
+
     'transfer: loop {
+
         check_for_device_config_changes(
             &device_config_change_channel_rx,
             &mut device_config,
@@ -241,6 +244,11 @@ pub fn enter_camera_transfer_loop(
 
                 spi.read(&mut raw_read_buffer[..2066]).unwrap();
                 {
+
+                    let now = Instant::now();
+
+
+
                     let header_slice = &raw_read_buffer[..header_length];
                     let transfer_type = header_slice[0];
                     let transfer_type_dup = header_slice[1];
@@ -703,6 +711,8 @@ pub fn enter_camera_transfer_loop(
                         }
                     }
                 }
+                let taken = now.elapsed();
+                info!("Loop took {}",taken.as_millis());
             }
         }
         if process_interrupted(&sig_term, &mut dbus_conn) {
