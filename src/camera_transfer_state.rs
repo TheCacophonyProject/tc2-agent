@@ -198,7 +198,7 @@ pub fn enter_camera_transfer_loop(
                 restart_rp2040_ack.store(false, Ordering::Relaxed);
             }
         }
-        let poll_result = pin.poll_interrupt(true, Some(Duration::from_millis(2000)));
+        let poll_result = pin.poll_interrupt(false, Some(Duration::from_millis(2000)));
         if let Ok(_pin_level) = poll_result {
             if _pin_level.is_some() {
                 {
