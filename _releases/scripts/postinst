@@ -1,4 +1,5 @@
 #!/bin/bash
 systemctl daemon-reload
+touch /etc/cacophony/program_rp2040
 systemctl enable tc2-agent.service
 systemctl restart tc2-agent.service
