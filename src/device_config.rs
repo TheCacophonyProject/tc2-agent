@@ -884,8 +884,6 @@ impl DeviceConfig {
         buf.write_u32::<LittleEndian>(device_id).unwrap();
         let audio_mode: u8 = self.audio_info.audio_mode.clone().into();
         buf.write_u8(audio_mode).unwrap();
-        buf.write_u32::<LittleEndian>(self.audio_info.audio_seed)
-            .unwrap();
         let (latitude, longitude) = self.lat_lng();
         buf.write_f32::<LittleEndian>(latitude).unwrap();
         buf.write_f32::<LittleEndian>(longitude).unwrap();
@@ -921,11 +919,12 @@ impl DeviceConfig {
             .unwrap();
         buf.write_u8(if self.use_low_power_mode() { 1 } else { 0 })
             .unwrap();
-
         let device_name = self.device_name();
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write(&device_name[0..device_name_length]).unwrap();
+        buf.write_u32::<LittleEndian>(self.audio_info.audio_seed)
+        .unwrap();
     }
 }
 
