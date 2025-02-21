@@ -233,7 +233,7 @@ pub fn enter_camera_transfer_loop(
                         .unwrap();
 
                     // this seems to happen when save_audio fails...
-                    let attempts = 5;
+                    let attempts = 100;
                     for i in 0..attempts{
                         let res = pin.set_interrupt(Trigger::RisingEdge, None);
                         match res{
@@ -244,10 +244,9 @@ pub fn enter_camera_transfer_loop(
                                     process::exit(1);
                                 }
                                 info!("Pin interrupts failed,trying again {}",e);
-                                sleep(Duration::from_millis(1));
+                                sleep(Duration::from_millis(100));
                             }
                         }
-
                     }
                 }
 
