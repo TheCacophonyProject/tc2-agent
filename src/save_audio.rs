@@ -94,7 +94,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 let duration_seconds = audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0;
                 let duration = format!("duration={}", duration_seconds);
 
-                let sr = format!("sr={}", sample_rate);
+                let sr = format!("sample_rate={}", sample_rate);
                 let is_test_recording = duration_seconds < 3.0;
                 let mut args = Vec::from([
                     "-i",

@@ -38,7 +38,7 @@ pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
                     // let mut new_cptv_bytes = Vec::new();
                     // encoder.read_to_end(&mut new_cptv_bytes).unwrap();
 
-                    // // Only use the re-compressed file if it actually got smaller.
+                    // Only use the re-compressed file if it actually got smaller.
                     // if new_cptv_bytes.len() > cptv_bytes.len() {
                     //     new_cptv_bytes = cptv_bytes;
                     // }
