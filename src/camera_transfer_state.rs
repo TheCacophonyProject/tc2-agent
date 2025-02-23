@@ -23,7 +23,7 @@ use std::ops::Not;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::thread::sleep;
+use std::thread::{sleep, JoinHandle};
 use std::time::{Duration, Instant};
 use std::{process, thread};
 
@@ -75,6 +75,63 @@ impl TryFrom<u8> for ExtTransferMessage {
     }
 }
 
+fn  wait_for_threads_to_finish(save_threads: Vec<JoinHandle<()>>){
+    for handle in save_threads{
+        info!("Waiting on thread to finish");
+        handle.join();
+    }
+}
+
+
+fn reset_pin(mut pin: rppal::gpio::InputPin,gpio: &rppal::gpio::Gpio)-> Result<rppal::gpio::InputPin,()>{
+    drop(pin);
+    let output_pin = match gpio.get(7) {
+        Ok(pin) => pin.into_output_low(),
+        Err(e) => {
+            error!(
+                "Failed to get pi ping interrupt pin ({e}), \
+is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
+            );
+            return Err(());
+        }
+    };
+    drop(output_pin);
+    pin = match gpio.get(7) {
+        Ok(pin) => pin.into_input(),
+        Err(e) => {
+            error!(
+                "Failed to get pi ping interrupt pin ({e}), \
+is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
+            );
+            return Err(());
+        }
+    };
+
+    if let Err(e) = pin.clear_interrupt(){
+        error!("Unable to clear pi ping interrupt pin: {e}");
+        return Err(());
+    }
+
+    // this seems to happen when save_audio fails...
+    let attempts = 5;
+    for i in 0..attempts{
+        let res = pin.set_interrupt(Trigger::RisingEdge, None);
+        match res{
+            Ok(())=> break,
+            Err(e)=>{
+                if i == attempts-1 {
+                    error!("Unable to set pi ping interrupt: {e}");
+                    return Err(());
+                }
+                info!("Pin interrupts failed,trying again {}",e);
+                sleep(Duration::from_millis(1));
+            }
+        }
+
+    }
+    return Ok(pin)
+}
+
 pub fn enter_camera_transfer_loop(
     initial_config: DeviceConfig,
     mut dbus_conn: DuplexConn,
@@ -86,6 +143,7 @@ pub fn enter_camera_transfer_loop(
     restart_rp2040_ack: Arc<AtomicBool>,
     mut recording_state: RecordingState,
 ) {
+    let mut save_threads: Vec<JoinHandle<()>> = Vec::with_capacity(3);
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
     info!("Initialising SPI at {}Mhz", spi_speed_mhz);
@@ -162,8 +220,11 @@ pub fn enter_camera_transfer_loop(
     let mut firmware_version = 0;
     let mut lepton_serial_number = String::from("");
     let mut is_audio_device = device_config.is_audio_device();
+
     info!("Waiting for messages from rp2040");
     'transfer: loop {
+        save_threads.retain(|handle|!handle.is_finished());
+      
         check_for_device_config_changes(
             &device_config_change_channel_rx,
             &mut device_config,
@@ -201,53 +262,12 @@ pub fn enter_camera_transfer_loop(
         let poll_result = pin.poll_interrupt(false, Some(Duration::from_millis(2000)));
         if let Ok(_pin_level) = poll_result {
             if _pin_level.is_some() {
-                {
-                    drop(pin);
-                    let output_pin = match gpio.get(7) {
-                        Ok(pin) => pin.into_output_low(),
-                        Err(e) => {
-                            error!(
-                                "Failed to get pi ping interrupt pin ({e}), \
-        is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
-                            );
-                            process::exit(1);
-                        }
-                    };
-                    drop(output_pin);
-                    pin = match gpio.get(7) {
-                        Ok(pin) => pin.into_input(),
-                        Err(e) => {
-                            error!(
-                                "Failed to get pi ping interrupt pin ({e}), \
-        is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
-                            );
-                            process::exit(1);
-                        }
-                    };
-
-                    pin.clear_interrupt()
-                        .map_err(|e| {
-                            error!("Unable to clear pi ping interrupt pin: {e}");
-                            process::exit(1);
-                        })
-                        .unwrap();
-
-                    // this seems to happen when save_audio fails...
-                    let attempts = 5;
-                    for i in 0..attempts{
-                        let res = pin.set_interrupt(Trigger::RisingEdge, None);
-                        match res{
-                            Ok(())=> break,
-                            Err(e)=>{
-                                if i == attempts-1 {
-                                    error!("Unable to set pi ping interrupt: {e}");
-                                    process::exit(1);
-                                }
-                                info!("Pin interrupts failed,trying again {}",e);
-                                sleep(Duration::from_millis(1));
-                            }
-                        }
-
+                let res = reset_pin(pin,&gpio);
+                match res{
+                    Ok((res))=> pin = res,
+                    Err(())=>{
+                        wait_for_threads_to_finish(save_threads);
+                        process::exit(1);
                     }
                 }
 
@@ -620,10 +640,18 @@ pub fn enter_camera_transfer_loop(
                                         part_count = 0;
                                         file.extend_from_slice(&chunk);
                                         let shebang = LittleEndian::read_u16(&file[0..2]);
+                                        let thread_res;
                                         if shebang == AUDIO_SHEBANG {
-                                            save_audio_file_to_disk(file, device_config.clone());
+                                            thread_res=save_audio_file_to_disk(file, device_config.clone());
                                         } else {
-                                            save_cptv_file_to_disk(file, device_config.output_dir())
+                                            thread_res=save_cptv_file_to_disk(file, device_config.output_dir())
+                                        }
+
+                                        match thread_res {
+                                            Ok(join_handle)=>{
+                                                save_threads.push(join_handle);
+                                            },
+                                            Err(e)=>error!("Couldn't spawn save thread {}",e)
                                         }
                                         let _ = camera_handshake_channel_tx.send(
                                             FrameSocketServerMessage {
@@ -722,7 +750,6 @@ pub fn enter_camera_transfer_loop(
         }
     }
 }
-
 fn maybe_make_test_audio_recording(
     dbus_conn: &mut DuplexConn,
     restart_rp2040_channel_tx: &Sender<bool>,
@@ -742,14 +769,16 @@ fn maybe_make_test_audio_recording(
             info!("Telling rp2040 to take test recording and restarting");
             let mut inner_recording_state = recording_state.clone();
             let _ = thread::spawn(move || {
-                let dbus_session_path = get_system_bus_path().unwrap_or_else(|e| {
-                    error!("Error getting system DBus: {}", e);
-                    process::exit(1);
-                });
+                let dbus_session_path = get_system_bus_path();
+                if dbus_session_path.is_err(){
+                    error!("Error getting system DBus: {}", dbus_session_path.err().unwrap());
+                    return;
+                }
+                let dbus_session_path = dbus_session_path.unwrap();
                 match DuplexConn::connect_to_bus(dbus_session_path, true) {
                     Err(e) => {
                         error!("Error connecting to system DBus: {}", e);
-                        process::exit(1);
+                        // process::exit(1);
                     }
                     Ok(mut conn) => {
                         let _unique_name = conn.send_hello(Timeout::Infinite);
@@ -758,7 +787,7 @@ fn maybe_make_test_audio_recording(
                                 "Error getting handshake with system DBus: {}",
                                 _unique_name.err().unwrap()
                             );
-                            process::exit(1);
+                            return;
                         } else {
                             loop {
                                 // Re-sync our internal rp2040 state once every 1-2 seconds until

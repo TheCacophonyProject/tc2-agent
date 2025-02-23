@@ -8,12 +8,12 @@ use std::io::prelude::*;
 use std::{fs, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
-pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
+pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) ->Result<thread::JoinHandle<()>, std::io::Error>{
     {
         cptv_bytes.shrink_to_fit();
     }
     let output_dir = String::from(output_dir);
-    let _ = thread::Builder::new().name("cptv-save".to_string()).spawn_with_priority(
+    return thread::Builder::new().name("cptv-save".to_string()).spawn_with_priority(
         ThreadPriority::Min,
         move |_| match decode_cptv_header_streaming(&cptv_bytes) {
             Ok(header) => match header {

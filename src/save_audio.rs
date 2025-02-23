@@ -43,10 +43,10 @@ fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
     cursor.into_inner()
 }
 
-pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig) {
+pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig)->Result<thread::JoinHandle<()>, std::io::Error> {
     let output_dir = String::from(device_config.output_dir());
     //let output_dir = String::from("/home/pi/temp");
-    let _ = thread::Builder::new().name("audio-transcode".to_string()).spawn_with_priority(
+    return thread::Builder::new().name("audio-transcode".to_string()).spawn_with_priority(
         ThreadPriority::Min,
         move |_| {
             // Reclaim some memory
@@ -87,7 +87,11 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 let location_timestamp =
                     format!("locTimestamp={}", device_config.location_timestamp().unwrap_or(0));
                 let device_id = format!("deviceId={}", device_config.device_id());
-                let sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
+                let original_sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
+                // our sample rate is as close as possible to 48000 i.e. 48031.
+                //AAC only uses standard sampling rates i.e. 48,44.1 etc so hard code 48000 for now
+                // TODO match our sample rate to the closest normal sample rate
+                let sample_rate = 48000;
                 let duration_seconds = audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0;
                 let duration = format!("duration={}", duration_seconds);
                 let is_test_recording = duration_seconds < 3.0;
