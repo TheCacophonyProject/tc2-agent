@@ -231,12 +231,23 @@ pub fn enter_camera_transfer_loop(
                             process::exit(1);
                         })
                         .unwrap();
-                    pin.set_interrupt(Trigger::RisingEdge, None)
-                        .map_err(|e| {
-                            error!("Unable to set pi ping interrupt: {e}");
-                            process::exit(1);
-                        })
-                        .unwrap();
+
+                    // this seems to happen when save_audio fails...
+                    let attempts = 100;
+                    for i in 0..attempts{
+                        let res = pin.set_interrupt(Trigger::RisingEdge, None);
+                        match res{
+                            Ok(())=> break,
+                            Err(e)=>{
+                                if i == attempts-1 {
+                                    error!("Unable to set pi ping interrupt: {e}");
+                                    process::exit(1);
+                                }
+                                info!("Pin interrupts failed,trying again {}",e);
+                                sleep(Duration::from_millis(100));
+                            }
+                        }
+                    }
                 }
 
                 spi.read(&mut raw_read_buffer[..2066]).unwrap();

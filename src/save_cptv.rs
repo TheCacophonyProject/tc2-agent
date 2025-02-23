@@ -8,7 +8,10 @@ use std::io::prelude::*;
 use std::{fs, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
-pub fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
+pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
+    {
+        cptv_bytes.shrink_to_fit();
+    }
     let output_dir = String::from(output_dir);
     let _ = thread::Builder::new().name("cptv-save".to_string()).spawn_with_priority(
         ThreadPriority::Min,
@@ -29,22 +32,23 @@ pub fn save_cptv_file_to_disk(cptv_bytes: Vec<u8>, output_dir: &str) {
                         output_dir,
                         recording_date_time.format("%Y-%m-%d--%H-%M-%S")
                     );
-                    let decoder = MultiGzDecoder::new(&cptv_bytes[..]);
-                    let mut encoder = GzEncoder::new(decoder, Compression::default());
-                    let mut new_cptv_bytes = Vec::new();
-                    encoder.read_to_end(&mut new_cptv_bytes).unwrap();
+                    //very slow and cpu intensive offered 18% saving on a 10 minute recording
+                    // let decoder = MultiGzDecoder::new(&cptv_bytes[..]);
+                    // let mut encoder = GzEncoder::new(decoder, Compression::default());
+                    // let mut new_cptv_bytes = Vec::new();
+                    // encoder.read_to_end(&mut new_cptv_bytes).unwrap();
 
                     // Only use the re-compressed file if it actually got smaller.
-                    if new_cptv_bytes.len() > cptv_bytes.len() {
-                        new_cptv_bytes = cptv_bytes;
-                    }
+                    // if new_cptv_bytes.len() > cptv_bytes.len() {
+                    //     new_cptv_bytes = cptv_bytes;
+                    // }
                     // If the file already exists, don't re-save it.
                     let is_existing_file = match fs::metadata(&path) {
-                        Ok(metadata) => metadata.len() as usize == new_cptv_bytes.len(),
+                        Ok(metadata) => metadata.len() as usize == cptv_bytes.len(),
                         Err(_) => false,
                     };
                     if !is_existing_file {
-                        match fs::write(&path, &new_cptv_bytes) {
+                        match fs::write(&path, &cptv_bytes) {
                             Ok(()) => {
                                 info!("Saved CPTV file {}", path);
                             }
