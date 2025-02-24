@@ -112,23 +112,22 @@ is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
         return Err(());
     }
 
-    // this seems to happen when save_audio fails...
-    let attempts = 5;
-    for i in 0..attempts{
-        let res = pin.set_interrupt(Trigger::RisingEdge, None);
-        match res{
-            Ok(())=> break,
-            Err(e)=>{
-                if i == attempts-1 {
-                    error!("Unable to set pi ping interrupt: {e}");
-                    return Err(());
-                }
-                info!("Pin interrupts failed,trying again {}",e);
-                sleep(Duration::from_millis(1));
-            }
-        }
-
-    }
+     // this seems to happen when save_audio fails...
+     let attempts = 100;
+     for i in 0..attempts{
+         let res = pin.set_interrupt(Trigger::RisingEdge, None);
+         match res{
+             Ok(())=> break,
+             Err(e)=>{
+                 if i == attempts-1 {
+                     error!("Unable to set pi ping interrupt: {e}");
+                     return Err(());
+                 }
+                 info!("Pin interrupts failed,trying again {}",e);
+                 sleep(Duration::from_millis(100));
+             }
+         }
+     }
     return Ok(pin)
 }
 

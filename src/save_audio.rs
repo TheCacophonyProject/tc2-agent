@@ -3,7 +3,7 @@ use byteorder::LittleEndian;
 use byteorder::{ByteOrder, WriteBytesExt};
 use chrono::{DateTime, Utc};
 use log::{error, info};
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::{fs, thread};
@@ -28,11 +28,13 @@ fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
 
     // fmt block (24 bytes)
     cursor.write_all(b"fmt ").unwrap();
+
     // Size of format data after this point (minus "fmt " and 16u32, i.e. 8 bytes)
     cursor.write_u32::<LittleEndian>(16).unwrap();
     cursor.write_u16::<LittleEndian>(format_pcm).unwrap();
     cursor.write_u16::<LittleEndian>(num_channels).unwrap();
     cursor.write_u32::<LittleEndian>(sample_rate).unwrap();
+
     cursor.write_u32::<LittleEndian>(bytes_per_second).unwrap();
     cursor.write_u16::<LittleEndian>(bytes_per_block).unwrap();
     cursor.write_u16::<LittleEndian>(bits_per_sample).unwrap();
@@ -66,11 +68,12 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     .expect(&format!("Failed to create debug output directory {}", debug_dir));
                 let output_path: String = format!(
                     "{}/{}.raw",
-                    output_dir,
+                    debug_dir,
                     recording_date_time.format("%Y-%m-%d--%H-%M-%S")
                 );
-                fs::write(&output_path, &audio_bytes).unwrap();
+                fs::write(&output_path, &audio_bytes).unwrap();    
             }
+   
 
             let output_path: String =
                 format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
@@ -94,6 +97,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 let sample_rate = 48000;
                 let duration_seconds = audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0;
                 let duration = format!("duration={}", duration_seconds);
+                let sr = format!("originalSampleRate={}", original_sample_rate);
                 let is_test_recording = duration_seconds < 3.0;
                 let mut args = Vec::from([
                     "-i",
@@ -126,6 +130,8 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     &location_timestamp,
                     "-metadata",
                     &location_accuracy,
+                    "-metadata",
+                    &sr,
                 ]);
                 if is_test_recording {
                     args.push("-metadata");
@@ -135,6 +141,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 args.push("mp4");
                 args.push(&output_path);
                 info!("Saving AAC file with args {:#?}", args);
+                
                 // Now transcode with ffmpeg – we create an aac stream in an m4a wrapper in order
                 // to support adding metadata tags.
                 let mut cmd = match Command::new("ffmpeg")
@@ -164,16 +171,24 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                         .write_all(&wav_header(audio_data.len(), sample_rate))
                         .expect("Failed to write WAV header to stdin");
                     stdin.write_all(audio_data).expect("Failed to write audio data to stdin");
-                    // Explicitly close stdin to signal EOF to ffmpeg
+                                        // Explicitly close stdin to signal EOF to ffmpeg
                     stdin.flush().expect("Failed to flush stdin");
                 }
-
                 match cmd.wait() {
                     Ok(exit_status) => {
                         if exit_status.success() {
                             info!("Saved AAC file {}", output_path);
                         } else {
-                            error!("Failed transcoding {} to AAC", output_path);
+                            let mut stderr = match cmd.stderr.take() {
+                                Some(stderr) => stderr,
+                                None => {
+                                    error!("Failed to open stderr for ffmpeg process");
+                                    return;
+                                }
+                            };
+                            let mut buffer = String::new();
+                            let _ = stderr.read_to_string(&mut buffer);
+                            error!("Failed transcoding {} to AAC ffmpeg output {}", output_path,buffer);
                         }
                     }
                     Err(e) => {
@@ -189,3 +204,4 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
         },
     );
 }
+

@@ -1,10 +1,6 @@
 use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
 use chrono::{DateTime, Utc};
-use flate2::read::GzEncoder;
-use flate2::read::MultiGzDecoder;
-use flate2::Compression;
 use log::{error, info};
-use std::io::prelude::*;
 use std::{fs, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
@@ -38,7 +34,7 @@ pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) ->Resul
                     // let mut new_cptv_bytes = Vec::new();
                     // encoder.read_to_end(&mut new_cptv_bytes).unwrap();
 
-                    // // Only use the re-compressed file if it actually got smaller.
+                    // Only use the re-compressed file if it actually got smaller.
                     // if new_cptv_bytes.len() > cptv_bytes.len() {
                     //     new_cptv_bytes = cptv_bytes;
                     // }
