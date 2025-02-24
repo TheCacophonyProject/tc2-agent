@@ -78,7 +78,9 @@ impl TryFrom<u8> for ExtTransferMessage {
 fn  wait_for_threads_to_finish(save_threads: Vec<JoinHandle<()>>){
     for handle in save_threads{
         info!("Waiting on thread to finish");
-        handle.join();
+        if let Err(_) = handle.join(){
+            error!("Failed to join thread");
+        }
     }
 }
 
@@ -263,7 +265,7 @@ pub fn enter_camera_transfer_loop(
             if _pin_level.is_some() {
                 let res = reset_pin(pin,&gpio);
                 match res{
-                    Ok((res))=> pin = res,
+                    Ok(res)=> pin = res,
                     Err(())=>{
                         wait_for_threads_to_finish(save_threads);
                         process::exit(1);
@@ -392,6 +394,7 @@ pub fn enter_camera_transfer_loop(
                                             EXPECTED_RP2040_FIRMWARE_VERSION, firmware_version
                                         );
                                         let e = program_rp2040();
+                                        wait_for_threads_to_finish(save_threads);
                                         if e.is_err() {
                                             warn!("Failed to reprogram rp2040: {}", e.unwrap_err());
                                             panic!("Exit");
@@ -651,6 +654,7 @@ pub fn enter_camera_transfer_loop(
                                             },
                                             Err(e)=>error!("Couldn't spawn save thread {}",e)
                                         }
+
                                         let _ = camera_handshake_channel_tx.send(
                                             FrameSocketServerMessage {
                                                 camera_handshake_info: None,
@@ -704,12 +708,11 @@ pub fn enter_camera_transfer_loop(
                             warn!("Crc check failed, remote was notified and will re-transmit");
                         }
                     } else {
-                        spi.read(&mut raw_read_buffer[2066..num_bytes + header_length])
-                            .map_err(|e| {
-                                error!("SPI read error: {:?}", e);
-                                process::exit(1);
-                            })
-                            .unwrap();
+                        if let Err(e) = spi.read(&mut raw_read_buffer[2066..num_bytes + header_length]){
+                            error!("SPI read error: {:?}", e);
+                            wait_for_threads_to_finish(save_threads);
+                            process::exit(1);
+                        }
                         // Frame
                         let mut frame = [0u8; FRAME_LENGTH];
                         BigEndian::write_u16_into(
