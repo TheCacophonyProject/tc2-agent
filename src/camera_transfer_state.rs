@@ -640,12 +640,11 @@ pub fn enter_camera_transfer_loop(
                                         part_count = 0;
                                         file.extend_from_slice(&chunk);
                                         let shebang = LittleEndian::read_u16(&file[0..2]);
-                                        let thread_res;
-                                        if shebang == AUDIO_SHEBANG {
-                                            thread_res=save_audio_file_to_disk(file, device_config.clone());
+                                        let thread_res = if shebang == AUDIO_SHEBANG {
+                                            save_audio_file_to_disk(file, device_config.clone())
                                         } else {
-                                            thread_res=save_cptv_file_to_disk(file, device_config.output_dir())
-                                        }
+                                           save_cptv_file_to_disk(file, device_config.output_dir())
+                                        };
 
                                         match thread_res {
                                             Ok(join_handle)=>{
@@ -674,10 +673,17 @@ pub fn enter_camera_transfer_loop(
                                     let mut file = Vec::new();
                                     file.extend_from_slice(&chunk);
                                     let shebang = LittleEndian::read_u16(&file[0..2]);
-                                    if shebang == AUDIO_SHEBANG {
-                                        save_audio_file_to_disk(file, device_config.clone());
+                                    let thread_res = if shebang == AUDIO_SHEBANG {
+                                        save_audio_file_to_disk(file, device_config.clone())
                                     } else {
                                         save_cptv_file_to_disk(file, device_config.output_dir())
+                                    };
+
+                                    match thread_res {
+                                        Ok(join_handle)=>{
+                                            save_threads.push(join_handle);
+                                        },
+                                        Err(e)=>error!("Couldn't spawn save thread {}",e)
                                     }
                                     let _ = camera_handshake_channel_tx.send(
                                         FrameSocketServerMessage {
