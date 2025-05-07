@@ -63,9 +63,15 @@ fn mb_disk_space_remaining() -> (usize, usize) {
     let disks = Disks::new_with_refreshed_list();
     let mut available_space_bytes = 0;
     let mut total_space_bytes = 0;
-    for disk in disks.list() {
-        available_space_bytes += disk.available_space();
-        total_space_bytes += disk.total_space();
+    const ROOT_MOUNT_POINT: &str = "/";
+    let main_partition =
+        disks.list().iter().find(|disk| disk.mount_point().to_str().unwrap() == ROOT_MOUNT_POINT);
+    if let Some(main_partition) = main_partition {
+        available_space_bytes += main_partition.available_space();
+        total_space_bytes += main_partition.total_space();
+    } else {
+        println!("Partition mounted at '{ROOT_MOUNT_POINT}' not found");
+        process::exit(1);
     }
     let available_space = available_space_bytes / (1024 * 1024);
     let total_space = total_space_bytes / (1024 * 1024);
