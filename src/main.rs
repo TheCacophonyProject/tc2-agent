@@ -32,10 +32,11 @@ use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
 
-use log::{error, info};
+use log::{error, info, warn};
 use rustbus::connection::Timeout;
 use rustbus::{get_system_bus_path, DuplexConn};
 use simplelog::*;
+use sysinfo::Disks;
 
 use crate::camera_transfer_state::enter_camera_transfer_loop;
 use crate::dbus_attiny_i2c::exit_if_attiny_version_is_not_as_expected;
@@ -50,13 +51,49 @@ use crate::recording_state::RecordingState;
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 18;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 19;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 
 const SEGMENT_LENGTH: usize = 9760;
 const FRAME_LENGTH: usize = SEGMENT_LENGTH * 4;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn mb_disk_space_remaining() -> (usize, usize) {
+    let disks = Disks::new_with_refreshed_list();
+    let mut available_space_bytes = 0;
+    let mut total_space_bytes = 0;
+    const ROOT_MOUNT_POINT: &str = "/";
+    let main_partition =
+        disks.list().iter().find(|disk| disk.mount_point().to_str().unwrap() == ROOT_MOUNT_POINT);
+    if let Some(main_partition) = main_partition {
+        available_space_bytes += main_partition.available_space();
+        total_space_bytes += main_partition.total_space();
+    } else {
+        println!("Partition mounted at '{ROOT_MOUNT_POINT}' not found");
+        process::exit(1);
+    }
+    let available_space = available_space_bytes / (1024 * 1024);
+    let total_space = total_space_bytes / (1024 * 1024);
+    (available_space as usize, total_space as usize)
+}
+
+fn check_for_sufficient_free_disk_space() {
+    // Check for enough available disk space to make/offload recordings
+    let mut warned_once = false;
+    loop {
+        let (mb_remaining, mb_total) = mb_disk_space_remaining();
+        if mb_remaining < 1000 {
+            if !warned_once {
+                warn!("Insufficient disk space remaining: ({}MB/{}MB), sleeping 1 minute before trying again.", mb_remaining, mb_total);
+                warned_once = true;
+            }
+            sleep(Duration::from_secs(60));
+        } else {
+            break;
+        }
+    }
+}
 
 fn main() {
     let log_config = ConfigBuilder::default().set_time_level(LevelFilter::Off).build();
@@ -67,6 +104,8 @@ fn main() {
         "\n=========\nStarting thermal camera 2 agent {}, run with --help to see options.\n",
         VERSION
     );
+
+    check_for_sufficient_free_disk_space();
     check_if_rp2040_needs_programming();
 
     let (serve_frames_via_wifi, spi_speed_mhz) = {

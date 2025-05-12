@@ -29,6 +29,7 @@ sun-times = "0.2.0"
 louvre = "0.2.1"
 rustbus = "0.19.3"
 sha256 = "1.5.0"
+sysinfo = "0.34.2"
 
 [target.aarch64-unknown-linux-musl]
 # applies to target-specific builds
