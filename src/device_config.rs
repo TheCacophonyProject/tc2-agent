@@ -20,8 +20,8 @@ use std::str::FromStr;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::{fs, process};
 use sun_times::sun_times;
-use toml::value::Offset;
 use toml::Value;
+use toml::value::Offset;
 
 fn default_constant_recorder() -> bool {
     false
@@ -106,10 +106,15 @@ where
                                 let mut y;
                                 for (idx, el) in coord.iter().enumerate() {
                                     let el_val = match &el {
-                                        Value::Float(float_val) => Some(*float_val as f64),
+                                        Value::Float(float_val) => Some(*float_val),
                                         Value::Integer(int_val) => Some(*int_val as f64),
                                         _ => {
-                                            error!("Region '{}'[{}].{}: Unsupported coordinate value, expected Float or Integer", label, i, if idx == 0 {'x'} else { 'y' });
+                                            error!(
+                                                "Region '{}'[{}].{}: Unsupported coordinate value, expected Float or Integer",
+                                                label,
+                                                i,
+                                                if idx == 0 { 'x' } else { 'y' }
+                                            );
                                             None
                                         }
                                     };
@@ -176,27 +181,26 @@ where
     for char in s.chars() {
         match char {
             '-' | '+' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
-                if let Some(NumberString(ref mut n, _, _)) = tokens.last_mut() {
+                if let Some(NumberString(n, _, _)) = tokens.last_mut() {
                     n.push(char);
                 } else {
                     tokens.push(NumberString(String::from(char), None, true));
                 }
             }
             's' | 'h' | 'm' | 'z' => {
-                if let Some(NumberString(_, ref mut o, _)) = tokens.last_mut() {
+                if let Some(NumberString(_, o, _)) = tokens.last_mut() {
                     *o = Some(TimeUnit(char));
                 } else {
                     // Parse error
                     return Err(Error::custom(format!(
-                        "Unexpected token in time string '{}': unit specifier before integer",
-                        s
+                        "Unexpected token in time string '{s}': unit specifier before integer"
                     )));
                 }
                 tokens.push(NumberString(String::from(""), None, true));
             }
             ':' => {
                 let count = tokens.len();
-                if let Some(NumberString(_, ref mut o, ref mut is_relative)) = tokens.last_mut() {
+                if let Some(NumberString(_, o, is_relative)) = tokens.last_mut() {
                     if count == 1 {
                         *o = Some(TimeUnit('h'));
                     } else if count == 2 {
@@ -208,17 +212,15 @@ where
                 } else {
                     // Parse error
                     return Err(Error::custom(format!(
-                        "Unexpected token in time string '{}': ':' before hour specifier",
-                        s
+                        "Unexpected token in time string '{s}': ':' before hour specifier"
                     )));
                 }
                 tokens.push(NumberString(String::from(""), None, false));
             }
             _ => {
                 return Err(Error::custom(format!(
-                    "Unexpected token in time string '{}': '{}'",
-                    s, char
-                )))
+                    "Unexpected token in time string '{s}': '{char}'"
+                )));
             }
         }
     }
@@ -229,13 +231,12 @@ where
             if relative_time_seconds.is_none() {
                 relative_time_seconds = Some(0);
             }
-        } else {
-            if absolute_time.is_none() {
-                absolute_time = Some(HourMin { hour: 0, min: 0 });
-            }
+        } else if absolute_time.is_none() {
+            absolute_time = Some(HourMin { hour: 0, min: 0 });
         }
+
         if let Some(ref mut seconds) = relative_time_seconds {
-            if let Ok(mut num) = i32::from_str_radix(&token.0, 10) {
+            if let Ok(mut num) = token.0.parse::<i32>() {
                 if let Some(unit) = &token.1 {
                     let mul = match unit.0 {
                         's' => 1,
@@ -254,7 +255,7 @@ where
                 }
             }
         } else if let Some(ref mut hour_min) = absolute_time {
-            if let Ok(num) = i32::from_str_radix(&token.0, 10) {
+            if let Ok(num) = token.0.parse::<i32>() {
                 if let Some(unit) = &token.1 {
                     match unit.0 {
                         'm' => hour_min.min = num as u8,
@@ -268,7 +269,7 @@ where
         }
     }
     if absolute_time.is_none() && relative_time_seconds.is_none() {
-        Err(Error::custom(format!("Failed to parse window time: {}", s)))
+        Err(Error::custom(format!("Failed to parse window time: {s}")))
     } else {
         Ok(AbsRelTime { absolute_time, relative_time_seconds })
     }
@@ -315,11 +316,7 @@ where
     D: Deserializer<'de>,
 {
     let location_accuracy: f32 = Deserialize::deserialize(deserializer)?;
-    if location_accuracy == 0.0 {
-        Ok(None)
-    } else {
-        Ok(Some(location_accuracy))
-    }
+    if location_accuracy == 0.0 { Ok(None) } else { Ok(Some(location_accuracy)) }
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
@@ -334,7 +331,7 @@ struct LocationSettings {
     accuracy: Option<f32>,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 struct HourMin {
     hour: u8,
     min: u8,
@@ -355,8 +352,8 @@ pub struct AbsRelTime {
 
 impl Debug for AbsRelTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let absolute_time = self.absolute_time.clone();
-        let relative_time = self.relative_time_seconds.clone();
+        let absolute_time = self.absolute_time;
+        let relative_time = self.relative_time_seconds;
         if let Some(time) = absolute_time {
             return f
                 .debug_struct("AbsoluteTime")
@@ -367,7 +364,7 @@ impl Debug for AbsRelTime {
         if let Some(time) = relative_time {
             return f.debug_struct("RelativeOffset").field("secs", &time).finish();
         }
-        Err(fmt::Error::default())
+        Err(fmt::Error)
     }
 }
 
@@ -426,9 +423,9 @@ pub enum AudioMode {
     AudioAndThermal = 3,
 }
 
-impl Into<u8> for AudioMode {
-    fn into(self) -> u8 {
-        self as u8
+impl From<AudioMode> for u8 {
+    fn from(audio_mode: AudioMode) -> u8 {
+        audio_mode as u8
     }
 }
 
@@ -495,7 +492,7 @@ where
     if let Ok(mode) = AudioMode::from_str(&audio_mode_raw) {
         Ok(mode)
     } else {
-        Err(Error::custom(format!("Failed to parse audio mode: {}", audio_mode_raw)))
+        Err(Error::custom(format!("Failed to parse audio mode: {audio_mode_raw}")))
     }
 }
 
@@ -628,6 +625,10 @@ impl DeviceConfig {
         self.recording_settings.use_low_power_mode
     }
 
+    pub fn use_high_power_mode(&self) -> bool {
+        !self.recording_settings.use_low_power_mode
+    }
+
     pub fn load_from_fs() -> Result<DeviceConfig, &'static str> {
         let config_toml =
             fs::read("/etc/cacophony/config.toml").map_err(|_| "Error reading file from disk")?;
@@ -639,8 +640,8 @@ impl DeviceConfig {
                 // TODO: Make sure device has sane windows etc.
                 if !device_config.has_location() {
                     error!(
-                "No location set for this device. To enter recording mode, a location must be set."
-            );
+                        "No location set for this device. To enter recording mode, a location must be set."
+                    );
                     // TODO: Event log error?
                     process::exit(1);
                 }
@@ -675,10 +676,10 @@ impl DeviceConfig {
             self.recording_window.start_recording.time_offset();
         let (is_absolute_end, mut end_offset) = self.recording_window.stop_recording.time_offset();
         if is_absolute_end && end_offset < 0 {
-            end_offset = 86_400 + end_offset;
+            end_offset += 86_400;
         }
         if is_absolute_start && start_offset < 0 {
-            start_offset = 86_400 + start_offset;
+            start_offset += 86_400;
         }
         let (window_start, window_end) = if !is_absolute_start || !is_absolute_end {
             let location =
@@ -765,7 +766,7 @@ impl DeviceConfig {
             let end_plus_one_day = end_time + Duration::days(1);
 
             if start_minus_one_day > end_minus_one_day {
-                end_minus_one_day = end_minus_one_day + Duration::days(1);
+                end_minus_one_day += Duration::days(1);
             }
             if start_plus_one_day > end_plus_one_day {
                 start_plus_one_day = start_time;
@@ -826,7 +827,7 @@ impl DeviceConfig {
         self.audio_info.audio_mode != AudioMode::Disabled
     }
 
-    pub fn write_to_slice(&self, output: &mut [u8]) {
+    pub fn write_to_slice(&self, output: &mut [u8], prefer_not_to_offload_files_now: bool) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
@@ -868,8 +869,9 @@ impl DeviceConfig {
         let device_name = self.device_name();
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
-        buf.write(&device_name[0..device_name_length]).unwrap();
+        buf.write_all(&device_name[0..device_name_length]).unwrap();
         buf.write_u32::<LittleEndian>(self.audio_info.audio_seed).unwrap();
+        buf.write_u8(if prefer_not_to_offload_files_now { 5 } else { 0 }).unwrap();
     }
 }
 
@@ -880,28 +882,25 @@ pub fn watch_local_config_file_changes(
     let config_tx = config_tx.clone();
     let mut watcher = notify::recommended_watcher(move |res| match res {
         Ok(Event { kind, .. }) => {
-            match kind {
-                EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
-                    // File got written to
-                    // Send event to
-                    match DeviceConfig::load_from_fs() {
-                        Ok(config) => {
-                            // Send to rp2040 to write via a channel somehow.
-                            // Maybe we have to restart the rp2040 here so that it re-handshakes
-                            // and picks up the new info
-                            if config != current_config {
-                                current_config = config;
-                                warn!("Config updated");
-                                let _ = config_tx.send(current_config.clone());
-                            }
-                        }
-                        Err(msg) => {
-                            error!("Load config error: {}", msg);
-                            process::exit(1);
+            if let EventKind::Access(AccessKind::Close(AccessMode::Write)) = kind {
+                // File got written to
+                // Send event to
+                match DeviceConfig::load_from_fs() {
+                    Ok(config) => {
+                        // Send to rp2040 to write via a channel somehow.
+                        // Maybe we have to restart the rp2040 here so that it re-handshakes
+                        // and picks up the new info
+                        if config != current_config {
+                            current_config = config;
+                            warn!("Config updated");
+                            let _ = config_tx.send(current_config.clone());
                         }
                     }
+                    Err(msg) => {
+                        error!("Load config error: {}", msg);
+                        process::exit(1);
+                    }
                 }
-                _ => {}
             }
         }
         Err(e) => error!("file watch error for /etc/cacophony/config.toml: {:?}", e),

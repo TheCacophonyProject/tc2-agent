@@ -1,9 +1,10 @@
 use crate::RecordingState;
 use log::error;
-use rustbus::connection::dispatch_conn::{HandleEnvironment, HandleResult, Matches};
 use rustbus::connection::Timeout;
+use rustbus::connection::dispatch_conn::{HandleEnvironment, HandleResult, Matches};
 use rustbus::message_builder::MarshalledMessage;
-use rustbus::{get_system_bus_path, DispatchConn, DuplexConn};
+use rustbus::{DispatchConn, DuplexConn, get_system_bus_path};
+use std::thread::JoinHandle;
 use std::{process, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
@@ -25,58 +26,67 @@ fn managementd_handler(
     msg: &MarshalledMessage,
     _env: &mut MyHandleEnv,
 ) -> HandleResult<()> {
-    if msg.dynheader.member.as_ref().unwrap() == "testaudio" {
-        let message = if recording_state_ctx.is_taking_test_audio_recording() {
-            "Already making a test recording"
-        } else if recording_state_ctx.is_taking_long_audio_recording() {
-            "Already making a 5 minute recording"
-        } else {
-            recording_state_ctx.request_test_audio_recording();
-            "Asked for a test recording"
-        };
-        let mut resp = msg.dynheader.make_response();
-        resp.body.push_param(message)?;
-        Ok(Some(resp))
-    } else if msg.dynheader.member.as_ref().unwrap() == "longaudiorecording" {
-        let message = if recording_state_ctx.is_taking_long_audio_recording() {
-            "Already making a 5 minute recording"
-        } else if recording_state_ctx.is_taking_test_audio_recording() {
-            "Already making a 5 test recording"
-        } else {
-            recording_state_ctx.request_long_audio_recording();
-            "Asked for a 5 minute recording"
-        };
-        let mut resp = msg.dynheader.make_response();
-        resp.body.push_param(message)?;
-        Ok(Some(resp))
-    } else if msg.dynheader.member.as_ref().unwrap() == "audiostatus" {
-        let mut response = msg.dynheader.make_response();
-        let status = recording_state_ctx.get_audio_status();
-        response
-            .body
-            .push_param(if recording_state_ctx.is_in_audio_mode() {
-                1
+    let cmd = msg.dynheader.member.as_ref().unwrap();
+    match cmd.as_str() {
+        "testaudio" => {
+            let message = if recording_state_ctx.is_taking_test_audio_recording() {
+                "Already making a test recording"
+            } else if recording_state_ctx.is_taking_long_audio_recording() {
+                "Already making a 5 minute recording"
             } else {
-                0
-            })?;
-        response.body.push_param(status as u8)?;
-        Ok(Some(response))
-    } else if msg.dynheader.member.as_ref().unwrap() == "offloadstatus" {
-        let mut response = msg.dynheader.make_response();
-        if let Some((percent_complete, remaining_seconds)) =
-            recording_state_ctx.get_offload_status()
-        {
-            response.body.push_param(1)?;
-            response.body.push_param(0)?; // percent_complete
-            response.body.push_param(0)?; // remaining_seconds
-        } else {
-            response.body.push_param(0)?;
-            response.body.push_param(0)?;
-            response.body.push_param(0)?;
+                recording_state_ctx.request_test_audio_recording();
+                "Asked for a test recording"
+            };
+            let mut resp = msg.dynheader.make_response();
+            resp.body.push_param(message)?;
+            Ok(Some(resp))
         }
-        Ok(Some(response))
-    } else {
-        Ok(None)
+        "longaudiorecording" => {
+            let message = if recording_state_ctx.is_taking_long_audio_recording() {
+                "Already making a 5 minute recording"
+            } else if recording_state_ctx.is_taking_test_audio_recording() {
+                "Already making a 5 test recording"
+            } else {
+                recording_state_ctx.request_long_audio_recording();
+                "Asked for a 5 minute recording"
+            };
+            let mut resp = msg.dynheader.make_response();
+            resp.body.push_param(message)?;
+            Ok(Some(resp))
+        }
+        "audiostatus" => {
+            let mut response = msg.dynheader.make_response();
+            let status = recording_state_ctx.get_audio_status();
+            response.body.push_param(if recording_state_ctx.is_in_audio_mode() { 1 } else { 0 })?;
+            response.body.push_param(status as u8)?;
+            Ok(Some(response))
+        }
+        "offloadstatus" => {
+            let mut response = msg.dynheader.make_response();
+            let (
+                is_offloading,
+                percent_complete,
+                remaining_seconds,
+                total_files,
+                remaining_files,
+                total_events,
+                remaining_events,
+            ) = recording_state_ctx.get_offload_status();
+            response.body.push_param(if is_offloading { 1 } else { 0 })?; // offload in progress
+            response.body.push_param(percent_complete)?; // percent_complete
+            response.body.push_param(remaining_seconds)?; // remaining_seconds
+            response.body.push_param(total_files)?; // total files
+            response.body.push_param(remaining_files)?; // remaining files
+            response.body.push_param(total_events)?; // total files
+            response.body.push_param(remaining_events)?; // remaining files
+
+            Ok(Some(response))
+        }
+        "canceloffload" => {
+            let mut response = msg.dynheader.make_response();
+            Ok(Some(response))
+        }
+        _ => Ok(None),
     }
 }
 #[derive(PartialEq)]
@@ -89,14 +99,16 @@ pub enum AudioStatus {
     WaitingToTakeLongRecording = 6,
 }
 
-pub fn setup_dbus_managementd_recording_service(recording_state: &RecordingState) {
+pub fn setup_dbus_managementd_recording_service(
+    recording_state: &RecordingState,
+) -> std::io::Result<JoinHandle<()>> {
     // set up dbus service for handling messages between managementd and tc2-agent about when
     // to make test audio recordings, and for getting the status of any file offloads
     let recording_state = recording_state.clone();
     let session_path = get_system_bus_path().unwrap();
-    let _dbus_thread = thread::Builder::new()
-        .name("dbus-managementd-service".to_string())
-        .spawn_with_priority(ThreadPriority::Max, move |_| {
+    thread::Builder::new().name("dbus-managementd-service".to_string()).spawn_with_priority(
+        ThreadPriority::Max,
+        move |_| {
             let mut dbus_conn =
                 DuplexConn::connect_to_bus(session_path, false).unwrap_or_else(|e| {
                     error!("Error connecting to system DBus: {}", e);
@@ -108,8 +120,8 @@ pub fn setup_dbus_managementd_recording_service(recording_state: &RecordingState
             });
             dbus_conn
                 .send
-                .send_message(&mut rustbus::standard_messages::request_name(
-                    "org.cacophony.TC2Agent".into(),
+                .send_message(&rustbus::standard_messages::request_name(
+                    "org.cacophony.TC2Agent",
                     rustbus::standard_messages::DBUS_NAME_FLAG_REPLACE_EXISTING,
                 ))
                 .unwrap()
@@ -120,5 +132,6 @@ pub fn setup_dbus_managementd_recording_service(recording_state: &RecordingState
                 DispatchConn::new(dbus_conn, recording_state, Box::new(default_handler));
             dispatch_conn.add_handler("/org/cacophony/TC2Agent", Box::new(managementd_handler));
             dispatch_conn.run().unwrap();
-        });
+        },
+    )
 }

@@ -1,10 +1,6 @@
-use crate::cptv_header::{decode_cptv_header_streaming, CptvHeader};
+use crate::cptv_header::{CptvHeader, decode_cptv_header_streaming};
 use chrono::{DateTime, Utc};
-use flate2::read::GzEncoder;
-use flate2::read::MultiGzDecoder;
-use flate2::Compression;
 use log::{error, info};
-use std::io::prelude::*;
 use std::{fs, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
@@ -24,14 +20,12 @@ pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
                             .unwrap_or(chrono::Local::now().with_timezone(&Utc))
                             .with_timezone(&chrono::Local);
                     if !fs::exists(&output_dir).unwrap_or(false) {
-                        fs::create_dir(&output_dir)
-                            .expect(&format!("Failed to create output directory {}", output_dir));
+                        fs::create_dir(&output_dir).unwrap_or_else(|_| {
+                            panic!("Failed to create output directory {output_dir}")
+                        });
                     }
-                    let path = format!(
-                        "{}/{}.cptv",
-                        output_dir,
-                        recording_date_time.format("%Y-%m-%d--%H-%M-%S")
-                    );
+                    let filename = recording_date_time.format("%Y-%m-%d--%H-%M-%S");
+                    let path = format!("{output_dir}/{filename}.cptv",);
                     //very slow and cpu intensive offered 18% saving on a 10 minute recording
                     // let decoder = MultiGzDecoder::new(&cptv_bytes[..]);
                     // let mut encoder = GzEncoder::new(decoder, Compression::default());

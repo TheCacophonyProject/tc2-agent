@@ -23,9 +23,9 @@ use rppal::gpio::Gpio;
 
 use std::fs;
 use std::process;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::channel;
-use std::sync::Arc;
 use std::thread::sleep;
 
 use std::{thread, time::Duration};
@@ -34,15 +34,15 @@ use thread_priority::*;
 
 use log::{error, info, warn};
 use rustbus::connection::Timeout;
-use rustbus::{get_system_bus_path, DuplexConn};
+use rustbus::{DuplexConn, get_system_bus_path};
 use simplelog::*;
 use sysinfo::Disks;
 
 use crate::camera_transfer_state::enter_camera_transfer_loop;
 use crate::dbus_attiny_i2c::exit_if_attiny_version_is_not_as_expected;
 use crate::dbus_managementd::setup_dbus_managementd_recording_service;
-use crate::device_config::watch_local_config_file_changes;
 use crate::device_config::DeviceConfig;
+use crate::device_config::watch_local_config_file_changes;
 use crate::frame_socket_server::spawn_frame_socket_server_thread;
 use crate::mode_config::ModeConfig;
 use crate::program_rp2040::check_if_rp2040_needs_programming;
@@ -51,7 +51,7 @@ use crate::recording_state::RecordingState;
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 19;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 20;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 
 const SEGMENT_LENGTH: usize = 9760;
@@ -85,7 +85,10 @@ fn check_for_sufficient_free_disk_space() {
         let (mb_remaining, mb_total) = mb_disk_space_remaining();
         if mb_remaining < 1000 {
             if !warned_once {
-                warn!("Insufficient disk space remaining: ({}MB/{}MB), sleeping 1 minute before trying again.", mb_remaining, mb_total);
+                warn!(
+                    "Insufficient disk space remaining: ({}MB/{}MB), sleeping 1 minute before trying again.",
+                    mb_remaining, mb_total
+                );
                 warned_once = true;
             }
             sleep(Duration::from_secs(60));
@@ -101,8 +104,7 @@ fn main() {
         .unwrap();
 
     println!(
-        "\n=========\nStarting thermal camera 2 agent {}, run with --help to see options.\n",
-        VERSION
+        "\n=========\nStarting thermal camera 2 agent {VERSION}, run with --help to see options.\n"
     );
 
     check_for_sufficient_free_disk_space();
@@ -193,7 +195,7 @@ fn main() {
                 &recording_state,
             );
             recording_state.set_ready(&mut dbus_conn);
-            if !initial_config.use_low_power_mode() || !recording_state.is_recording() {
+            if initial_config.use_high_power_mode() || !recording_state.is_recording() {
                 // NOTE: Always reset rp2040 on startup if it's safe to do so.
                 let _ = restart_rp2040_channel_tx.send(true);
             }

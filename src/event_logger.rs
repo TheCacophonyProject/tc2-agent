@@ -10,10 +10,15 @@ pub enum WakeReason {
     ThermalHighPower = 3,
     AudioThermalEnded = 4,
     AudioShouldOffload = 5,
+    AudioTooFull = 6,
+    ThermalTooFull = 7,
+    EventsTooFull = 8,
+    OffloadTestRecording = 9,
+    OffloadOnUserDemand = 10,
 }
 impl std::fmt::Display for WakeReason {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -30,8 +35,25 @@ impl TryFrom<u8> for WakeReason {
             3 => Ok(ThermalHighPower),
             4 => Ok(AudioThermalEnded),
             5 => Ok(AudioShouldOffload),
+            6 => Ok(AudioTooFull),
+            7 => Ok(ThermalTooFull),
+            8 => Ok(EventsTooFull),
+            9 => Ok(OffloadTestRecording),
+            10 => Ok(OffloadOnUserDemand),
             _ => Err(()),
         }
+    }
+}
+
+impl From<WakeReason> for u64 {
+    fn from(value: WakeReason) -> Self {
+        value as u64
+    }
+}
+
+impl From<WakeReason> for u8 {
+    fn from(value: WakeReason) -> Self {
+        value as u8
     }
 }
 
@@ -48,7 +70,7 @@ pub enum LoggerEventKind {
     GotRpiPoweredOn,
     ToldRpiToWake(WakeReason),
     LostSync,
-    SetAlarm(u64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
+    SetAlarm(i64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
     GotPowerOnTimeout,
     WouldDiscardAsFalsePositive,
     StartedGettingFrames,
@@ -56,7 +78,7 @@ pub enum LoggerEventKind {
     Rp2040WokenByAlarm,
     RtcCommError,
     AttinyCommError,
-    Rp2040MissedAudioAlarm(u64),
+    Rp2040MissedAudioAlarm(i64),
     AudioRecordingFailed,
     ErasePartialOrCorruptRecording,
     StartedAudioRecording,
@@ -68,12 +90,13 @@ pub enum LoggerEventKind {
     OffloadedLogs,
     CorruptFile,
     LostFrames(u64),
+    FileOffloadInterruptedByUser,
 }
 
-impl Into<u16> for LoggerEventKind {
-    fn into(self) -> u16 {
+impl From<LoggerEventKind> for u16 {
+    fn from(val: LoggerEventKind) -> Self {
         use LoggerEventKind::*;
-        match self {
+        match val {
             Rp2040Sleep => 1,
             OffloadedRecording => 2,
             SavedNewConfig => 3,
@@ -105,6 +128,7 @@ impl Into<u16> for LoggerEventKind {
             LogOffloadFailed => 29,
             CorruptFile => 30,
             LostFrames(_) => 31,
+            FileOffloadInterruptedByUser => 32,
         }
     }
 }
@@ -151,12 +175,12 @@ impl TryFrom<u16> for LoggerEventKind {
     }
 }
 pub struct LoggerEvent {
-    timestamp: u64,
+    timestamp: i64,
     event: LoggerEventKind,
 }
 
 impl LoggerEvent {
-    pub fn new(event: LoggerEventKind, timestamp: u64) -> LoggerEvent {
+    pub fn new(event: LoggerEventKind, timestamp: i64) -> LoggerEvent {
         LoggerEvent { event, timestamp }
     }
 
@@ -169,29 +193,19 @@ impl LoggerEvent {
             .build();
         // If the type is SavedNewConfig, maybe make the payload the config?
         if let LoggerEventKind::SetAlarm(alarm) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
-                .unwrap(); // Microseconds to nanoseconds
+            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap(); // Microseconds to nanoseconds
             call.body.push_param("SetAlarm").unwrap();
         } else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
-                .unwrap(); // Microseconds to nanoseconds
+            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap(); // Microseconds to nanoseconds
             call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
         } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "wakeup-reason": "{}" }}"#, reason))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "wakeup-reason": "{reason}" }}"#)).unwrap();
             call.body.push_param("ToldRpiToWake").unwrap();
         } else if let LoggerEventKind::LostFrames(lost_frames) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "lost-frames": "{}" }}"#, lost_frames))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "lost-frames": "{lost_frames}" }}"#)).unwrap();
             call.body.push_param("LostFrames").unwrap();
         } else {
-            call.body
-                .push_param(json_payload.unwrap_or(String::from("{}")))
-                .unwrap();
+            call.body.push_param(json_payload.unwrap_or(String::from("{}"))).unwrap();
             call.body.push_param(format!("{:?}", self.event)).unwrap();
         }
 

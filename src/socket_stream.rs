@@ -60,46 +60,38 @@ impl SocketStream {
 }
 
 pub fn get_socket_address(serve_frames_via_wifi: bool) -> String {
-    let address = {
-        // Find the socket address
-        let address = if serve_frames_via_wifi {
-            // Scan for servers on port 34254.
-            use mdns_sd::{ServiceDaemon, ServiceEvent};
-            // Create a daemon
-            let mdns = ServiceDaemon::new().expect("Failed to create daemon");
+    // Find the socket address
+    let address = if serve_frames_via_wifi {
+        // Scan for servers on port 34254.
+        use mdns_sd::{ServiceDaemon, ServiceEvent};
+        // Create a daemon
+        let mdns = ServiceDaemon::new().expect("Failed to create daemon");
 
-            // Browse for a service type.
-            let service_type = "_mdns-tc2-frames._udp.local.";
-            let receiver = mdns.browse(service_type).expect("Failed to browse");
-            let address;
-            info!("Trying to resolve tc2-frames service, please ensure t2c-frames app is running on the same network");
-            'service_finder: loop {
-                while let Ok(event) = receiver.recv() {
-                    match event {
-                        ServiceEvent::ServiceResolved(info) => {
-                            for add in info.get_addresses().iter() {
-                                address = Some(add.to_string());
-                                info!("Resolved a tc2-frames service at: {:?}", add);
-                                break 'service_finder;
-                            }
-                        }
-                        _ => {}
+        // Browse for a service type.
+        let service_type = "_mdns-tc2-frames._udp.local.";
+        let receiver = mdns.browse(service_type).expect("Failed to browse");
+        let address;
+        info!(
+            "Trying to resolve tc2-frames service, please ensure t2c-frames app is running on the same network"
+        );
+        'service_finder: loop {
+            while let Ok(event) = receiver.recv() {
+                if let ServiceEvent::ServiceResolved(info) = event {
+                    if let Some(add) = info.get_addresses().iter().next() {
+                        address = Some(add.to_string());
+                        info!("Resolved a tc2-frames service at: {:?}", add);
+                        break 'service_finder;
                     }
                 }
             }
-            address
-        } else {
-            Some("/var/run/lepton-frames".to_string())
-        };
-        if serve_frames_via_wifi && address.is_none() {
-            panic!("t2c-frames service not found on local network");
         }
-        let address = if serve_frames_via_wifi {
-            format!("{}:34254", address.unwrap())
-        } else {
-            address.unwrap()
-        };
         address
+    } else {
+        Some("/var/run/lepton-frames".to_string())
     };
-    address
+    if serve_frames_via_wifi && address.is_none() {
+        panic!("t2c-frames service not found on local network");
+    }
+    let address = address.unwrap_or_default();
+    if serve_frames_via_wifi { format!("{address}:34254") } else { address }
 }

@@ -3,8 +3,8 @@ use crate::dbus_managementd::AudioStatus;
 use log::error;
 use rustbus::DuplexConn;
 use std::process;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -18,18 +18,30 @@ mod tc2_agent_state {
     /// is completed
     pub const REQUESTED_TEST_AUDIO_RECORDING: u8 = 0b0000_1000;
 
-    /// FIXME: Unclear what this is for, or if it is really used?
     #[allow(unused)]
+    /// This is set by the thermal process on the rp2040 when it wants to reset to take
+    /// a scheduled audio recording
     pub const TAKE_AUDIO: u8 = 0b0001_0000;
 
-    /// FIXME: Not used anywhere in either tc2-agent or tc2-firmware: remove?
     #[allow(unused)]
+    /// Set by the rp2040 when offloading files, and unset at the end of the offload.
+    /// Can be unset during offload by tc2-agent to interrupt the upload and start getting
+    /// thermal frames delivered
     pub const OFFLOAD: u8 = 0b0010_0000;
 
     #[allow(unused)]
+    /// Set by the audio process on the rp2040 when it wants to restart back into thermal mode
+    /// after taking a scheduled audio recording during a thermal recording window when in
+    /// `AudioMode::AudioAndThermal`
     pub const THERMAL_MODE: u8 = 0b0100_0000;
 
     pub const REQUESTED_LONG_AUDIO_RECORDING: u8 = 0b1000_0000;
+
+    // TODO: What if we could do test recordings in both modes, and we had to set the MODE bit as well
+    //  as the test recording bit? Test and Long test would have different hard-coded meanings for each.
+
+    // FIXME: Can you currently take a test audio recording when you have audio disabled?
+    //  Answer - no, and this is by design.
 }
 
 #[repr(u8)]
@@ -54,9 +66,7 @@ struct RecordingModeState {
 
 impl RecordingModeState {
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(AtomicU8::new(RecordingMode::Thermal as u8)),
-        }
+        Self { inner: Arc::new(AtomicU8::new(RecordingMode::Thermal as u8)) }
     }
 
     pub fn is_in_audio_mode(&self) -> bool {
@@ -77,6 +87,10 @@ struct OffloadProgress {
     remaining_offload_bytes: AtomicU32,
     total_offload_bytes: AtomicU32,
     start_time: AtomicU64,
+    total_files: AtomicU32,
+    remaining_files: AtomicU32,
+    total_events: AtomicU32,
+    remaining_events: AtomicU32,
 }
 
 #[derive(Clone)]
@@ -97,6 +111,10 @@ impl RecordingState {
                 remaining_offload_bytes: AtomicU32::new(0),
                 total_offload_bytes: AtomicU32::new(0),
                 start_time: AtomicU64::new(0),
+                total_files: AtomicU32::new(0),
+                remaining_files: AtomicU32::new(0),
+                total_events: AtomicU32::new(0),
+                remaining_events: AtomicU32::new(0),
             }),
         }
     }
@@ -114,7 +132,11 @@ impl RecordingState {
         self.offload_state.start_time.load(Ordering::Relaxed) != 0
     }
 
-    pub fn get_offload_status(&self) -> Option<(u32, u32)> {
+    pub fn get_offload_status(&self) -> (bool, u32, u32, u32, u32, u32, u32) {
+        let total_files = self.offload_state.total_files.load(Ordering::Relaxed);
+        let remaining_files = self.offload_state.remaining_files.load(Ordering::Relaxed);
+        let total_events = self.offload_state.total_events.load(Ordering::Relaxed);
+        let remaining_events = self.offload_state.remaining_events.load(Ordering::Relaxed);
         if self.is_offloading() {
             // Return estimated time remaining in seconds
             let transfer_start_time = self.offload_state.start_time.load(Ordering::Relaxed);
@@ -127,10 +149,42 @@ impl RecordingState {
             let bytes_per_second = bytes_transferred as f32 / ((elapsed as f32) / 1000.0);
             let remaining_seconds = remaining_bytes as f32 / bytes_per_second;
             let percent_complete = (remaining_bytes as f32 / total_bytes as f32) * 100.0;
-            Some((percent_complete as u32, remaining_seconds as u32))
+            (
+                true,
+                percent_complete as u32,
+                remaining_seconds as u32,
+                total_files,
+                remaining_files,
+                total_events,
+                remaining_events,
+            )
         } else {
-            None
+            (false, 0, 0, total_files, remaining_files, total_events, remaining_events)
         }
+    }
+
+    pub fn completed_file_offload(&mut self) {
+        let remaining = self.offload_state.remaining_files.load(Ordering::Relaxed);
+        self.offload_state.remaining_files.store(remaining.saturating_sub(1), Ordering::Relaxed);
+    }
+
+    pub fn completed_event_offload(&mut self) {
+        let remaining = self.offload_state.remaining_events.load(Ordering::Relaxed);
+        self.offload_state.remaining_events.store(remaining.saturating_sub(1), Ordering::Relaxed);
+    }
+
+    pub fn set_offload_totals(
+        &mut self,
+        num_files_to_offload: u32,
+        num_blocks_to_offload: u32,
+        num_events_to_offload: u32,
+    ) {
+        self.offload_state.total_files.store(num_files_to_offload, Ordering::Relaxed);
+        self.offload_state.remaining_files.store(num_files_to_offload, Ordering::Relaxed);
+        self.offload_state
+            .total_offload_bytes
+            .store(num_blocks_to_offload * 64 * 2048, Ordering::Relaxed);
+        self.offload_state.total_events.store(num_events_to_offload, Ordering::Relaxed);
     }
 
     pub fn update_offload_progress(&mut self, block: u16) {
@@ -158,6 +212,9 @@ impl RecordingState {
         self.offload_state.start_time.store(0, Ordering::Relaxed);
         self.offload_state.total_offload_bytes.store(0, Ordering::Relaxed);
         self.offload_state.remaining_offload_bytes.store(0, Ordering::Relaxed);
+        self.offload_state.remaining_files.store(0, Ordering::Relaxed);
+        self.offload_state.total_files.store(0, Ordering::Relaxed);
+        self.offload_state.total_events.store(0, Ordering::Relaxed);
     }
 
     pub fn sync_state_from_attiny(&mut self, conn: &mut DuplexConn) -> u8 {
@@ -173,20 +230,12 @@ impl RecordingState {
 
     pub fn set_is_recording(&mut self, is_recording: bool) {
         let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        let new_state = if is_recording {
-            tc2_agent_state::RECORDING
-        } else {
-            !tc2_agent_state::RECORDING
-        };
-        while !self
+        let new_state =
+            if is_recording { tc2_agent_state::RECORDING } else { !tc2_agent_state::RECORDING };
+        while self
             .rp2040_recording_state_inner
-            .compare_exchange(
-                state,
-                state & new_state,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
-            .is_ok()
+            .compare_exchange(state, state & new_state, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
         {
             sleep(Duration::from_micros(1));
         }
@@ -221,7 +270,7 @@ impl RecordingState {
         self.test_recording_state_inner
             .store(TestRecordingState::NotRequested as u8, Ordering::Relaxed);
         let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        while !self
+        while self
             .rp2040_recording_state_inner
             .compare_exchange(
                 state,
@@ -231,7 +280,7 @@ impl RecordingState {
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             )
-            .is_ok()
+            .is_err()
         {
             sleep(Duration::from_micros(1));
         }
@@ -266,8 +315,7 @@ impl RecordingState {
     }
 
     pub(crate) fn set_state(&mut self, new_state: u8) {
-        self.rp2040_recording_state_inner
-            .store(new_state, Ordering::Relaxed);
+        self.rp2040_recording_state_inner.store(new_state, Ordering::Relaxed);
     }
 
     pub fn request_long_audio_recording(&mut self) {
@@ -276,10 +324,8 @@ impl RecordingState {
     }
 
     pub fn request_test_audio_recording(&mut self) {
-        self.test_recording_state_inner.store(
-            TestRecordingState::TestRecRequested as u8,
-            Ordering::Relaxed,
-        );
+        self.test_recording_state_inner
+            .store(TestRecordingState::TestRecRequested as u8, Ordering::Relaxed);
     }
 
     pub fn user_requested_audio_recording(&self) -> bool {
@@ -292,8 +338,7 @@ impl RecordingState {
         let state = self.sync_state_from_attiny(conn);
         let new_state = state | state_bits_to_set;
         dbus_write_attiny_command(conn, 0x07, new_state)
-            .map(|_| ())
-            .or_else(|msg: &str| -> Result<(), String> {
+            .map_err(|msg: &str| -> Result<(), String> {
                 error!("{}", msg);
                 process::exit(1);
             })

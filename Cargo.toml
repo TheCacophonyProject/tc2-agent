@@ -1,7 +1,7 @@
 [package]
 name = "tc2-agent"
 version = "0.0.0-snapshot"  # Updated by travis on release.
-edition = "2021"
+edition = "2024"
 description = "Program to interface between the Raspberry Pi and the RP2040 in the DOC AI Cam"
 license = "GPL v3.0"
 authors = ["Cacophony Developers <coredev@cacophony.org.nz>"]
@@ -29,7 +29,7 @@ sun-times = "0.2.0"
 louvre = "0.2.1"
 rustbus = "0.19.3"
 sha256 = "1.5.0"
-sysinfo = "0.34.2"
+sysinfo = "0.35.2"
 
 [target.aarch64-unknown-linux-musl]
 # applies to target-specific builds
