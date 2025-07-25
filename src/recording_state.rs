@@ -1,54 +1,156 @@
 use crate::dbus_attiny_i2c::{dbus_write_attiny_command, read_tc2_agent_state};
-use crate::dbus_managementd::AudioStatus;
-use log::error;
+use crate::dbus_managementd::TestRecordingStatus;
+use log::{error, info};
 use rustbus::DuplexConn;
 use std::process;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
+// mod tc2_agent_state {
+//     pub const NOT_READY: u8 = 0b0000_0000;
+//     /// tc2-agent is ready to accept files or recording streams from the rp2040
+//     pub const READY: u8 = 0b0000_0010;
+//     /// taking an audio or thermal recording, not safe to reboot rp2040
+//     pub const RECORDING: u8 = 0b0000_0100;
+//     /// Requested test audio recording.  Cleared by rp2040 when test audio recording
+//     /// is completed
+//     pub const REQUESTED_TEST_AUDIO_RECORDING: u8 = 0b0000_1000;
+//
+//     #[allow(unused)]
+//     /// This is set by the thermal process on the rp2040 when it wants to reset to take
+//     /// a scheduled audio recording
+//     pub const TAKE_AUDIO: u8 = 0b0001_0000;
+//
+//     #[allow(unused)]
+//     /// Set by the rp2040 when offloading files, and unset at the end of the offload.
+//     /// Can be unset during offload by tc2-agent to interrupt the upload and start getting
+//     /// thermal frames delivered
+//     pub const OFFLOAD: u8 = 0b0010_0000;
+//
+//     #[allow(unused)]
+//     /// Set by the audio process on the rp2040 when it wants to restart back into thermal mode
+//     /// after taking a scheduled audio recording during a thermal recording window when in
+//     /// `AudioMode::AudioAndThermal`
+//     pub const THERMAL_MODE: u8 = 0b0100_0000;
+//
+//     pub const REQUESTED_LONG_AUDIO_RECORDING: u8 = 0b1000_0000;
+//
+//     // TODO: What if we could do test recordings in both modes, and we had to set the MODE bit as well
+//     //  as the test recording bit? Test and Long test would have different hard-coded meanings for each.
+//
+//     // FIXME: Can you currently take a test audio recording when you have audio disabled?
+//     //  Answer - no, and this is by design.
+// }
 
-mod tc2_agent_state {
-    pub const NOT_READY: u8 = 0b0000_0000;
-    /// tc2-agent is ready to accept files or recording streams from the rp2040
-    pub const READY: u8 = 0b0000_0010;
-    /// taking an audio or thermal recording, not safe to reboot rp2040
-    pub const RECORDING: u8 = 0b0000_0100;
-    /// Requested test audio recording.  Cleared by rp2040 when test audio recording
-    /// is completed
-    pub const REQUESTED_TEST_AUDIO_RECORDING: u8 = 0b0000_1000;
+pub mod tc2_agent_state {
+    pub const NOT_READY: u8 = 0x00;
+    pub const READY: u8 = 1 << 1;
+    pub const RECORDING: u8 = 1 << 2;
+    pub const SHORT_TEST_RECORDING: u8 = 1 << 3;
+    pub const AUDIO_MODE: u8 = 1 << 4;
+    pub const OFFLOAD: u8 = 1 << 5;
+    pub const THERMAL_MODE: u8 = 1 << 6;
+    pub const LONG_TEST_RECORDING: u8 = 1 << 7;
+}
 
-    #[allow(unused)]
-    /// This is set by the thermal process on the rp2040 when it wants to reset to take
-    /// a scheduled audio recording
-    pub const TAKE_AUDIO: u8 = 0b0001_0000;
+#[derive(Default, Copy, Clone)]
+pub struct Tc2AgentState(u8);
 
-    #[allow(unused)]
-    /// Set by the rp2040 when offloading files, and unset at the end of the offload.
-    /// Can be unset during offload by tc2-agent to interrupt the upload and start getting
-    /// thermal frames delivered
-    pub const OFFLOAD: u8 = 0b0010_0000;
+impl From<u8> for Tc2AgentState {
+    fn from(value: u8) -> Self {
+        Tc2AgentState(value)
+    }
+}
 
-    #[allow(unused)]
-    /// Set by the audio process on the rp2040 when it wants to restart back into thermal mode
-    /// after taking a scheduled audio recording during a thermal recording window when in
-    /// `AudioMode::AudioAndThermal`
-    pub const THERMAL_MODE: u8 = 0b0100_0000;
+impl From<Tc2AgentState> for u8 {
+    fn from(value: Tc2AgentState) -> Self {
+        value.0
+    }
+}
 
-    pub const REQUESTED_LONG_AUDIO_RECORDING: u8 = 0b1000_0000;
+impl Tc2AgentState {
+    fn flag_is_set(&self, flag: u8) -> bool {
+        self.0 & flag != 0
+    }
 
-    // TODO: What if we could do test recordings in both modes, and we had to set the MODE bit as well
-    //  as the test recording bit? Test and Long test would have different hard-coded meanings for each.
+    pub fn set_flag(&mut self, flag: u8) {
+        self.0 |= flag;
+    }
 
-    // FIXME: Can you currently take a test audio recording when you have audio disabled?
-    //  Answer - no, and this is by design.
+    pub fn unset_flag(&mut self, flag: u8) {
+        self.0 &= !flag;
+    }
+
+    pub fn is_not_ready(&self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.flag_is_set(tc2_agent_state::READY)
+    }
+
+    pub fn recording_in_progress(&self) -> bool {
+        self.flag_is_set(tc2_agent_state::RECORDING)
+    }
+
+    pub fn audio_recording_in_progress(&self) -> bool {
+        self.flag_is_set(tc2_agent_state::RECORDING)
+            && self.flag_is_set(tc2_agent_state::AUDIO_MODE)
+    }
+
+    pub fn thermal_recording_in_progress(&self) -> bool {
+        self.flag_is_set(tc2_agent_state::RECORDING)
+            && self.flag_is_set(tc2_agent_state::AUDIO_MODE)
+    }
+
+    pub fn test_audio_recording_requested(&self) -> bool {
+        self.short_test_audio_recording_requested() || self.long_test_audio_recording_requested()
+    }
+
+    pub fn test_thermal_recording_requested(&self) -> bool {
+        self.short_test_thermal_recording_requested()
+            || self.long_test_thermal_recording_requested()
+    }
+
+    pub fn short_test_audio_recording_requested(&self) -> bool {
+        self.requested_audio_mode() && self.flag_is_set(tc2_agent_state::SHORT_TEST_RECORDING)
+    }
+
+    pub fn long_test_audio_recording_requested(&self) -> bool {
+        self.requested_audio_mode() && self.flag_is_set(tc2_agent_state::LONG_TEST_RECORDING)
+    }
+
+    pub fn short_test_thermal_recording_requested(&self) -> bool {
+        self.requested_thermal_mode() && self.flag_is_set(tc2_agent_state::SHORT_TEST_RECORDING)
+    }
+
+    pub fn long_test_thermal_recording_requested(&self) -> bool {
+        self.requested_thermal_mode() && self.flag_is_set(tc2_agent_state::LONG_TEST_RECORDING)
+    }
+
+    pub fn test_recording_requested(&self) -> bool {
+        self.test_audio_recording_requested() || self.test_thermal_recording_requested()
+    }
+
+    pub fn is_offloading_files(&self) -> bool {
+        self.flag_is_set(tc2_agent_state::OFFLOAD)
+    }
+
+    pub fn requested_thermal_mode(&self) -> bool {
+        self.flag_is_set(tc2_agent_state::THERMAL_MODE)
+    }
+    pub fn requested_audio_mode(&self) -> bool {
+        self.flag_is_set(tc2_agent_state::AUDIO_MODE)
+    }
 }
 
 #[repr(u8)]
+#[allow(clippy::enum_variant_names)]
 enum TestRecordingState {
     NotRequested = 0,
-    TestRecRequested = 1,
-    RecRequested = 2,
+    ShortTestRecordingRequested = 1,
+    LongTestRecordingRequested = 2,
     Rp2040Requested = 3,
 }
 
@@ -73,7 +175,6 @@ impl RecordingModeState {
         self.inner.load(Ordering::Relaxed) == RecordingMode::Audio as u8
     }
 
-    #[allow(unused)]
     pub fn is_in_thermal_mode(&self) -> bool {
         self.inner.load(Ordering::Relaxed) == RecordingMode::Thermal as u8
     }
@@ -95,17 +196,33 @@ struct OffloadProgress {
 
 #[derive(Clone)]
 pub struct RecordingState {
+    // This is our local copy of the tc2-agent state register on the attiny,
+    // which we sync back periodically.
     rp2040_recording_state_inner: Arc<AtomicU8>,
-    test_recording_state_inner: Arc<AtomicU8>,
+
+    // This stores the user-requested test audio recording status
+    audio_test_recording_state_inner: Arc<AtomicU8>,
+
+    // This stores the user-requested test low power thermal recording status
+    lp_thermal_test_recording_state_inner: Arc<AtomicU8>,
+
+    // This reflects the current mode that the rp2040 has booted in, which is
+    // set by the initial camera connection handshake
     recording_mode_state: RecordingModeState,
+
+    // This tracks offload state when an offload is in progress in the camera loop
     offload_state: Arc<OffloadProgress>,
+
+    // Set whenever a forced offload of files from the rp2040 is requested.
+    force_offload_request_state: Arc<AtomicBool>,
 }
 
 impl RecordingState {
     pub fn new() -> Self {
         Self {
             rp2040_recording_state_inner: Arc::new(AtomicU8::new(tc2_agent_state::NOT_READY)),
-            test_recording_state_inner: Arc::new(AtomicU8::new(0)),
+            audio_test_recording_state_inner: Arc::new(AtomicU8::new(0)),
+            lp_thermal_test_recording_state_inner: Arc::new(AtomicU8::new(0)),
             recording_mode_state: RecordingModeState::new(),
             offload_state: Arc::new(OffloadProgress {
                 remaining_offload_bytes: AtomicU32::new(0),
@@ -116,6 +233,7 @@ impl RecordingState {
                 total_events: AtomicU32::new(0),
                 remaining_events: AtomicU32::new(0),
             }),
+            force_offload_request_state: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -124,12 +242,16 @@ impl RecordingState {
     }
 
     pub fn is_recording(&self) -> bool {
-        self.rp2040_recording_state_inner.load(Ordering::Relaxed) & tc2_agent_state::RECORDING
-            == tc2_agent_state::RECORDING
+        Tc2AgentState::from(self.rp2040_recording_state_inner.load(Ordering::Relaxed))
+            .recording_in_progress()
     }
 
     pub fn is_offloading(&self) -> bool {
         self.offload_state.start_time.load(Ordering::Relaxed) != 0
+    }
+
+    pub fn request_forced_file_offload(&self) {
+        self.force_offload_request_state.store(true, Ordering::Relaxed);
     }
 
     pub fn get_offload_status(&self) -> (bool, u32, u32, u32, u32, u32, u32) {
@@ -229,12 +351,22 @@ impl RecordingState {
     }
 
     pub fn set_is_recording(&mut self, is_recording: bool) {
-        let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        let new_state =
-            if is_recording { tc2_agent_state::RECORDING } else { !tc2_agent_state::RECORDING };
+        let old_state =
+            Tc2AgentState::from(self.rp2040_recording_state_inner.load(Ordering::Relaxed));
+        let mut new_state = old_state;
+        if is_recording {
+            new_state.set_flag(tc2_agent_state::RECORDING);
+        } else {
+            new_state.unset_flag(tc2_agent_state::RECORDING);
+        }
         while self
             .rp2040_recording_state_inner
-            .compare_exchange(state, state & new_state, Ordering::Relaxed, Ordering::Relaxed)
+            .compare_exchange(
+                old_state.into(),
+                new_state.into(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
             .is_err()
         {
             sleep(Duration::from_micros(1));
@@ -243,6 +375,10 @@ impl RecordingState {
 
     pub fn is_in_audio_mode(&self) -> bool {
         self.recording_mode_state.is_in_audio_mode()
+    }
+
+    pub fn is_in_thermal_mode(&self) -> bool {
+        self.recording_mode_state.is_in_thermal_mode()
     }
 
     pub fn recording_mode(&self) -> RecordingMode {
@@ -254,29 +390,57 @@ impl RecordingState {
     }
 
     pub fn is_taking_test_audio_recording(&self) -> bool {
-        self.get_audio_status() == AudioStatus::TakingTestRecording
+        self.get_test_audio_recording_status() == TestRecordingStatus::TakingTestRecording
+    }
+
+    pub fn is_taking_user_requested_audio_recording(&self) -> bool {
+        let status = self.get_test_audio_recording_status();
+        matches!(
+            status,
+            TestRecordingStatus::TakingTestRecording | TestRecordingStatus::TakingLongRecording
+        )
+    }
+
+    pub fn is_taking_user_requested_thermal_recording(&self) -> bool {
+        let status = self.get_test_thermal_recording_status();
+        matches!(
+            status,
+            TestRecordingStatus::TakingTestRecording | TestRecordingStatus::TakingLongRecording
+        )
+    }
+
+    pub fn is_taking_test_thermal_recording(&self) -> bool {
+        self.get_test_thermal_recording_status() == TestRecordingStatus::TakingTestRecording
+    }
+
+    pub fn is_taking_long_thermal_recording(&self) -> bool {
+        self.get_test_thermal_recording_status() == TestRecordingStatus::TakingLongRecording
     }
 
     pub fn is_taking_long_audio_recording(&self) -> bool {
-        self.get_audio_status() == AudioStatus::TakingLongRecording
+        self.get_test_audio_recording_status() == TestRecordingStatus::TakingLongRecording
     }
 
     #[allow(unused)]
     pub fn is_waiting_to_take_test_audio_recording(&self) -> bool {
-        self.get_audio_status() == AudioStatus::WaitingToTakeTestRecording
+        self.get_test_audio_recording_status() == TestRecordingStatus::WaitingToTakeTestRecording
     }
 
-    pub fn finished_taking_test_recording(&mut self) {
-        self.test_recording_state_inner
+    pub fn finished_taking_user_requested_audio_recording(&mut self) {
+        self.audio_test_recording_state_inner
             .store(TestRecordingState::NotRequested as u8, Ordering::Relaxed);
-        let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
+        let old_state =
+            Tc2AgentState::from(self.rp2040_recording_state_inner.load(Ordering::Relaxed));
+        let mut new_state = old_state;
+        new_state.unset_flag(tc2_agent_state::RECORDING);
+        new_state.unset_flag(tc2_agent_state::AUDIO_MODE);
+        new_state.unset_flag(tc2_agent_state::LONG_TEST_RECORDING);
+        new_state.unset_flag(tc2_agent_state::SHORT_TEST_RECORDING);
         while self
             .rp2040_recording_state_inner
             .compare_exchange(
-                state,
-                state
-                    & !(tc2_agent_state::RECORDING
-                        | tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING),
+                old_state.into(),
+                new_state.into(),
                 Ordering::Relaxed,
                 Ordering::Relaxed,
             )
@@ -286,31 +450,65 @@ impl RecordingState {
         }
     }
 
-    pub fn get_audio_status(&self) -> AudioStatus {
-        let state = self.rp2040_recording_state_inner.load(Ordering::Relaxed);
-        if state & (tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING | tc2_agent_state::RECORDING)
-            == (tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING | tc2_agent_state::RECORDING)
+    pub fn finished_taking_user_requested_thermal_recording(&mut self) {
+        self.lp_thermal_test_recording_state_inner
+            .store(TestRecordingState::NotRequested as u8, Ordering::Relaxed);
+        let old_state =
+            Tc2AgentState::from(self.rp2040_recording_state_inner.load(Ordering::Relaxed));
+        let mut new_state = old_state;
+        new_state.unset_flag(tc2_agent_state::RECORDING);
+        new_state.unset_flag(tc2_agent_state::THERMAL_MODE);
+        new_state.unset_flag(tc2_agent_state::LONG_TEST_RECORDING);
+        new_state.unset_flag(tc2_agent_state::SHORT_TEST_RECORDING);
+        while self
+            .rp2040_recording_state_inner
+            .compare_exchange(
+                old_state.into(),
+                new_state.into(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_err()
         {
-            AudioStatus::TakingLongRecording
-        } else if state
-            & (tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
-            == (tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING | tc2_agent_state::RECORDING)
-        {
-            AudioStatus::TakingTestRecording
-        } else if state & tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING
-            == tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING
-        {
-            AudioStatus::WaitingToTakeTestRecording
-        } else if state & tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING
-            == tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING
-        {
-            AudioStatus::WaitingToTakeLongRecording
-        } else if state & tc2_agent_state::RECORDING == tc2_agent_state::RECORDING {
-            AudioStatus::Recording
+            sleep(Duration::from_micros(1));
+        }
+    }
+
+    pub fn get_test_audio_recording_status(&self) -> TestRecordingStatus {
+        let state = Tc2AgentState::from(self.rp2040_recording_state_inner.load(Ordering::Relaxed));
+        if state.long_test_audio_recording_requested() && state.recording_in_progress() {
+            TestRecordingStatus::TakingLongRecording
+        } else if state.short_test_audio_recording_requested() && state.recording_in_progress() {
+            TestRecordingStatus::TakingTestRecording
+        } else if state.short_test_audio_recording_requested() {
+            TestRecordingStatus::WaitingToTakeTestRecording
+        } else if state.long_test_audio_recording_requested() {
+            TestRecordingStatus::WaitingToTakeLongRecording
+        } else if state.recording_in_progress() {
+            TestRecordingStatus::Recording
         } else if self.user_requested_audio_recording() {
-            AudioStatus::WaitingToTakeTestRecording
+            TestRecordingStatus::WaitingToTakeTestRecording
         } else {
-            AudioStatus::Ready
+            TestRecordingStatus::Ready
+        }
+    }
+
+    pub fn get_test_thermal_recording_status(&self) -> TestRecordingStatus {
+        let state = Tc2AgentState::from(self.rp2040_recording_state_inner.load(Ordering::Relaxed));
+        if state.long_test_thermal_recording_requested() && state.recording_in_progress() {
+            TestRecordingStatus::TakingLongRecording
+        } else if state.short_test_thermal_recording_requested() && state.recording_in_progress() {
+            TestRecordingStatus::TakingTestRecording
+        } else if state.short_test_thermal_recording_requested() {
+            TestRecordingStatus::WaitingToTakeTestRecording
+        } else if state.long_test_thermal_recording_requested() {
+            TestRecordingStatus::WaitingToTakeLongRecording
+        } else if state.recording_in_progress() {
+            TestRecordingStatus::Recording
+        } else if self.user_requested_thermal_recording() {
+            TestRecordingStatus::WaitingToTakeTestRecording
+        } else {
+            TestRecordingStatus::Ready
         }
     }
 
@@ -319,19 +517,34 @@ impl RecordingState {
     }
 
     pub fn request_long_audio_recording(&mut self) {
-        self.test_recording_state_inner
-            .store(TestRecordingState::RecRequested as u8, Ordering::Relaxed);
+        self.audio_test_recording_state_inner
+            .store(TestRecordingState::LongTestRecordingRequested as u8, Ordering::Relaxed);
+    }
+
+    pub fn request_long_thermal_recording(&mut self) {
+        self.lp_thermal_test_recording_state_inner
+            .store(TestRecordingState::LongTestRecordingRequested as u8, Ordering::Relaxed);
     }
 
     pub fn request_test_audio_recording(&mut self) {
-        self.test_recording_state_inner
-            .store(TestRecordingState::TestRecRequested as u8, Ordering::Relaxed);
+        self.audio_test_recording_state_inner
+            .store(TestRecordingState::ShortTestRecordingRequested as u8, Ordering::Relaxed);
+    }
+    pub fn request_test_thermal_recording(&mut self) {
+        self.lp_thermal_test_recording_state_inner
+            .store(TestRecordingState::ShortTestRecordingRequested as u8, Ordering::Relaxed);
     }
 
     pub fn user_requested_audio_recording(&self) -> bool {
-        let state: u8 = self.test_recording_state_inner.load(Ordering::Relaxed);
-        state == TestRecordingState::TestRecRequested as u8
-            || state == TestRecordingState::RecRequested as u8
+        let state: u8 = self.audio_test_recording_state_inner.load(Ordering::Relaxed);
+        state == TestRecordingState::ShortTestRecordingRequested as u8
+            || state == TestRecordingState::LongTestRecordingRequested as u8
+    }
+
+    pub fn user_requested_thermal_recording(&self) -> bool {
+        let state: u8 = self.lp_thermal_test_recording_state_inner.load(Ordering::Relaxed);
+        state == TestRecordingState::ShortTestRecordingRequested as u8
+            || state == TestRecordingState::LongTestRecordingRequested as u8
     }
 
     pub fn merge_state_to_attiny(&mut self, state_bits_to_set: u8, conn: &mut DuplexConn) {
@@ -358,16 +571,48 @@ impl RecordingState {
     pub fn request_audio_recording_from_rp2040(&mut self, conn: &mut DuplexConn) -> bool {
         self.sync_state_from_attiny(conn);
         if self.is_recording() {
+            info!("Requested audio test recording, but rp2040 is already recording");
             false
         } else {
-            let state: u8 = self.test_recording_state_inner.load(Ordering::Relaxed);
-
-            if state == TestRecordingState::TestRecRequested as u8 {
-                self.merge_state_to_attiny(tc2_agent_state::REQUESTED_TEST_AUDIO_RECORDING, conn);
-            } else if state == TestRecordingState::RecRequested as u8 {
-                self.merge_state_to_attiny(tc2_agent_state::REQUESTED_LONG_AUDIO_RECORDING, conn);
+            let state: u8 = self.audio_test_recording_state_inner.load(Ordering::Relaxed);
+            if state == TestRecordingState::ShortTestRecordingRequested as u8 {
+                self.merge_state_to_attiny(
+                    tc2_agent_state::AUDIO_MODE | tc2_agent_state::SHORT_TEST_RECORDING,
+                    conn,
+                );
+            } else if state == TestRecordingState::LongTestRecordingRequested as u8 {
+                self.merge_state_to_attiny(
+                    tc2_agent_state::AUDIO_MODE | tc2_agent_state::LONG_TEST_RECORDING,
+                    conn,
+                );
             }
-            self.test_recording_state_inner
+            self.audio_test_recording_state_inner
+                .store(TestRecordingState::Rp2040Requested as u8, Ordering::Relaxed);
+            true
+        }
+    }
+
+    pub fn request_thermal_recording_from_rp2040(&mut self, conn: &mut DuplexConn) -> bool {
+        self.sync_state_from_attiny(conn);
+        if self.is_recording() {
+            info!("Requested thermal test recording, but rp2040 is already recording");
+            false
+        } else {
+            let state: u8 = self.lp_thermal_test_recording_state_inner.load(Ordering::Relaxed);
+            if state == TestRecordingState::ShortTestRecordingRequested as u8 {
+                info!("Request short test thermal recording");
+                self.merge_state_to_attiny(
+                    tc2_agent_state::THERMAL_MODE | tc2_agent_state::SHORT_TEST_RECORDING,
+                    conn,
+                );
+            } else if state == TestRecordingState::LongTestRecordingRequested as u8 {
+                info!("Request long test thermal recording");
+                self.merge_state_to_attiny(
+                    tc2_agent_state::THERMAL_MODE | tc2_agent_state::LONG_TEST_RECORDING,
+                    conn,
+                );
+            }
+            self.lp_thermal_test_recording_state_inner
                 .store(TestRecordingState::Rp2040Requested as u8, Ordering::Relaxed);
             true
         }

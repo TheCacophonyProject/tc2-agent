@@ -24,6 +24,8 @@ fn restart_rp2040_if_requested(
     run_pin: &mut OutputPin,
     restart_rp2040_ack: &mut Arc<AtomicBool>,
 ) {
+    // FIXME: Check if the rp2040 recording flag is set before restarting.
+
     // Check if we need to reset rp2040 because of a config change
     if restart_rp2040_channel_rx.try_recv().is_ok() {
         restart_rp2040_ack.store(true, Ordering::Relaxed);

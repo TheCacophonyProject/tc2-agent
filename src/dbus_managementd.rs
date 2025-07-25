@@ -45,7 +45,7 @@ fn managementd_handler(
             let message = if recording_state_ctx.is_taking_long_audio_recording() {
                 "Already making a 5 minute recording"
             } else if recording_state_ctx.is_taking_test_audio_recording() {
-                "Already making a 5 test recording"
+                "Already making a test recording"
             } else {
                 recording_state_ctx.request_long_audio_recording();
                 "Asked for a 5 minute recording"
@@ -54,10 +54,48 @@ fn managementd_handler(
             resp.body.push_param(message)?;
             Ok(Some(resp))
         }
+        "shorttestthermalrecording" => {
+            let message = if recording_state_ctx.is_taking_test_thermal_recording() {
+                "Already making a test recording"
+            } else if recording_state_ctx.is_taking_long_thermal_recording() {
+                "Already making a 1 minute recording"
+            } else {
+                recording_state_ctx.request_test_thermal_recording();
+                "Asked for a test recording"
+            };
+            let mut resp = msg.dynheader.make_response();
+            resp.body.push_param(message)?;
+            Ok(Some(resp))
+        }
+        "longtestthermalrecording" => {
+            let message = if recording_state_ctx.is_taking_long_thermal_recording() {
+                "Already making a 1 minute recording"
+            } else if recording_state_ctx.is_taking_test_thermal_recording() {
+                "Already making a test recording"
+            } else {
+                recording_state_ctx.request_long_thermal_recording();
+                "Asked for a 1 minute recording"
+            };
+            let mut resp = msg.dynheader.make_response();
+            resp.body.push_param(message)?;
+            Ok(Some(resp))
+        }
         "audiostatus" => {
             let mut response = msg.dynheader.make_response();
-            let status = recording_state_ctx.get_audio_status();
+            let status = recording_state_ctx.get_test_audio_recording_status();
             response.body.push_param(if recording_state_ctx.is_in_audio_mode() { 1 } else { 0 })?;
+            response.body.push_param(status as u8)?;
+            Ok(Some(response))
+        }
+        "testthermalstatus" => {
+            // TODO: Check what the receivers of these calls expect
+            let mut response = msg.dynheader.make_response();
+            let status = recording_state_ctx.get_test_thermal_recording_status();
+            response.body.push_param(if recording_state_ctx.is_in_thermal_mode() {
+                1
+            } else {
+                0
+            })?;
             response.body.push_param(status as u8)?;
             Ok(Some(response))
         }
@@ -83,14 +121,21 @@ fn managementd_handler(
             Ok(Some(response))
         }
         "canceloffload" => {
+            let response = msg.dynheader.make_response();
+            // TODO: Make this work
+            Ok(Some(response))
+        }
+        "forcerp2040offload" => {
             let mut response = msg.dynheader.make_response();
+            recording_state_ctx.request_forced_file_offload();
+            response.body.push_param("Requested offload of files from rp2040")?;
             Ok(Some(response))
         }
         _ => Ok(None),
     }
 }
 #[derive(PartialEq)]
-pub enum AudioStatus {
+pub enum TestRecordingStatus {
     Ready = 1,
     WaitingToTakeTestRecording = 2,
     TakingTestRecording = 3,

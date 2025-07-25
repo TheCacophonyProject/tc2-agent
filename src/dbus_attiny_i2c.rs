@@ -5,8 +5,8 @@ use log::error;
 use rustbus::connection::Timeout;
 use rustbus::{DuplexConn, MessageBuilder, MessageType};
 use std::process;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
@@ -48,8 +48,8 @@ pub fn dbus_attiny_command(
                     return Err("Max attempts reached: failed to execute i2c dbus command");
                 }
                 error!(
-                    "Attempt {}/{} failed: {}. Retrying in {:?}...",
-                    attempt, max_attempts, e, retry_delay
+                    "Attempt to call command {} with value {:?} failed. {}/{}: {}. Retrying in {:?}...",
+                    command, value, attempt, max_attempts, e, retry_delay
                 );
                 std::thread::sleep(retry_delay);
             }
@@ -104,11 +104,7 @@ pub fn dbus_attiny_command_attempt(
                             let response = &message.get_buf()[4..][0..3];
                             let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
                             let received_crc = BigEndian::read_u16(&response[1..=2]);
-                            if received_crc != crc {
-                                Err("CRC Mismatch")
-                            } else {
-                                Ok(response[0])
-                            }
+                            if received_crc != crc { Err("CRC Mismatch") } else { Ok(response[0]) }
                         } else {
                             // Check that the written value was actually written correctly.
                             let set_value = dbus_attiny_command(conn, command, None);

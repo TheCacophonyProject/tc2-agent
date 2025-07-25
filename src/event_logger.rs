@@ -15,6 +15,8 @@ pub enum WakeReason {
     EventsTooFull = 8,
     OffloadTestRecording = 9,
     OffloadOnUserDemand = 10,
+    RtcTimeCompromised = 11,
+    OpportunisticOffload = 12,
 }
 impl std::fmt::Display for WakeReason {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -70,7 +72,7 @@ pub enum LoggerEventKind {
     GotRpiPoweredOn,
     ToldRpiToWake(WakeReason),
     LostSync,
-    SetAlarm(i64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
+    SetAudioAlarm(i64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
     GotPowerOnTimeout,
     WouldDiscardAsFalsePositive,
     StartedGettingFrames,
@@ -91,6 +93,8 @@ pub enum LoggerEventKind {
     CorruptFile,
     LostFrames(u64),
     FileOffloadInterruptedByUser,
+    RtcVoltageLowError,
+    SetThermalAlarm(i64),
 }
 
 impl From<LoggerEventKind> for u16 {
@@ -108,7 +112,7 @@ impl From<LoggerEventKind> for u16 {
             GotRpiPoweredOn => 9,
             ToldRpiToWake(_) => 10,
             LostSync => 11,
-            SetAlarm(_) => 12,
+            SetAudioAlarm(_) => 12,
             GotPowerOnTimeout => 13,
             WouldDiscardAsFalsePositive => 14,
             StartedGettingFrames => 15,
@@ -129,6 +133,8 @@ impl From<LoggerEventKind> for u16 {
             CorruptFile => 30,
             LostFrames(_) => 31,
             FileOffloadInterruptedByUser => 32,
+            RtcVoltageLowError => 33,
+            SetThermalAlarm(_) => 34,
         }
     }
 }
@@ -150,7 +156,7 @@ impl TryFrom<u16> for LoggerEventKind {
             9 => Ok(GotRpiPoweredOn),
             10 => Ok(ToldRpiToWake(WakeReason::Unknown)),
             11 => Ok(LostSync),
-            12 => Ok(SetAlarm(0)),
+            12 => Ok(SetAudioAlarm(0)),
             13 => Ok(GotPowerOnTimeout),
             14 => Ok(WouldDiscardAsFalsePositive),
             15 => Ok(StartedGettingFrames),
@@ -170,6 +176,9 @@ impl TryFrom<u16> for LoggerEventKind {
             29 => Ok(LogOffloadFailed),
             30 => Ok(CorruptFile),
             31 => Ok(LostFrames(0)),
+            32 => Ok(FileOffloadInterruptedByUser),
+            33 => Ok(RtcVoltageLowError),
+            34 => Ok(SetThermalAlarm(0)),
             _ => Err(()),
         }
     }
@@ -192,11 +201,17 @@ impl LoggerEvent {
             .at("org.cacophony.Events")
             .build();
         // If the type is SavedNewConfig, maybe make the payload the config?
-        if let LoggerEventKind::SetAlarm(alarm) = self.event {
-            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap(); // Microseconds to nanoseconds
-            call.body.push_param("SetAlarm").unwrap();
+        if let LoggerEventKind::SetAudioAlarm(alarm) = self.event {
+            // Microseconds to nanoseconds
+            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap();
+            call.body.push_param("SetAudioAlarm").unwrap();
+        } else if let LoggerEventKind::SetThermalAlarm(alarm) = self.event {
+            // Microseconds to nanoseconds
+            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap();
+            call.body.push_param("SetThermalAlarm").unwrap();
         } else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm) = self.event {
-            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap(); // Microseconds to nanoseconds
+            // Microseconds to nanoseconds
+            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap();
             call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
         } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
             call.body.push_param(format!(r#"{{ "wakeup-reason": "{reason}" }}"#)).unwrap();
@@ -208,8 +223,8 @@ impl LoggerEvent {
             call.body.push_param(json_payload.unwrap_or(String::from("{}"))).unwrap();
             call.body.push_param(format!("{:?}", self.event)).unwrap();
         }
-
-        call.body.push_param(self.timestamp * 1000).unwrap(); // Microseconds to nanoseconds
+        // Microseconds to nanoseconds
+        call.body.push_param(self.timestamp * 1000).unwrap();
         conn.send.send_message(&call).unwrap().write_all().unwrap();
     }
 }

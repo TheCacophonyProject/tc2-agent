@@ -165,16 +165,28 @@ pub fn enter_camera_transfer_loop(
     let mut firmware_version = 0;
     let mut lepton_serial_number = String::from("");
     let mut is_audio_device = device_config.is_audio_device();
+    let mut is_thermal_device = device_config.is_thermal_device();
+
+    let mut last_unknown_transfer_warning = None;
+
     info!("Waiting for messages from rp2040");
     'transfer: loop {
         check_for_device_config_changes(
             &device_config_change_channel_rx,
             &mut device_config,
             &mut is_audio_device,
+            &mut is_thermal_device,
             &mut rp2040_needs_reset,
         );
         if is_audio_device {
             maybe_make_test_audio_recording(
+                &mut dbus_conn,
+                &restart_rp2040_channel_tx,
+                &mut recording_state,
+            );
+        }
+        if is_thermal_device {
+            maybe_make_test_thermal_recording(
                 &mut dbus_conn,
                 &restart_rp2040_channel_tx,
                 &mut recording_state,
@@ -186,6 +198,7 @@ pub fn enter_camera_transfer_loop(
             rp2040_needs_reset = false;
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
+            is_thermal_device = device_config.is_thermal_device();
 
             if !sent_reset_request {
                 sent_reset_request = true;
@@ -309,10 +322,28 @@ pub fn enter_camera_transfer_loop(
                     continue 'transfer;
                 }
                 if !(CAMERA_CONNECT_INFO..=CAMERA_STARTUP_HANDSHAKE).contains(&transfer_type) {
-                    warn!("unknown transfer type {}", transfer_type);
                     LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                     LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                     spi.write(&return_payload_buf).unwrap();
+
+                    // NOTE: We limit the frequency of this since it can
+                    //  spin in this state pretty aggressively.
+                    match last_unknown_transfer_warning {
+                        None => {
+                            warn!("unknown transfer type {}", transfer_type);
+                            last_unknown_transfer_warning = Some((transfer_type, Instant::now()))
+                        }
+                        Some((transfer_t, time)) => {
+                            if Instant::now().duration_since(time) > Duration::from_millis(1000)
+                                || transfer_type != transfer_t
+                            {
+                                last_unknown_transfer_warning = None;
+                            } else {
+                                sleep(Duration::from_millis(100));
+                            }
+                        }
+                    }
+
                     if process_interrupted(&sig_term, &mut dbus_conn) {
                         break 'transfer;
                     }
@@ -342,10 +373,12 @@ pub fn enter_camera_transfer_loop(
                     } else if transfer_type == CAMERA_GET_MOTION_DETECTION_MASK {
                         let piece_number = &chunk[0];
                         let piece = device_config.mask_piece(*piece_number as usize);
+
                         let mut piece_with_length = [0u8; 101];
                         piece_with_length[0] = piece.len() as u8;
                         piece_with_length[1..1 + piece.len()].copy_from_slice(piece);
                         let crc = crc_check.checksum(&piece_with_length[0..1 + piece.len()]);
+                        // info!("Sending camera mask config piece {piece_number}, crc {crc}");
                         LittleEndian::write_u16(&mut return_payload_buf[8..10], crc);
                         return_payload_buf[10..10 + piece.len() + 1]
                             .copy_from_slice(&piece_with_length);
@@ -394,13 +427,17 @@ pub fn enter_camera_transfer_loop(
                                     (num_blocks_to_offload * 128) as f32 / 1024.0;
                                 let estimated_offload_time_seconds =
                                     (estimated_offload_mb * 2.0) / 60.0;
-                                info!(
-                                    "{num_files_to_offload} file(s) to offload  \
-                                        totalling {estimated_offload_mb}MB \
-                                        estimated offload time {:.2} mins
-                                        Events to offload {num_events_to_offload}",
-                                    estimated_offload_time_seconds
-                                );
+                                if num_files_to_offload > 0 && num_events_to_offload > 0 {
+                                    info!(
+                                        "{num_files_to_offload} file(s) to offload \
+                                            totalling {estimated_offload_mb}MB \
+                                            estimated offload time {:.2} mins. \
+                                            Events to offload {num_events_to_offload}",
+                                        estimated_offload_time_seconds
+                                    );
+                                } else if num_events_to_offload > 0 {
+                                    info!("Events to offload {num_events_to_offload}");
+                                }
                                 // Terminate any existing file download.
                                 let in_progress_file_transfer = file_download.take();
                                 if let Some(file) = in_progress_file_transfer {
@@ -438,7 +475,6 @@ pub fn enter_camera_transfer_loop(
                                 } else {
                                     info!("Got audio mode startup");
                                 }
-
                                 if device_config.use_low_power_mode()
                                     && !radiometry_enabled
                                     && !device_config.is_audio_device()
@@ -473,7 +509,20 @@ pub fn enter_camera_transfer_loop(
                                     if let Some(mut time) =
                                         DateTime::from_timestamp_micros(event_timestamp)
                                     {
-                                        if let LoggerEventKind::SetAlarm(alarm_time) =
+                                        if let LoggerEventKind::SetAudioAlarm(alarm_time) =
+                                            &mut event_kind
+                                        {
+                                            if DateTime::from_timestamp_micros(event_payload as i64)
+                                                .is_some()
+                                            {
+                                                *alarm_time = event_payload as i64;
+                                            } else {
+                                                warn!(
+                                                    "Wakeup alarm from event was invalid {}",
+                                                    event_payload
+                                                );
+                                            }
+                                        } else if let LoggerEventKind::SetThermalAlarm(alarm_time) =
                                             &mut event_kind
                                         {
                                             if DateTime::from_timestamp_micros(event_payload as i64)
@@ -513,9 +562,11 @@ pub fn enter_camera_transfer_loop(
                                                     event_payload
                                                 );
                                             }
-                                        } else if let LoggerEventKind::RtcCommError =
-                                            &mut event_kind
-                                        {
+                                        } else if matches!(
+                                            event_kind,
+                                            LoggerEventKind::RtcCommError
+                                                | LoggerEventKind::RtcVoltageLowError
+                                        ) {
                                             if event_timestamp == 0 {
                                                 time = chrono::Local::now().with_timezone(&Utc);
                                                 event_timestamp = time.timestamp_micros();
@@ -785,7 +836,7 @@ fn maybe_make_test_audio_recording(
                             inner_recording_state.sync_state_from_attiny(&mut conn);
                             let sleep_duration_ms =
                                 if inner_recording_state.is_recording() { 2000 } else { 1000 };
-                            if inner_recording_state.is_taking_test_audio_recording() {
+                            if inner_recording_state.is_taking_user_requested_audio_recording() {
                                 break;
                             }
                             sleep(Duration::from_millis(sleep_duration_ms));
@@ -795,8 +846,76 @@ fn maybe_make_test_audio_recording(
                             inner_recording_state.sync_state_from_attiny(&mut conn);
                             let sleep_duration_ms =
                                 if inner_recording_state.is_recording() { 2000 } else { 1000 };
-                            if !inner_recording_state.is_taking_test_audio_recording() {
-                                inner_recording_state.finished_taking_test_recording();
+                            if !inner_recording_state.is_taking_user_requested_audio_recording() {
+                                inner_recording_state
+                                    .finished_taking_user_requested_audio_recording();
+                                break;
+                            }
+                            sleep(Duration::from_millis(sleep_duration_ms));
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn maybe_make_test_thermal_recording(
+    dbus_conn: &mut DuplexConn,
+    restart_rp2040_channel_tx: &Sender<bool>,
+    recording_state: &mut RecordingState,
+) {
+    // FIXME: Is this correct?  Looks like the flag to take a test recording would just be pending?
+
+    // If the rp2040 is making a recording, and a user test thermal recording was requested,
+    // do nothing.
+
+    // If the user requested a test thermal recording, trigger the test thermal recording, and
+    // launch a thread to track when that recording has completed.
+    if recording_state.user_requested_thermal_recording()
+        && recording_state.request_thermal_recording_from_rp2040(dbus_conn)
+    {
+        let _ = restart_rp2040_channel_tx.send(true);
+        info!("Telling rp2040 to take test recording and restarting");
+        let mut inner_recording_state = recording_state.clone();
+        let _ = thread::spawn(move || {
+            let dbus_session_path = get_system_bus_path().unwrap_or_else(|e| {
+                error!("Error getting system DBus: {}", e);
+                process::exit(1);
+            });
+            match DuplexConn::connect_to_bus(dbus_session_path, true) {
+                Err(e) => {
+                    error!("Error connecting to system DBus: {}", e);
+                    process::exit(1);
+                }
+                Ok(mut conn) => {
+                    let _unique_name = conn.send_hello(Timeout::Infinite);
+                    if _unique_name.is_err() {
+                        error!(
+                            "Error getting handshake with system DBus: {}",
+                            _unique_name.err().unwrap()
+                        );
+                        process::exit(1);
+                    } else {
+                        loop {
+                            // Re-sync our internal rp2040 state once every 1-2 seconds until
+                            // we see that the state has entered taking_test_thermal_recording.
+                            inner_recording_state.sync_state_from_attiny(&mut conn);
+                            let sleep_duration_ms =
+                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            if inner_recording_state.is_taking_user_requested_thermal_recording() {
+                                break;
+                            }
+                            sleep(Duration::from_millis(sleep_duration_ms));
+                        }
+                        loop {
+                            // Now wait until we've exited taking_test_thermal_recording.
+                            inner_recording_state.sync_state_from_attiny(&mut conn);
+                            let sleep_duration_ms =
+                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            if !inner_recording_state.is_taking_user_requested_thermal_recording() {
+                                inner_recording_state
+                                    .finished_taking_user_requested_thermal_recording();
                                 break;
                             }
                             sleep(Duration::from_millis(sleep_duration_ms));

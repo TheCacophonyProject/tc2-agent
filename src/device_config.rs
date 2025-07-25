@@ -827,6 +827,10 @@ impl DeviceConfig {
         self.audio_info.audio_mode != AudioMode::Disabled
     }
 
+    pub fn is_thermal_device(&self) -> bool {
+        self.audio_info.audio_mode != AudioMode::AudioOnly
+    }
+
     pub fn write_to_slice(&self, output: &mut [u8], prefer_not_to_offload_files_now: bool) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
@@ -927,6 +931,7 @@ pub fn check_for_device_config_changes(
     device_config_change_channel_rx: &Receiver<DeviceConfig>,
     device_config: &mut DeviceConfig,
     is_audio_device: &mut bool,
+    is_thermal_device: &mut bool,
     rp2040_needs_reset: &mut bool,
 ) {
     // Check once per frame to see if the config file may have been changed
@@ -937,10 +942,8 @@ pub fn check_for_device_config_changes(
             if *device_config != config {
                 info!("Config updated, should update rp2040");
                 *device_config = config;
-                if !*is_audio_device {
-                    //will update after reset request if in audio mode
-                    *is_audio_device = device_config.is_audio_device();
-                }
+                *is_audio_device = device_config.is_audio_device();
+                *is_thermal_device = device_config.is_thermal_device();
             }
             *rp2040_needs_reset = true;
         }
