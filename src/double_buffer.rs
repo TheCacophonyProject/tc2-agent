@@ -1,7 +1,7 @@
 use crate::cptv_frame_dispatch::Frame;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct DoubleBuffer {
     pub front: Mutex<RefCell<Option<Frame>>>,
@@ -24,19 +24,11 @@ impl DoubleBuffer {
 
     pub fn get_front(&self) -> &Mutex<RefCell<Option<Frame>>> {
         let val = self.swapper.load(Ordering::Acquire);
-        if val % 2 == 0 {
-            &self.front
-        } else {
-            &self.back
-        }
+        if val % 2 == 0 { &self.front } else { &self.back }
     }
 
     pub fn get_back(&self) -> &Mutex<RefCell<Option<Frame>>> {
         let val = self.swapper.load(Ordering::Acquire);
-        if val % 2 == 0 {
-            &self.back
-        } else {
-            &self.front
-        }
+        if val % 2 == 0 { &self.back } else { &self.front }
     }
 }
