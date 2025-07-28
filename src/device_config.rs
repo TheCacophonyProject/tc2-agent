@@ -129,14 +129,11 @@ where
                                 }
                             }
                         }
-                        _ => error!(
-                            "Region '{}'[{}]: Expected array of [x, y] coordinates",
-                            label, i
-                        ),
+                        _ => error!("Region '{label}'[{i}]: Expected array of [x, y] coordinates",),
                     }
                 }
             }
-            _ => error!("Region '{}': Must be an array of [[x, y], ...] coordinates", label),
+            _ => error!("Region '{label}': Must be an array of [[x, y], ...] coordinates"),
         }
         regions.insert(label.clone(), region);
     }
@@ -657,7 +654,7 @@ impl DeviceConfig {
                 if device_config.audio_info.audio_mode != AudioMode::AudioOnly {
                     let inside_recording_window =
                         device_config.time_is_in_recording_window(&Utc::now().naive_utc());
-                    info!("Inside recording window: {}", inside_recording_window);
+                    info!("Inside recording window: {inside_recording_window}");
                     if !inside_recording_window {
                         device_config.print_next_recording_window(&Utc::now().naive_utc());
                     }
@@ -665,7 +662,7 @@ impl DeviceConfig {
                 Ok(device_config)
             }
             Err(msg) => {
-                error!("Toml parse error: {:?}", msg);
+                error!("Toml parse error: {msg:?}");
                 Err("Error deserializing TOML config")
             }
         }
@@ -811,8 +808,9 @@ impl DeviceConfig {
         let window_hours = window.num_hours();
         let window_mins = window.num_minutes() - (window_hours * 60);
         info!(
-            "Next recording window will start in {}h{}m and end in {}h{}m, window duration {}h{}m",
-            starts_in_hours, starts_in_mins, ends_in_hours, ends_in_mins, window_hours, window_mins
+            "Next recording window will start in {starts_in_hours}h{starts_in_mins}m \
+            and end in {ends_in_hours}h{ends_in_mins}m, \
+            window duration {window_hours}h{window_mins}m",
         );
     }
     pub fn time_is_in_recording_window(&self, date_time_utc: &NaiveDateTime) -> bool {
@@ -907,13 +905,13 @@ pub fn watch_local_config_file_changes(
                         }
                     }
                     Err(msg) => {
-                        error!("Load config error: {}", msg);
+                        error!("Load config error: {msg}");
                         process::exit(1);
                     }
                 }
             }
         }
-        Err(e) => error!("file watch error for /etc/cacophony/config.toml: {:?}", e),
+        Err(e) => error!("file watch error for /etc/cacophony/config.toml: {e:?}"),
     })
     .map_err(|e| {
         error!("{}", e);

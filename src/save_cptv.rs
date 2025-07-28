@@ -14,7 +14,7 @@ pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
         move |_| match decode_cptv_header_streaming(&cptv_bytes) {
             Ok(header) => match header {
                 CptvHeader::V2(header) => {
-                    info!("Saving CPTV file with header {:?}", header);
+                    info!("Saving CPTV file with header {header:?}");
                     let recording_date_time =
                         DateTime::from_timestamp_millis(header.timestamp as i64 / 1000)
                             .unwrap_or(chrono::Local::now().with_timezone(&Utc))
@@ -44,12 +44,11 @@ pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
                     if !is_existing_file {
                         match fs::write(&path, &cptv_bytes) {
                             Ok(()) => {
-                                info!("Saved CPTV file {}", path);
+                                info!("Saved CPTV file {path}");
                             }
                             Err(e) => {
                                 error!(
-                                    "Failed writing CPTV file to storage at {}, reason: {}",
-                                    path, e
+                                    "Failed writing CPTV file to storage at {path}, reason: {e}"
                                 );
                             }
                         }
@@ -72,13 +71,13 @@ pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
                         //     }
                         // }
                     } else {
-                        error!("File {} already exists, discarding duplicate", path);
+                        error!("File {path} already exists, discarding duplicate");
                     }
                 }
                 _ => error!("Unsupported CPTV file format, discarding file"),
             },
             Err(e) => {
-                error!("Invalid CPTV file: ({:?}), discarding", e);
+                error!("Invalid CPTV file: ({e:?}), discarding");
             }
         },
     );

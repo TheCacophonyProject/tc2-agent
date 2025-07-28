@@ -586,7 +586,7 @@ impl RecordingState {
         let new_state = state | state_bits_to_set;
         dbus_write_attiny_command(conn, ATTINY_REG_TC2_AGENT_STATE, new_state)
             .map_err(|msg: &str| -> Result<(), String> {
-                error!("{}", msg);
+                error!("{msg}");
                 process::exit(1);
             })
             .ok();

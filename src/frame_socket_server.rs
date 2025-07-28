@@ -58,7 +58,8 @@ pub fn spawn_frame_socket_server_thread(
             // This is printed out from within the spawned thread.
             if result.is_err() {
                 error!(
-                    "Thread must have permissions to run with realtime priority, run as root user"
+                    "Thread must have permissions to run with realtime priority, \
+                    run as root user"
                 );
                 process::exit(1);
             }
@@ -190,7 +191,7 @@ fn handle_payload_from_frame_acquire_thread(
             }
             let e = s.elapsed().as_secs_f32();
             if e > 0.1 {
-                info!("socket send took {}s", e);
+                info!("socket send took {e}s");
             }
             if let Some(telemetry) = telemetry {
                 if let Some(prev_frame_num) = prev_frame_num {

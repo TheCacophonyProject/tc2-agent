@@ -68,11 +68,8 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 fs::create_dir(&debug_dir).unwrap_or_else(|_| {
                     panic!("Failed to create debug output directory {debug_dir}")
                 });
-                let output_path: String = format!(
-                    "{}/{}.raw",
-                    debug_dir,
-                    recording_date_time.format("%Y-%m-%d--%H-%M-%S")
-                );
+                let output_path: String =
+                    format!("{debug_dir}/{}.raw", recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
                 fs::write(&output_path, &audio_bytes).unwrap();
             }
 
@@ -142,7 +139,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 args.push("-f");
                 args.push("mp4");
                 args.push(&output_path);
-                info!("Saving AAC file with args {:#?}", args);
+                info!("Saving AAC file with args {args:#?}");
 
                 // Now transcode with ffmpeg – we create an aac stream in an m4a wrapper in order
                 // to support adding metadata tags.
@@ -155,7 +152,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 {
                     Ok(child) => child,
                     Err(e) => {
-                        error!("Failed to spawn ffmpeg process for {:?}: {}", output_path, e);
+                        error!("Failed to spawn ffmpeg process for {output_path:?}: {e}");
                         return;
                     }
                 };
@@ -179,7 +176,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 match cmd.wait() {
                     Ok(exit_status) => {
                         if exit_status.success() {
-                            info!("Saved AAC file {}", output_path);
+                            info!("Saved AAC file {output_path}");
                         } else {
                             let mut stderr = match cmd.stderr.take() {
                                 Some(stderr) => stderr,
@@ -191,20 +188,16 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                             let mut buffer = String::new();
                             let _ = stderr.read_to_string(&mut buffer);
                             error!(
-                                "Failed transcoding {} to AAC ffmpeg output {}",
-                                output_path, buffer
+                                "Failed transcoding {output_path} to AAC ffmpeg output {buffer}",
                             );
                         }
                     }
                     Err(e) => {
-                        error!(
-                            "Failed invoking ffmpeg to transcode {}, reason: {}",
-                            output_path, e
-                        );
+                        error!("Failed invoking ffmpeg to transcode {output_path}, reason: {e}",);
                     }
                 }
             } else {
-                error!("File {} already exists, discarding duplicate", output_path);
+                error!("File {output_path} already exists, discarding duplicate");
             }
         },
     );

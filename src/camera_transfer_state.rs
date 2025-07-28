@@ -91,7 +91,7 @@ pub fn enter_camera_transfer_loop(
 ) {
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
-    info!("Initialising SPI at {}Mhz", spi_speed_mhz);
+    info!("Initialising SPI at {spi_speed_mhz}Mhz");
     let mut spi = match Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3) {
         Ok(spi) => spi,
         Err(e) => {
@@ -283,7 +283,7 @@ pub fn enter_camera_transfer_loop(
                                 error!("Unable to set pi ping interrupt: {e}");
                                 process::exit(1);
                             }
-                            info!("Pin interrupts failed,trying again {}", e);
+                            info!("Pin interrupts failed, trying again {e}");
                             sleep(Duration::from_millis(100));
                         }
                     }
@@ -325,7 +325,7 @@ pub fn enter_camera_transfer_loop(
                     // Just log the *first* time the header integrity check fails in a session.
                     if !header_integrity_check_has_failed {
                         header_integrity_check_has_failed = true;
-                        warn!("Header integrity check failed {:?}", header_slice);
+                        warn!("Header integrity check failed {header_slice:?}");
                         // We still need to make sure we read out all the bytes?
                     }
 
@@ -356,7 +356,7 @@ pub fn enter_camera_transfer_loop(
                     //  spin in this state pretty aggressively.
                     match last_unknown_transfer_warning {
                         None => {
-                            warn!("unknown transfer type {}", transfer_type);
+                            warn!("unknown transfer type {transfer_type}");
                             last_unknown_transfer_warning = Some((transfer_type, Instant::now()))
                         }
                         Some((transfer_t, time)) => {
@@ -387,7 +387,7 @@ pub fn enter_camera_transfer_loop(
                     LittleEndian::write_u16(&mut return_payload_buf[6..8], crc);
 
                     if transfer_type == CAMERA_STARTUP_HANDSHAKE {
-                        info!("Got camera startup handshake {:?}", chunk);
+                        info!("Got camera startup handshake {chunk:?}");
                         // Write all the info we need about the device:
                         let force_offload_files_now =
                             pending_forced_offload_request.take().is_some();
@@ -461,9 +461,8 @@ pub fn enter_camera_transfer_loop(
                                     info!(
                                         "{num_files_to_offload} file(s) to offload \
                                             totalling {estimated_offload_mb}MB \
-                                            estimated offload time {:.2} mins. \
-                                            Events to offload {num_events_to_offload}",
-                                        estimated_offload_time_seconds
+                                            estimated offload time {estimated_offload_time_seconds:.2} mins. \
+                                            Events to offload {num_events_to_offload}"
                                     );
                                 } else if num_events_to_offload > 0 {
                                     info!("Events to offload {num_events_to_offload}");
@@ -499,8 +498,7 @@ pub fn enter_camera_transfer_loop(
                                         "Got thermal startup info: \
                                         radiometry enabled: {radiometry_enabled}, \
                                         lepton serial #{lepton_serial_number} \
-                                        recording mode {:?}",
-                                        recording_mode
+                                        recording mode {recording_mode:?}"
                                     );
                                 } else {
                                     info!("Got audio mode startup");
@@ -549,8 +547,7 @@ pub fn enter_camera_transfer_loop(
                                                 *alarm_time = event_payload as i64;
                                             } else {
                                                 warn!(
-                                                    "Wakeup alarm from event was invalid {}",
-                                                    event_payload
+                                                    "Wakeup alarm from event was invalid {event_payload}"
                                                 );
                                             }
                                         } else if let LoggerEventKind::SetThermalAlarm(alarm_time) =
@@ -562,8 +559,7 @@ pub fn enter_camera_transfer_loop(
                                                 *alarm_time = event_payload as i64;
                                             } else {
                                                 warn!(
-                                                    "Wakeup alarm from event was invalid {}",
-                                                    event_payload
+                                                    "Wakeup alarm from event was invalid {event_payload}"
                                                 );
                                             }
                                         } else if let LoggerEventKind::Rp2040MissedAudioAlarm(
@@ -576,8 +572,7 @@ pub fn enter_camera_transfer_loop(
                                                 *alarm_time = event_payload as i64;
                                             } else {
                                                 warn!(
-                                                    "Missed alarm from event was invalid {}",
-                                                    event_payload
+                                                    "Missed alarm from event was invalid {event_payload}"
                                                 );
                                             }
                                         } else if let LoggerEventKind::ToldRpiToWake(reason) =
@@ -589,8 +584,7 @@ pub fn enter_camera_transfer_loop(
                                                 *reason = wake_reason;
                                             } else {
                                                 warn!(
-                                                    "Told rpi to wake invalid reason {}",
-                                                    event_payload
+                                                    "Told rpi to wake invalid reason {event_payload}"
                                                 );
                                             }
                                         } else if matches!(
@@ -654,10 +648,10 @@ pub fn enter_camera_transfer_loop(
                                         let event = LoggerEvent::new(event_kind, event_timestamp);
                                         event.log(&mut dbus_conn, payload_json);
                                     } else {
-                                        warn!("Event had invalid timestamp {}", event_timestamp);
+                                        warn!("Event had invalid timestamp {event_timestamp}");
                                     }
                                 } else {
-                                    warn!("Unknown logger event kind {}", event_kind);
+                                    warn!("Unknown logger event kind {event_kind}");
                                 }
                             }
                             CAMERA_BEGIN_FILE_TRANSFER => {
@@ -688,11 +682,9 @@ pub fn enter_camera_transfer_loop(
                                             / Instant::now().duration_since(start).as_secs_f32()
                                             / (1024.0 * 1024.0);
                                         info!(
-                                            "Transferring part #{} {:?} for {} bytes, {}MB/s",
-                                            part_count,
+                                            "Transferring part #{part_count} {:?} for {} bytes, {megabytes_per_second}MB/s",
                                             Instant::now().duration_since(start),
                                             file.len() + chunk.len(),
-                                            megabytes_per_second
                                         );
                                     }
                                     part_count += 1;
@@ -729,10 +721,9 @@ pub fn enter_camera_transfer_loop(
                                         / Instant::now().duration_since(start).as_secs_f32()
                                         / (1024.0 * 1024.0);
                                     info!(
-                                        "End file transfer, took {:?} for {} bytes, {}MB/s",
+                                        "End file transfer, took {:?} for {} bytes, {megabytes_per_second}MB/s",
                                         Instant::now().duration_since(start),
                                         file.len() + chunk.len(),
-                                        megabytes_per_second
                                     );
                                     part_count = 0;
                                     file.extend_from_slice(chunk);
@@ -778,7 +769,7 @@ pub fn enter_camera_transfer_loop(
                             }
                             _ => {
                                 if num_bytes != 0 {
-                                    warn!("Unhandled transfer type, {:#x}", transfer_type)
+                                    warn!("Unhandled transfer type, {transfer_type:#x}")
                                 }
                             }
                         }
@@ -788,7 +779,7 @@ pub fn enter_camera_transfer_loop(
                 } else {
                     spi.read(&mut raw_read_buffer[2066..num_bytes + header_length])
                         .map_err(|e| {
-                            error!("SPI read error: {:?}", e);
+                            error!("SPI read error: {e:?}");
 
                             // TODO: Shutdown gracefully?
 
@@ -807,7 +798,7 @@ pub fn enter_camera_transfer_loop(
                     back.replace(Some(frame));
                     if !got_first_frame {
                         got_first_frame = true;
-                        info!("Got first frame from rp2040, got startup info {}", got_startup_info);
+                        info!("Got first frame from rp2040, got startup info {got_startup_info}");
                     }
                     // FIXME: Should is_recording bit only be set in high power mode?
                     // FIXME: Check this out.
@@ -855,12 +846,12 @@ fn maybe_make_test_audio_recording(
         let mut inner_recording_state = recording_state.clone();
         let _ = thread::spawn(move || {
             let dbus_session_path = get_system_bus_path().unwrap_or_else(|e| {
-                error!("Error getting system DBus: {}", e);
+                error!("Error getting system DBus: {e}");
                 process::exit(1);
             });
             match DuplexConn::connect_to_bus(dbus_session_path, true) {
                 Err(e) => {
-                    error!("Error connecting to system DBus: {}", e);
+                    error!("Error connecting to system DBus: {e}");
                     process::exit(1);
                 }
                 Ok(mut conn) => {
@@ -920,12 +911,12 @@ fn maybe_make_test_thermal_recording(
         let mut inner_recording_state = recording_state.clone();
         let _ = thread::spawn(move || {
             let dbus_session_path = get_system_bus_path().unwrap_or_else(|e| {
-                error!("Error getting system DBus: {}", e);
+                error!("Error getting system DBus: {e}");
                 process::exit(1);
             });
             match DuplexConn::connect_to_bus(dbus_session_path, true) {
                 Err(e) => {
-                    error!("Error connecting to system DBus: {}", e);
+                    error!("Error connecting to system DBus: {e}");
                     process::exit(1);
                 }
                 Ok(mut conn) => {

@@ -49,8 +49,9 @@ pub fn dbus_attiny_command(
                     return Err("Max attempts reached: failed to execute i2c dbus command");
                 }
                 error!(
-                    "Attempt to call command {} with value {:?} failed. {}/{}: {}. Retrying in {:?}...",
-                    command, value, attempt, max_attempts, e, retry_delay
+                    "Attempt to call command {command} \
+                    with value {value:?} failed. {attempt}/{max_attempts}: {e}. \
+                    Retrying in {retry_delay:?}...",
                 );
                 std::thread::sleep(retry_delay);
             }
@@ -169,15 +170,15 @@ pub fn exit_if_attiny_version_is_not_as_expected(dbus_conn: &mut DuplexConn) {
             EXPECTED_ATTINY_FIRMWARE_VERSION => {}
             _ => {
                 error!(
-                    "Mismatched attiny firmware version, expected {}, got {}",
-                    EXPECTED_ATTINY_FIRMWARE_VERSION, version
+                    "Mismatched attiny firmware version, \
+                    expected {EXPECTED_ATTINY_FIRMWARE_VERSION}, got {version}",
                 );
                 exit_cleanly(dbus_conn);
                 process::exit(1);
             }
         },
         Err(msg) => {
-            error!("{}", msg);
+            error!("{msg}");
             exit_cleanly(dbus_conn);
             process::exit(1);
         }

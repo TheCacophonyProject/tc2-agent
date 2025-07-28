@@ -236,7 +236,7 @@ pub fn decode_cptv2_header(i: &[u8]) -> nom::IResult<&[u8], CptvHeader> {
                 meta.has_background_frame = has_background_frame == 1;
             }
             _ => {
-                warn!("Unknown header field type {}, {}", field, field_length);
+                warn!("Unknown header field type {field}, {field_length}");
             }
         }
     }

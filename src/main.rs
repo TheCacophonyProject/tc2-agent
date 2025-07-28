@@ -1,3 +1,4 @@
+#![warn(clippy::all)]
 extern crate core;
 
 mod camera_transfer_state;
@@ -86,8 +87,8 @@ fn check_for_sufficient_free_disk_space() {
         if mb_remaining < 1000 {
             if !warned_once {
                 warn!(
-                    "Insufficient disk space remaining: ({}MB/{}MB), sleeping 1 minute before trying again.",
-                    mb_remaining, mb_total
+                    "Insufficient disk space remaining: ({mb_remaining}MB/{mb_total}MB), \
+                    sleeping 1 minute before trying again.",
                 );
                 warned_once = true;
             }
@@ -124,15 +125,15 @@ fn main() {
     }
 
     let session_path = get_system_bus_path().unwrap_or_else(|e| {
-        error!("Error getting system DBus: {}", e);
+        error!("Error getting system DBus: {e}");
         process::exit(1);
     });
     let mut dbus_conn = DuplexConn::connect_to_bus(session_path, true).unwrap_or_else(|e| {
-        error!("Error connecting to system DBus: {}", e);
+        error!("Error connecting to system DBus: {e}");
         process::exit(1);
     });
     let _unique_name: String = dbus_conn.send_hello(Timeout::Infinite).unwrap_or_else(|e| {
-        error!("Error getting handshake with system DBus: {}", e);
+        error!("Error getting handshake with system DBus: {e}");
         process::exit(1);
     });
 
@@ -216,7 +217,7 @@ fn main() {
         .unwrap();
 
     if let Err(e) = handle.join() {
-        error!("Thread panicked: {:?}", e);
+        error!("Thread panicked: {e:?}");
         process::exit(1);
     }
 }

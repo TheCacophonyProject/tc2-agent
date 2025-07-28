@@ -171,11 +171,11 @@ pub fn setup_dbus_managementd_recording_service(
         move |_| {
             let mut dbus_conn =
                 DuplexConn::connect_to_bus(session_path, false).unwrap_or_else(|e| {
-                    error!("Error connecting to system DBus: {}", e);
+                    error!("Error connecting to system DBus: {e}");
                     process::exit(1);
                 });
             let _name = dbus_conn.send_hello(Timeout::Infinite).unwrap_or_else(|e| {
-                error!("Error getting handshake with system DBus: {}", e);
+                error!("Error getting handshake with system DBus: {e}");
                 process::exit(1);
             });
             dbus_conn
