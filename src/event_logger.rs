@@ -1,8 +1,8 @@
+use byteorder::{ByteOrder, LittleEndian};
 use rustbus::{DuplexConn, MessageBuilder};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
-
 pub enum WakeReason {
     Unknown = 0,
     ThermalOffload = 1,
@@ -59,6 +59,63 @@ impl From<WakeReason> for u8 {
     }
 }
 
+#[repr(u8)]
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum FileType {
+    CptvScheduled = 1 << 0,
+    CptvUserRequested = 1 << 1,
+    CptvStartup = 1 << 2,
+    CptvShutdown = 1 << 3,
+    AudioScheduled = 1 << 4,
+    AudioUserRequested = 1 << 5,
+    AudioStartup = 1 << 6,
+    AudioShutdown = 1 << 7,
+}
+
+impl TryFrom<u8> for FileType {
+    type Error = &'static str;
+    fn try_from(value: u8) -> Result<Self, &'static str> {
+        match value {
+            0b0000_0001 => Ok(FileType::CptvScheduled),
+            0b0000_0010 => Ok(FileType::CptvUserRequested),
+            0b0000_0100 => Ok(FileType::CptvStartup),
+            0b0000_1000 => Ok(FileType::CptvShutdown),
+            0b0001_0000 => Ok(FileType::AudioScheduled),
+            0b0010_0000 => Ok(FileType::AudioUserRequested),
+            0b0100_0000 => Ok(FileType::AudioStartup),
+            0b1000_0000 => Ok(FileType::AudioShutdown),
+            _ => Err("Unknown FileType"),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct DiscardedRecordingInfo {
+    pub recording_type: FileType,
+    pub num_frames: u16,
+    pub seconds_since_last_ffc: u16,
+}
+
+impl DiscardedRecordingInfo {
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    #[allow(dead_code)]
+    fn as_bytes(&self) -> [u8; 8] {
+        let mut bytes = [0u8; 8];
+        bytes[0] = self.recording_type as u8;
+        LittleEndian::write_u16(&mut bytes[1..=2], self.num_frames);
+        LittleEndian::write_u16(&mut bytes[3..=4], self.seconds_since_last_ffc);
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        DiscardedRecordingInfo {
+            recording_type: FileType::try_from(bytes[0]).unwrap_or(FileType::CptvScheduled),
+            num_frames: LittleEndian::read_u16(&bytes[1..=2]),
+            seconds_since_last_ffc: LittleEndian::read_u16(&bytes[3..=4]),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum LoggerEventKind {
     Rp2040Sleep,
@@ -74,7 +131,7 @@ pub enum LoggerEventKind {
     LostSync,
     SetAudioAlarm(i64), // Also has a time that the alarm is set for as additional data?  Events can be bigger
     GotPowerOnTimeout,
-    WouldDiscardAsFalsePositive,
+    WouldDiscardAsFalsePositive(DiscardedRecordingInfo),
     StartedGettingFrames,
     FlashStorageNearlyFull,
     Rp2040WokenByAlarm,
@@ -82,7 +139,7 @@ pub enum LoggerEventKind {
     AttinyCommError,
     Rp2040MissedAudioAlarm(i64),
     AudioRecordingFailed,
-    ErasePartialOrCorruptRecording,
+    ErasePartialOrCorruptRecording(DiscardedRecordingInfo),
     StartedAudioRecording,
     ThermalMode,
     AudioMode,
@@ -114,7 +171,7 @@ impl From<LoggerEventKind> for u16 {
             LostSync => 11,
             SetAudioAlarm(_) => 12,
             GotPowerOnTimeout => 13,
-            WouldDiscardAsFalsePositive => 14,
+            WouldDiscardAsFalsePositive(_) => 14,
             StartedGettingFrames => 15,
             FlashStorageNearlyFull => 16,
             Rp2040WokenByAlarm => 17,
@@ -122,7 +179,7 @@ impl From<LoggerEventKind> for u16 {
             AttinyCommError => 19,
             Rp2040MissedAudioAlarm(_) => 20,
             AudioRecordingFailed => 21,
-            ErasePartialOrCorruptRecording => 22,
+            ErasePartialOrCorruptRecording(_) => 22,
             StartedAudioRecording => 23,
             ThermalMode => 24,
             AudioMode => 25,
@@ -158,7 +215,7 @@ impl TryFrom<u16> for LoggerEventKind {
             11 => Ok(LostSync),
             12 => Ok(SetAudioAlarm(0)),
             13 => Ok(GotPowerOnTimeout),
-            14 => Ok(WouldDiscardAsFalsePositive),
+            14 => Ok(WouldDiscardAsFalsePositive(DiscardedRecordingInfo::from_bytes(&[0u8; 8]))),
             15 => Ok(StartedGettingFrames),
             16 => Ok(FlashStorageNearlyFull),
             17 => Ok(Rp2040WokenByAlarm),
@@ -166,7 +223,7 @@ impl TryFrom<u16> for LoggerEventKind {
             19 => Ok(AttinyCommError),
             20 => Ok(Rp2040MissedAudioAlarm(0)),
             21 => Ok(AudioRecordingFailed),
-            22 => Ok(ErasePartialOrCorruptRecording),
+            22 => Ok(ErasePartialOrCorruptRecording(DiscardedRecordingInfo::from_bytes(&[0u8; 8]))),
             23 => Ok(StartedAudioRecording),
             24 => Ok(ThermalMode),
             25 => Ok(AudioMode),
@@ -219,6 +276,20 @@ impl LoggerEvent {
         } else if let LoggerEventKind::LostFrames(lost_frames) = self.event {
             call.body.push_param(format!(r#"{{ "lost-frames": "{lost_frames}" }}"#)).unwrap();
             call.body.push_param("LostFrames").unwrap();
+        } else if let LoggerEventKind::ErasePartialOrCorruptRecording(discard_info) = self.event {
+            let recording_type = discard_info.recording_type;
+            call.body
+                .push_param(format!(r#"{{ "recording-type": "{recording_type:?}" }}"#))
+                .unwrap();
+            call.body.push_param("ErasePartialOrCorruptRecording").unwrap();
+        } else if let LoggerEventKind::WouldDiscardAsFalsePositive(discard_info) = self.event {
+            let recording_type = discard_info.recording_type;
+            let num_frames = discard_info.num_frames;
+            let seconds_since_last_ffc = discard_info.seconds_since_last_ffc;
+            call.body
+                .push_param(format!(r#"{{ "recording-type": "{recording_type:?}", "num_frames": "{num_frames}", "seconds_since_last_ffc": "{seconds_since_last_ffc}" }}"#))
+                .unwrap();
+            call.body.push_param("WouldDiscardAsFalsePositive").unwrap();
         } else {
             call.body.push_param(json_payload.unwrap_or(String::from("{}"))).unwrap();
             call.body.push_param(format!("{:?}", self.event)).unwrap();

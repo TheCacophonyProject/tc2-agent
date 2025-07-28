@@ -1,4 +1,6 @@
-use crate::dbus_attiny_i2c::{dbus_write_attiny_command, read_tc2_agent_state};
+use crate::dbus_attiny_i2c::{
+    ATTINY_REG_TC2_AGENT_STATE, dbus_write_attiny_command, read_tc2_agent_state,
+};
 use crate::dbus_managementd::TestRecordingStatus;
 use log::{error, info};
 use rustbus::DuplexConn;
@@ -215,6 +217,12 @@ pub struct RecordingState {
 
     // Set whenever a forced offload of files from the rp2040 is requested.
     force_offload_request_state: Arc<AtomicBool>,
+
+    // Set whenever a managementd wants us to defer file offloads and prioritise frame serving.
+    prioritise_frames_request_state: Arc<AtomicBool>,
+
+    // Set whenever a managementd wants to cancel an in-progress file offload session.
+    cancel_offload_request_state: Arc<AtomicBool>,
 }
 
 impl RecordingState {
@@ -234,6 +242,8 @@ impl RecordingState {
                 remaining_events: AtomicU32::new(0),
             }),
             force_offload_request_state: Arc::new(AtomicBool::new(false)),
+            prioritise_frames_request_state: Arc::new(AtomicBool::new(false)),
+            cancel_offload_request_state: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -252,6 +262,30 @@ impl RecordingState {
 
     pub fn request_forced_file_offload(&self) {
         self.force_offload_request_state.store(true, Ordering::Relaxed);
+    }
+
+    pub fn request_offload_cancellation(&self) {
+        self.cancel_offload_request_state.store(true, Ordering::Relaxed);
+    }
+
+    pub fn forced_file_offload_request_sent(&self) {
+        self.force_offload_request_state.store(false, Ordering::Relaxed);
+    }
+
+    pub fn forced_file_offload_requested(&self) -> bool {
+        self.force_offload_request_state.load(Ordering::Relaxed)
+    }
+
+    pub fn request_prioritise_frames(&self) {
+        self.prioritise_frames_request_state.store(true, Ordering::Relaxed);
+    }
+
+    pub fn prioritise_frames_request_sent(&self) {
+        self.prioritise_frames_request_state.store(false, Ordering::Relaxed);
+    }
+
+    pub fn prioritise_frames_requested(&self) -> bool {
+        self.prioritise_frames_request_state.load(Ordering::Relaxed)
     }
 
     pub fn get_offload_status(&self) -> (bool, u32, u32, u32, u32, u32, u32) {
@@ -550,7 +584,7 @@ impl RecordingState {
     pub fn merge_state_to_attiny(&mut self, state_bits_to_set: u8, conn: &mut DuplexConn) {
         let state = self.sync_state_from_attiny(conn);
         let new_state = state | state_bits_to_set;
-        dbus_write_attiny_command(conn, 0x07, new_state)
+        dbus_write_attiny_command(conn, ATTINY_REG_TC2_AGENT_STATE, new_state)
             .map_err(|msg: &str| -> Result<(), String> {
                 error!("{}", msg);
                 process::exit(1);
@@ -589,6 +623,19 @@ impl RecordingState {
             self.audio_test_recording_state_inner
                 .store(TestRecordingState::Rp2040Requested as u8, Ordering::Relaxed);
             true
+        }
+    }
+
+    pub fn cancel_offload_session(&mut self, conn: &mut DuplexConn) {
+        if self.cancel_offload_request_state.load(Ordering::Relaxed) {
+            self.sync_state_from_attiny(conn);
+            if self.is_recording() {
+                info!("Requested offload cancellation, but rp2040 is already recording");
+            } else {
+                info!("Cancel offload");
+                self.merge_state_to_attiny(!tc2_agent_state::OFFLOAD, conn);
+                self.cancel_offload_request_state.store(false, Ordering::Relaxed);
+            }
         }
     }
 

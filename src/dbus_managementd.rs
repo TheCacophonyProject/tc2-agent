@@ -121,14 +121,29 @@ fn managementd_handler(
             Ok(Some(response))
         }
         "canceloffload" => {
-            let response = msg.dynheader.make_response();
-            // TODO: Make this work
+            let mut response = msg.dynheader.make_response();
+            // This needs to unset the offload bit in tc2-agent state,
+            // And then the rp2040 should pick this up and cancel offloading
+            // and offloads.
+            if recording_state_ctx.is_offloading() {
+                recording_state_ctx.request_offload_cancellation();
+                response.body.push_param("Requested offload cancellation")?;
+            } else {
+                response.body.push_param("No offload in progress")?;
+            }
+
             Ok(Some(response))
         }
         "forcerp2040offload" => {
             let mut response = msg.dynheader.make_response();
             recording_state_ctx.request_forced_file_offload();
             response.body.push_param("Requested offload of files from rp2040")?;
+            Ok(Some(response))
+        }
+        "prioritiseframeserve" => {
+            let mut response = msg.dynheader.make_response();
+            recording_state_ctx.request_prioritise_frames();
+            response.body.push_param("Requested priority frame serving from rp2040")?;
             Ok(Some(response))
         }
         _ => Ok(None),

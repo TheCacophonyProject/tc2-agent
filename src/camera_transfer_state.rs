@@ -2,7 +2,7 @@ use crate::cptv_frame_dispatch::FRAME_BUFFER;
 use crate::dbus_attiny_i2c::{exit_cleanly, process_interrupted};
 
 use crate::device_config::{DeviceConfig, check_for_device_config_changes};
-use crate::event_logger::{LoggerEvent, LoggerEventKind, WakeReason};
+use crate::event_logger::{DiscardedRecordingInfo, LoggerEvent, LoggerEventKind, WakeReason};
 use crate::frame_socket_server::FrameSocketServerMessage;
 use crate::program_rp2040::program_rp2040;
 use crate::recording_state::RecordingMode;
@@ -168,6 +168,8 @@ pub fn enter_camera_transfer_loop(
     let mut is_thermal_device = device_config.is_thermal_device();
 
     let mut last_unknown_transfer_warning = None;
+    let mut pending_forced_offload_request = None;
+    let mut pending_prioritise_frames_request = None;
 
     info!("Waiting for messages from rp2040");
     'transfer: loop {
@@ -178,6 +180,36 @@ pub fn enter_camera_transfer_loop(
             &mut is_thermal_device,
             &mut rp2040_needs_reset,
         );
+
+        // Check if we need to force offload
+        if recording_state.forced_file_offload_requested()
+            && !recording_state.is_recording()
+            && pending_forced_offload_request.is_none()
+        {
+            pending_forced_offload_request = Some(());
+            recording_state.forced_file_offload_request_sent();
+            let _ = restart_rp2040_channel_tx.send(true);
+            info!("Telling rp2040 to force file offload");
+        }
+        // Check if we need to cancel an in-progress offload
+        maybe_cancel_in_progress_file_offload_session(&mut dbus_conn, &mut recording_state);
+        if is_thermal_device {
+            // Check if we need to prioritise frame serving
+            if recording_state.prioritise_frames_requested()
+                && !recording_state.is_recording()
+                && pending_prioritise_frames_request.is_none()
+            {
+                pending_prioritise_frames_request = Some(());
+                recording_state.prioritise_frames_request_sent();
+                let _ = restart_rp2040_channel_tx.send(true);
+                info!("Telling rp2040 to prioritise frame serving");
+            }
+            maybe_make_test_thermal_recording(
+                &mut dbus_conn,
+                &restart_rp2040_channel_tx,
+                &mut recording_state,
+            );
+        }
         if is_audio_device {
             maybe_make_test_audio_recording(
                 &mut dbus_conn,
@@ -185,13 +217,7 @@ pub fn enter_camera_transfer_loop(
                 &mut recording_state,
             );
         }
-        if is_thermal_device {
-            maybe_make_test_thermal_recording(
-                &mut dbus_conn,
-                &restart_rp2040_channel_tx,
-                &mut recording_state,
-            );
-        }
+
         if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
             warn!("Requesting reset of rp2040 at {}", date.with_timezone(&Pacific__Auckland));
@@ -363,11 +389,15 @@ pub fn enter_camera_transfer_loop(
                     if transfer_type == CAMERA_STARTUP_HANDSHAKE {
                         info!("Got camera startup handshake {:?}", chunk);
                         // Write all the info we need about the device:
-                        // TODO: Set byte/bit to indicate offload preference.
-                        let prefer_not_to_offload_files_now = false;
+                        let force_offload_files_now =
+                            pending_forced_offload_request.take().is_some();
+                        let prefer_not_to_offload_files_now =
+                            pending_prioritise_frames_request.take().is_some();
+
                         device_config.write_to_slice(
                             &mut return_payload_buf[8..],
                             prefer_not_to_offload_files_now,
+                            force_offload_files_now,
                         );
                         info!("Sending camera device config to rp2040");
                     } else if transfer_type == CAMERA_GET_MOTION_DETECTION_MASK {
@@ -503,7 +533,8 @@ pub fn enter_camera_transfer_loop(
                             CAMERA_SEND_LOGGER_EVENT => {
                                 let event_kind = LittleEndian::read_u16(&chunk[0..2]);
                                 let mut event_timestamp = LittleEndian::read_i64(&chunk[2..2 + 8]);
-                                let event_payload = LittleEndian::read_u64(&chunk[10..18]);
+                                let payload_bytes = &chunk[10..18];
+                                let event_payload = LittleEndian::read_u64(payload_bytes);
                                 if let Ok(mut event_kind) = LoggerEventKind::try_from(event_kind) {
                                     recording_state.completed_event_offload();
                                     if let Some(mut time) =
@@ -575,6 +606,19 @@ pub fn enter_camera_transfer_loop(
                                             &mut event_kind
                                         {
                                             *lost_frames = event_payload;
+                                        } else if let LoggerEventKind::ErasePartialOrCorruptRecording(
+                                                discard_info
+                                            ) = &mut event_kind
+                                         {
+                                            *discard_info =
+                                                DiscardedRecordingInfo::from_bytes(payload_bytes);
+                                        }
+                                        else if let LoggerEventKind::WouldDiscardAsFalsePositive(
+                                            discard_info
+                                        ) = &mut event_kind
+                                        {
+                                            *discard_info =
+                                                DiscardedRecordingInfo::from_bytes(payload_bytes);
                                         }
                                         let payload_json = if let LoggerEventKind::SavedNewConfig =
                                             event_kind
@@ -798,8 +842,6 @@ fn maybe_make_test_audio_recording(
     restart_rp2040_channel_tx: &Sender<bool>,
     recording_state: &mut RecordingState,
 ) {
-    // FIXME: Is this correct?  Looks like the flag to take a test recording would just be pending?
-
     // If the rp2040 is making a recording, and a user test audio recording was requested,
     // do nothing.
 
@@ -865,8 +907,6 @@ fn maybe_make_test_thermal_recording(
     restart_rp2040_channel_tx: &Sender<bool>,
     recording_state: &mut RecordingState,
 ) {
-    // FIXME: Is this correct?  Looks like the flag to take a test recording would just be pending?
-
     // If the rp2040 is making a recording, and a user test thermal recording was requested,
     // do nothing.
 
@@ -925,4 +965,11 @@ fn maybe_make_test_thermal_recording(
             }
         });
     }
+}
+
+fn maybe_cancel_in_progress_file_offload_session(
+    dbus_conn: &mut DuplexConn,
+    recording_state: &mut RecordingState,
+) {
+    recording_state.cancel_offload_session(dbus_conn);
 }

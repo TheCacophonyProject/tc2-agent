@@ -831,7 +831,12 @@ impl DeviceConfig {
         self.audio_info.audio_mode != AudioMode::AudioOnly
     }
 
-    pub fn write_to_slice(&self, output: &mut [u8], prefer_not_to_offload_files_now: bool) {
+    pub fn write_to_slice(
+        &self,
+        output: &mut [u8],
+        prefer_not_to_offload_files_now: bool,
+        force_offload_files_now: bool,
+    ) {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
@@ -876,6 +881,7 @@ impl DeviceConfig {
         buf.write_all(&device_name[0..device_name_length]).unwrap();
         buf.write_u32::<LittleEndian>(self.audio_info.audio_seed).unwrap();
         buf.write_u8(if prefer_not_to_offload_files_now { 5 } else { 0 }).unwrap();
+        buf.write_u8(if force_offload_files_now { 1 } else { 0 }).unwrap();
     }
 }
 
