@@ -41,8 +41,7 @@ pub fn check_if_rp2040_needs_programming() {
                 Err(e) => {
                     error!(
                         "Failed to remove 'program_rp2040' \
-                        file after successful reprogram: {}",
-                        e
+                        file after successful reprogram: {e}"
                     );
                     process::exit(1);
                 }

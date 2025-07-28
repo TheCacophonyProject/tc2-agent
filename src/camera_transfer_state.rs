@@ -696,6 +696,7 @@ pub fn enter_camera_transfer_loop(
                                         },
                                     );
                                 } else {
+                                    // FIXME: This might actually break forced offload.
                                     warn!("Trying to continue file with no open file");
                                     if !got_startup_info
                                         && recording_state.safe_to_restart_rp2040(&mut dbus_conn)

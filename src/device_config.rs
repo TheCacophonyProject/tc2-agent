@@ -650,7 +650,7 @@ impl DeviceConfig {
                     // TODO: Event log error?
                     process::exit(1);
                 }
-                info!("Got config {:?}", device_config);
+                info!("Got config {device_config:?}");
                 if device_config.audio_info.audio_mode != AudioMode::AudioOnly {
                     let inside_recording_window =
                         device_config.time_is_in_recording_window(&Utc::now().naive_utc());
@@ -914,7 +914,7 @@ pub fn watch_local_config_file_changes(
         Err(e) => error!("file watch error for /etc/cacophony/config.toml: {e:?}"),
     })
     .map_err(|e| {
-        error!("{}", e);
+        error!("{e}");
         process::exit(1);
     })
     .unwrap();
