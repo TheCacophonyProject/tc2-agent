@@ -10,14 +10,10 @@ pub fn program_rp2040() -> io::Result<()> {
     let hash = sha256::digest(&bytes);
     let expected_hash = EXPECTED_RP2040_FIRMWARE_HASH.trim();
     if hash != expected_hash {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "rp2040-firmware.elf does not match \
-        expected hash. Expected: '{}', Calculated: '{}'",
-                expected_hash, hash
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "rp2040-firmware.elf does not match \
+        expected hash. Expected: '{expected_hash}', Calculated: '{hash}'",
+        )));
     }
     let status = Command::new("tc2-hat-rp2040")
         .arg("--elf")
@@ -25,7 +21,7 @@ pub fn program_rp2040() -> io::Result<()> {
         .status()?;
 
     if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "Command execution failed"));
+        return Err(io::Error::other("Command execution failed"));
     }
 
     info!("Updated RP2040 firmware.");
@@ -45,8 +41,7 @@ pub fn check_if_rp2040_needs_programming() {
                 Err(e) => {
                     error!(
                         "Failed to remove 'program_rp2040' \
-                        file after successful reprogram: {}",
-                        e
+                        file after successful reprogram: {e}"
                     );
                     process::exit(1);
                 }

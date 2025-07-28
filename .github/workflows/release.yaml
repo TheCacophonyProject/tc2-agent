@@ -24,8 +24,9 @@ jobs:
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: 1.81.0
+          toolchain: 1.88.0
           override: true
+          components: rustfmt, clippy
 
       - name: Display Rust and Cargo version
         run: |
@@ -66,6 +67,12 @@ jobs:
 
       - name: Build the project
         run: cargo build --release --target=aarch64-unknown-linux-musl
+
+      - name: Run fmt
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Create Debian package
         run: cargo deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb

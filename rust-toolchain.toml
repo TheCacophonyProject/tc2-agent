@@ -1,0 +1,3 @@
+[toolchain]
+channel = "1.88.0"  # If changing this then also change it in .github/workflows/release.yaml rust toolchain
+targets = ["aarch64-unknown-linux-musl"]

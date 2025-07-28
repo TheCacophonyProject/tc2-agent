@@ -5,10 +5,11 @@ use log::error;
 use rustbus::connection::Timeout;
 use rustbus::{DuplexConn, MessageBuilder, MessageType};
 use std::process;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-
+pub const ATTINY_REG_TC2_AGENT_STATE: u8 = 0x07;
+pub const ATTINY_REG_VERSION: u8 = 0x01;
 const CRC_AUG_CCITT: Algorithm<u16> = Algorithm {
     width: 16,
     poly: 0x1021,
@@ -48,8 +49,9 @@ pub fn dbus_attiny_command(
                     return Err("Max attempts reached: failed to execute i2c dbus command");
                 }
                 error!(
-                    "Attempt {}/{} failed: {}. Retrying in {:?}...",
-                    attempt, max_attempts, e, retry_delay
+                    "Attempt to call command {command} \
+                    with value {value:?} failed. {attempt}/{max_attempts}: {e}. \
+                    Retrying in {retry_delay:?}...",
                 );
                 std::thread::sleep(retry_delay);
             }
@@ -104,11 +106,7 @@ pub fn dbus_attiny_command_attempt(
                             let response = &message.get_buf()[4..][0..3];
                             let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
                             let received_crc = BigEndian::read_u16(&response[1..=2]);
-                            if received_crc != crc {
-                                Err("CRC Mismatch")
-                            } else {
-                                Ok(response[0])
-                            }
+                            if received_crc != crc { Err("CRC Mismatch") } else { Ok(response[0]) }
                         } else {
                             // Check that the written value was actually written correctly.
                             let set_value = dbus_attiny_command(conn, command, None);
@@ -141,8 +139,10 @@ pub fn dbus_attiny_command_attempt(
     }
 }
 
-pub fn exit_cleanly(conn: &mut DuplexConn) {
-    let _ = dbus_write_attiny_command(conn, 0x07, 0x00);
+pub fn exit_cleanly(_conn: &mut DuplexConn) {
+    // NOTE: No longer sure this is correct.  If pi goes to sleep while rp2040 is doing its
+    //  thing, this could put the rp2040 in a weird state.
+    // let _ = dbus_write_attiny_command(conn, ATTINY_REG_TC2_AGENT_STATE, 0x00);
 }
 
 pub fn process_interrupted(term: &Arc<AtomicBool>, conn: &mut DuplexConn) -> bool {
@@ -156,11 +156,11 @@ pub fn process_interrupted(term: &Arc<AtomicBool>, conn: &mut DuplexConn) -> boo
 }
 
 pub fn read_tc2_agent_state(conn: &mut DuplexConn) -> Result<u8, &'static str> {
-    dbus_read_attiny_command(conn, 0x07)
+    dbus_read_attiny_command(conn, ATTINY_REG_TC2_AGENT_STATE)
 }
 
 pub fn read_attiny_firmware_version(conn: &mut DuplexConn) -> Result<u8, &'static str> {
-    dbus_read_attiny_command(conn, 0x01)
+    dbus_read_attiny_command(conn, ATTINY_REG_VERSION)
 }
 
 pub fn exit_if_attiny_version_is_not_as_expected(dbus_conn: &mut DuplexConn) {
@@ -170,15 +170,15 @@ pub fn exit_if_attiny_version_is_not_as_expected(dbus_conn: &mut DuplexConn) {
             EXPECTED_ATTINY_FIRMWARE_VERSION => {}
             _ => {
                 error!(
-                    "Mismatched attiny firmware version, expected {}, got {}",
-                    EXPECTED_ATTINY_FIRMWARE_VERSION, version
+                    "Mismatched attiny firmware version, \
+                    expected {EXPECTED_ATTINY_FIRMWARE_VERSION}, got {version}",
                 );
                 exit_cleanly(dbus_conn);
                 process::exit(1);
             }
         },
         Err(msg) => {
-            error!("{}", msg);
+            error!("{msg}");
             exit_cleanly(dbus_conn);
             process::exit(1);
         }

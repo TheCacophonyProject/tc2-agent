@@ -2,7 +2,7 @@ use flate2::read::MultiGzDecoder;
 use log::warn;
 use nom::bytes::streaming::{tag, take};
 use nom::error::{ContextError, ErrorKind};
-use nom::number::streaming::{le_f32, le_u16, le_u32, le_u64, le_u8};
+use nom::number::streaming::{le_f32, le_u8, le_u16, le_u32, le_u64};
 use std::error::Error;
 use std::io::Read;
 
@@ -67,9 +67,10 @@ impl Cptv2Header {
     }
 }
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum CptvHeader {
     #[allow(unused)]
-    UNINITIALISED,
+    Uninitialised,
     V2(Cptv2Header),
 }
 
@@ -235,7 +236,7 @@ pub fn decode_cptv2_header(i: &[u8]) -> nom::IResult<&[u8], CptvHeader> {
                 meta.has_background_frame = has_background_frame == 1;
             }
             _ => {
-                warn!("Unknown header field type {}, {}", field, field_length);
+                warn!("Unknown header field type {field}, {field_length}");
             }
         }
     }
@@ -272,7 +273,7 @@ pub fn decode_cptv_header_streaming(cptv_bytes: &[u8]) -> Result<CptvHeader, Box
                     unzipped.extend_from_slice(&buffer[0..read]);
                 }
                 nom::Err::Failure(e) | nom::Err::Error(e) => {
-                    return Err(format!("Parse error, not a valid CPTV file ({:?})", e.code))?
+                    Err(format!("Parse error, not a valid CPTV file ({:?})", e.code))?;
                 }
             },
         }
