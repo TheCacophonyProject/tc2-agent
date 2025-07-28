@@ -581,20 +581,31 @@ impl RecordingState {
             || state == TestRecordingState::LongTestRecordingRequested as u8
     }
 
-    pub fn merge_state_to_attiny(&mut self, state_bits_to_set: u8, conn: &mut DuplexConn) {
-        let state = self.sync_state_from_attiny(conn);
-        let new_state = state | state_bits_to_set;
-        dbus_write_attiny_command(conn, ATTINY_REG_TC2_AGENT_STATE, new_state)
+    pub fn merge_state_to_attiny(
+        &mut self,
+        state_bits_to_set: Option<u8>,
+        state_bits_to_unset: Option<u8>,
+        conn: &mut DuplexConn,
+    ) {
+        let mut state = self.sync_state_from_attiny(conn);
+        if let Some(state_bits_to_set) = state_bits_to_set {
+            state |= state_bits_to_set
+        }
+        if let Some(state_bits_to_unset) = state_bits_to_unset {
+            state &= !state_bits_to_unset;
+        }
+        self.set_state(state);
+        dbus_write_attiny_command(conn, ATTINY_REG_TC2_AGENT_STATE, state)
             .map_err(|msg: &str| -> Result<(), String> {
                 error!("{msg}");
                 process::exit(1);
             })
             .ok();
-        self.set_state(new_state);
+        self.sync_state_from_attiny(conn);
     }
 
     pub fn set_ready(&mut self, conn: &mut DuplexConn) {
-        self.merge_state_to_attiny(tc2_agent_state::READY, conn);
+        self.merge_state_to_attiny(Some(tc2_agent_state::READY), None, conn);
     }
 
     pub fn safe_to_restart_rp2040(&mut self, conn: &mut DuplexConn) -> bool {
@@ -611,12 +622,14 @@ impl RecordingState {
             let state: u8 = self.audio_test_recording_state_inner.load(Ordering::Relaxed);
             if state == TestRecordingState::ShortTestRecordingRequested as u8 {
                 self.merge_state_to_attiny(
-                    tc2_agent_state::AUDIO_MODE | tc2_agent_state::SHORT_TEST_RECORDING,
+                    Some(tc2_agent_state::AUDIO_MODE | tc2_agent_state::SHORT_TEST_RECORDING),
+                    None,
                     conn,
                 );
             } else if state == TestRecordingState::LongTestRecordingRequested as u8 {
                 self.merge_state_to_attiny(
-                    tc2_agent_state::AUDIO_MODE | tc2_agent_state::LONG_TEST_RECORDING,
+                    Some(tc2_agent_state::AUDIO_MODE | tc2_agent_state::LONG_TEST_RECORDING),
+                    None,
                     conn,
                 );
             }
@@ -633,9 +646,9 @@ impl RecordingState {
                 info!("Requested offload cancellation, but rp2040 is already recording");
             } else {
                 info!("Cancel offload");
-                self.merge_state_to_attiny(!tc2_agent_state::OFFLOAD, conn);
-                self.cancel_offload_request_state.store(false, Ordering::Relaxed);
+                self.merge_state_to_attiny(None, Some(tc2_agent_state::OFFLOAD), conn);
             }
+            self.cancel_offload_request_state.store(false, Ordering::Relaxed);
         }
     }
 
@@ -649,13 +662,15 @@ impl RecordingState {
             if state == TestRecordingState::ShortTestRecordingRequested as u8 {
                 info!("Request short test thermal recording");
                 self.merge_state_to_attiny(
-                    tc2_agent_state::THERMAL_MODE | tc2_agent_state::SHORT_TEST_RECORDING,
+                    Some(tc2_agent_state::THERMAL_MODE | tc2_agent_state::SHORT_TEST_RECORDING),
+                    None,
                     conn,
                 );
             } else if state == TestRecordingState::LongTestRecordingRequested as u8 {
                 info!("Request long test thermal recording");
                 self.merge_state_to_attiny(
-                    tc2_agent_state::THERMAL_MODE | tc2_agent_state::LONG_TEST_RECORDING,
+                    Some(tc2_agent_state::THERMAL_MODE | tc2_agent_state::LONG_TEST_RECORDING),
+                    None,
                     conn,
                 );
             }
