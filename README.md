@@ -10,3 +10,11 @@ Gathered frames are then output to either a unix domain socket on the Raspberry 
 ### Build and deploy
 1. Edit `deploy.sh` to specify the name of your development raspberry pi on your local network.
 2. Run `deploy.sh`
+
+## Making release with updated firmware 
+- In [`tc2-firmware`](https://github.com/TheCacophonyProject/tc2-firmware) you will first need to.
+    - Increase by 1 the `FIRMWARE_VERSION` in `src/main.rs`.
+    - Merge that then make a new release.
+- Back in the `tc2-agent` repo, update `RP2040_FIRMWARE_VERSION` in `.github/workflows/release.yaml` to match the new github release version.
+- Update `EXPECTED_RP2040_FIRMWARE_VERSION` in `src/main.rs` to the new firmware version.
+- Now when making a release it will grab the new firmware and pack that into the .deb file so the RP2040 can be programmed.
