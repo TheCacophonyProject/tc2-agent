@@ -412,7 +412,7 @@ impl Default for TimeWindow {
 }
 
 #[repr(u8)]
-#[derive(Deserialize, Debug, PartialEq, Clone)]
+#[derive(Deserialize, Debug, PartialEq, Clone, Copy)]
 pub enum AudioMode {
     Disabled = 0,
     AudioOnly = 1,
@@ -838,7 +838,7 @@ impl DeviceConfig {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
-        let audio_mode: u8 = self.audio_info.audio_mode.clone().into();
+        let audio_mode: u8 = self.audio_info.audio_mode.into();
         buf.write_u8(audio_mode).unwrap();
         let (latitude, longitude) = self.lat_lng();
         buf.write_f32::<LittleEndian>(latitude).unwrap();

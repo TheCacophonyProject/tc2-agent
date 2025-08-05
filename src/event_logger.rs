@@ -1,3 +1,4 @@
+use crate::device_config::AudioMode;
 use byteorder::{ByteOrder, LittleEndian};
 use rustbus::{DuplexConn, MessageBuilder};
 
@@ -62,6 +63,7 @@ impl From<WakeReason> for u8 {
 #[repr(u8)]
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum FileType {
+    Unknown = 0,
     CptvScheduled = 1 << 0,
     CptvUserRequested = 1 << 1,
     CptvStartup = 1 << 2,
@@ -72,19 +74,18 @@ pub enum FileType {
     AudioShutdown = 1 << 7,
 }
 
-impl TryFrom<u8> for FileType {
-    type Error = &'static str;
-    fn try_from(value: u8) -> Result<Self, &'static str> {
+impl From<u8> for FileType {
+    fn from(value: u8) -> Self {
         match value {
-            0b0000_0001 => Ok(FileType::CptvScheduled),
-            0b0000_0010 => Ok(FileType::CptvUserRequested),
-            0b0000_0100 => Ok(FileType::CptvStartup),
-            0b0000_1000 => Ok(FileType::CptvShutdown),
-            0b0001_0000 => Ok(FileType::AudioScheduled),
-            0b0010_0000 => Ok(FileType::AudioUserRequested),
-            0b0100_0000 => Ok(FileType::AudioStartup),
-            0b1000_0000 => Ok(FileType::AudioShutdown),
-            _ => Err("Unknown FileType"),
+            0b0000_0001 => FileType::CptvScheduled,
+            0b0000_0010 => FileType::CptvUserRequested,
+            0b0000_0100 => FileType::CptvStartup,
+            0b0000_1000 => FileType::CptvShutdown,
+            0b0001_0000 => FileType::AudioScheduled,
+            0b0010_0000 => FileType::AudioUserRequested,
+            0b0100_0000 => FileType::AudioStartup,
+            0b1000_0000 => FileType::AudioShutdown,
+            _ => FileType::Unknown,
         }
     }
 }
@@ -109,9 +110,39 @@ impl DiscardedRecordingInfo {
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
         DiscardedRecordingInfo {
-            recording_type: FileType::try_from(bytes[0]).unwrap_or(FileType::CptvScheduled),
+            recording_type: FileType::from(bytes[0]),
             num_frames: LittleEndian::read_u16(&bytes[1..=2]),
             seconds_since_last_ffc: LittleEndian::read_u16(&bytes[3..=4]),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct NewConfigInfo {
+    audio_mode: AudioMode,
+    continuous_recorder: bool,
+    high_power_mode: bool,
+    firmware_version: u32,
+}
+
+impl NewConfigInfo {
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    #[allow(dead_code)]
+    fn as_bytes(&self) -> [u8; 8] {
+        let mut bytes = [0u8; 8];
+        bytes[0] = self.audio_mode as u8;
+        bytes[1] = u8::from(self.continuous_recorder);
+        bytes[2] = u8::from(self.high_power_mode);
+        LittleEndian::write_u32(&mut bytes[3..=6], self.firmware_version);
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        NewConfigInfo {
+            audio_mode: AudioMode::try_from(bytes[0]).unwrap_or(AudioMode::Disabled),
+            continuous_recorder: bytes[1] == 1,
+            high_power_mode: bytes[2] == 1,
+            firmware_version: LittleEndian::read_u32(&bytes[3..=6]),
         }
     }
 }
@@ -119,7 +150,7 @@ impl DiscardedRecordingInfo {
 #[derive(Debug)]
 pub enum LoggerEventKind {
     Rp2040Sleep,
-    OffloadedRecording,
+    OffloadedRecording(FileType),
     SavedNewConfig,
     StartedSendingFramesToRpi,
     StartedRecording,
@@ -152,6 +183,8 @@ pub enum LoggerEventKind {
     FileOffloadInterruptedByUser,
     RtcVoltageLowError,
     SetThermalAlarm(i64),
+    Rp2040GotNewConfig(NewConfigInfo),
+    UnrecoverableDataCorruption((u16, u16)),
 }
 
 impl From<LoggerEventKind> for u16 {
@@ -159,7 +192,7 @@ impl From<LoggerEventKind> for u16 {
         use LoggerEventKind::*;
         match val {
             Rp2040Sleep => 1,
-            OffloadedRecording => 2,
+            OffloadedRecording(_) => 2,
             SavedNewConfig => 3,
             StartedSendingFramesToRpi => 4,
             StartedRecording => 5,
@@ -192,6 +225,8 @@ impl From<LoggerEventKind> for u16 {
             FileOffloadInterruptedByUser => 32,
             RtcVoltageLowError => 33,
             SetThermalAlarm(_) => 34,
+            Rp2040GotNewConfig(_) => 35,
+            UnrecoverableDataCorruption(_) => 36,
         }
     }
 }
@@ -203,7 +238,7 @@ impl TryFrom<u16> for LoggerEventKind {
         use LoggerEventKind::*;
         match value {
             1 => Ok(Rp2040Sleep),
-            2 => Ok(OffloadedRecording),
+            2 => Ok(OffloadedRecording(FileType::Unknown)),
             3 => Ok(SavedNewConfig),
             4 => Ok(StartedSendingFramesToRpi),
             5 => Ok(StartedRecording),
@@ -236,6 +271,8 @@ impl TryFrom<u16> for LoggerEventKind {
             32 => Ok(FileOffloadInterruptedByUser),
             33 => Ok(RtcVoltageLowError),
             34 => Ok(SetThermalAlarm(0)),
+            35 => Ok(Rp2040GotNewConfig(NewConfigInfo::from_bytes(&[0u8; 8]))),
+            36 => Ok(UnrecoverableDataCorruption((u16::MAX, u16::MAX))),
             _ => Err(()),
         }
     }
@@ -287,9 +324,24 @@ impl LoggerEvent {
             let num_frames = discard_info.num_frames;
             let seconds_since_last_ffc = discard_info.seconds_since_last_ffc;
             call.body
-                .push_param(format!(r#"{{ "recording-type": "{recording_type:?}", "num_frames": "{num_frames}", "seconds_since_last_ffc": "{seconds_since_last_ffc}" }}"#))
+                .push_param(format!(r#"{{ "recording-type": "{recording_type:?}", "num-frames": "{num_frames}", "seconds-since-last-ffc": "{seconds_since_last_ffc}" }}"#))
                 .unwrap();
             call.body.push_param("WouldDiscardAsFalsePositive").unwrap();
+        } else if let LoggerEventKind::Rp2040GotNewConfig(new_config_info) = self.event {
+            let audio_mode = new_config_info.audio_mode;
+            let continuous_recorder = new_config_info.continuous_recorder;
+            let high_power_mode = new_config_info.high_power_mode;
+            let rp2040_firmware_version = new_config_info.firmware_version;
+            call.body
+                .push_param(format!(r#"{{ "audio-mode": "{audio_mode:?}", "continuous-recorder": "{continuous_recorder}", "high-power-mode": "{high_power_mode}", "rp20409-firmware-version": "{rp2040_firmware_version}" }}"#))
+                .unwrap();
+            call.body.push_param("Rp2040GotNewConfig").unwrap();
+        } else if let LoggerEventKind::UnrecoverableDataCorruption((block, page)) = self.event {
+            call.body.push_param(format!(r#"{{ "block": "{block}", "page": "{page}" }}"#)).unwrap();
+            call.body.push_param("UnrecoverableDataCorruption").unwrap();
+        } else if let LoggerEventKind::OffloadedRecording(file_type) = self.event {
+            call.body.push_param(format!(r#"{{ "file-type": "{file_type:?}" }}"#)).unwrap();
+            call.body.push_param("OffloadedRecording").unwrap();
         } else {
             call.body.push_param(json_payload.unwrap_or(String::from("{}"))).unwrap();
             call.body.push_param(format!("{:?}", self.event)).unwrap();
