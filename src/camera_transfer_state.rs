@@ -2,7 +2,9 @@ use crate::cptv_frame_dispatch::FRAME_BUFFER;
 use crate::dbus_attiny_i2c::{exit_cleanly, process_interrupted};
 
 use crate::device_config::{DeviceConfig, check_for_device_config_changes};
-use crate::event_logger::{DiscardedRecordingInfo, LoggerEvent, LoggerEventKind, WakeReason};
+use crate::event_logger::{
+    DiscardedRecordingInfo, FileType, LoggerEvent, LoggerEventKind, NewConfigInfo, WakeReason,
+};
 use crate::frame_socket_server::FrameSocketServerMessage;
 use crate::program_rp2040::program_rp2040;
 use crate::recording_state::RecordingMode;
@@ -444,8 +446,7 @@ pub fn enter_camera_transfer_loop(
                                     );
                                     let e = program_rp2040();
                                     if e.is_err() {
-                                        warn!("Failed to reprogram rp2040: {}", e.unwrap_err());
-                                        panic!("Exit");
+                                        panic!("Failed to reprogram rp2040: {}", e.unwrap_err());
                                     }
                                     process::exit(0);
                                 }
@@ -613,6 +614,13 @@ pub fn enter_camera_transfer_loop(
                                         {
                                             *discard_info =
                                                 DiscardedRecordingInfo::from_bytes(payload_bytes);
+                                        } else if let LoggerEventKind::Rp2040GotNewConfig(new_config_info) = &mut event_kind {
+                                            *new_config_info = NewConfigInfo::from_bytes(payload_bytes);
+                                        } else if let LoggerEventKind::UnrecoverableDataCorruption(location) = &mut event_kind {
+                                            location.0 = LittleEndian::read_u16(&payload_bytes[0..=1]);
+                                            location.1 = LittleEndian::read_u16(&payload_bytes[2..=3]);
+                                        } else if let LoggerEventKind::OffloadedRecording(file_type) = &mut event_kind {
+                                            *file_type = FileType::from(payload_bytes[0]);
                                         }
                                         let payload_json = if let LoggerEventKind::SavedNewConfig =
                                             event_kind
@@ -661,9 +669,9 @@ pub fn enter_camera_transfer_loop(
                                 info!("Begin file transfer");
                                 // Open new file transfer
                                 part_count += 1;
-                                // If we have to grow this Vec once it gets big it can be slow and interrupt the transfer.
-                                // TODO: Should really be able to recover from that though!
-                                let mut file = Vec::with_capacity(150_000_000);
+                                // If we have to grow this Vec once it gets big it can be slow and
+                                // interrupt the transfer, so pre-allocate to a high-water mark.
+                                let mut file = Vec::with_capacity(50_000_000);
                                 file.extend_from_slice(chunk);
                                 file_download = Some(file);
                                 let _ =
