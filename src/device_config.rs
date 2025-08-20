@@ -251,21 +251,22 @@ where
                     *seconds += num;
                 }
             }
-        } else if let Some(ref mut hour_min) = absolute_time {
-            if let Ok(num) = token.0.parse::<i32>() {
-                if let Some(unit) = &token.1 {
-                    match unit.0 {
-                        'm' => hour_min.min = num as u8,
-                        'h' => hour_min.hour = num as u8,
-                        _ => {}
-                    };
-                } else {
-                    hour_min.min = num as u8
-                }
+        } else if let Some(ref mut hour_min) = absolute_time
+            && let Ok(num) = token.0.parse::<i32>()
+        {
+            if let Some(unit) = &token.1 {
+                match unit.0 {
+                    'm' => hour_min.min = num as u8,
+                    'h' => hour_min.hour = num as u8,
+                    _ => {}
+                };
+            } else {
+                hour_min.min = num as u8
             }
         }
     }
     if absolute_time.is_none() && relative_time_seconds.is_none() {
+        error!("Failed to parse window time: {s}");
         Err(Error::custom(format!("Failed to parse window time: {s}")))
     } else {
         Ok(AbsRelTime { absolute_time, relative_time_seconds })
@@ -447,9 +448,10 @@ impl TryFrom<u8> for AudioMode {
         use AudioMode::*;
 
         match value {
-            0 => Ok(AudioOnly),
-            1 => Ok(AudioOrThermal),
-            2 => Ok(AudioAndThermal),
+            0 => Ok(Disabled),
+            1 => Ok(AudioOnly),
+            2 => Ok(AudioOrThermal),
+            3 => Ok(AudioAndThermal),
             _ => Err(()),
         }
     }
@@ -489,6 +491,7 @@ where
     if let Ok(mode) = AudioMode::from_str(&audio_mode_raw) {
         Ok(mode)
     } else {
+        error!("Failed to parse audio mode: {audio_mode_raw}");
         Err(Error::custom(format!("Failed to parse audio mode: {audio_mode_raw}")))
     }
 }
@@ -834,7 +837,7 @@ impl DeviceConfig {
         output: &mut [u8],
         prefer_not_to_offload_files_now: bool,
         force_offload_files_now: bool,
-    ) {
+    ) -> u8 {
         let mut buf = Cursor::new(output);
         let device_id = self.device_id();
         buf.write_u32::<LittleEndian>(device_id).unwrap();
@@ -878,8 +881,12 @@ impl DeviceConfig {
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write_all(&device_name[0..device_name_length]).unwrap();
         buf.write_u32::<LittleEndian>(self.audio_info.audio_seed).unwrap();
+
         buf.write_u8(if prefer_not_to_offload_files_now { 5 } else { 0 }).unwrap();
         buf.write_u8(if force_offload_files_now { 1 } else { 0 }).unwrap();
+
+        // ignore the last two non-config bytes
+        buf.position() as u8 - 2
     }
 }
 
@@ -937,25 +944,36 @@ pub fn check_for_device_config_changes(
     is_audio_device: &mut bool,
     is_thermal_device: &mut bool,
     rp2040_needs_reset: &mut bool,
+    rp2040_reset_in_progress: bool,
 ) {
+    if rp2040_reset_in_progress {
+        return;
+    }
+    let mut channel_empty = false;
     // Check once per frame to see if the config file may have been changed
-    let updated_config = device_config_change_channel_rx.try_recv();
-    match updated_config {
-        Ok(config) => {
-            // NOTE: Defer this till a time we know the rp2040 isn't writing to flash memory.
-            if *device_config != config {
-                info!("Config updated, should update rp2040");
-                *device_config = config;
-                *is_audio_device = device_config.is_audio_device();
-                *is_thermal_device = device_config.is_thermal_device();
+    // NOTE: We wait till the channel is empty since there could be multiple
+    //  device config changes queued up if the user makes a lot of config changes rapidly.
+    while !channel_empty {
+        match device_config_change_channel_rx.try_recv() {
+            Ok(config) => {
+                // NOTE: Defer this till a time we know the rp2040 isn't writing to flash memory.
+                if *device_config != config {
+                    info!("Config updated, should update rp2040");
+                    *device_config = config;
+                    *is_audio_device = device_config.is_audio_device();
+                    *is_thermal_device = device_config.is_thermal_device();
+                }
+                *rp2040_needs_reset = true;
             }
-            *rp2040_needs_reset = true;
+            Err(kind) => match kind {
+                TryRecvError::Empty => {
+                    channel_empty = true;
+                }
+                TryRecvError::Disconnected => {
+                    warn!("Disconnected from config file watcher channel");
+                    channel_empty = true;
+                }
+            },
         }
-        Err(kind) => match kind {
-            TryRecvError::Empty => {}
-            TryRecvError::Disconnected => {
-                warn!("Disconnected from config file watcher channel");
-            }
-        },
     }
 }

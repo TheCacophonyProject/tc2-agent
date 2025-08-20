@@ -76,12 +76,12 @@ pub fn get_socket_address(serve_frames_via_wifi: bool) -> String {
         );
         'service_finder: loop {
             while let Ok(event) = receiver.recv() {
-                if let ServiceEvent::ServiceResolved(info) = event {
-                    if let Some(add) = info.get_addresses().iter().next() {
-                        address = Some(add.to_string());
-                        info!("Resolved a tc2-frames service at: {add:?}");
-                        break 'service_finder;
-                    }
+                if let ServiceEvent::ServiceResolved(info) = event
+                    && let Some(add) = info.get_addresses().iter().next()
+                {
+                    address = Some(add.to_string());
+                    info!("Resolved a tc2-frames service at: {add:?}");
+                    break 'service_finder;
                 }
             }
         }

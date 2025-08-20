@@ -194,18 +194,20 @@ fn handle_payload_from_frame_acquire_thread(
                 info!("socket send took {e}s");
             }
             if let Some(telemetry) = telemetry {
-                if let Some(prev_frame_num) = prev_frame_num {
-                    if !telemetry.ffc_in_progress && telemetry.frame_num != *prev_frame_num + 1 {
-                        // NOTE: Frames can be missed when the raspberry pi
-                        //  blocks the thread with the
-                        //  unix socket in `thermal-recorder`.
-                        debug!(
-                            "Missed {} frames after {}s on",
-                            telemetry.frame_num - (*prev_frame_num + 1),
-                            telemetry.msec_on as f32 / 1000.0
-                        );
-                    }
+                if let Some(prev_frame_num) = prev_frame_num
+                    && !telemetry.ffc_in_progress
+                    && telemetry.frame_num != *prev_frame_num + 1
+                {
+                    // NOTE: Frames can be missed when the raspberry pi
+                    //  blocks the thread with the
+                    //  unix socket in `thermal-recorder`.
+                    debug!(
+                        "Missed {} frames after {}s on",
+                        telemetry.frame_num - (*prev_frame_num + 1),
+                        telemetry.msec_on as f32 / 1000.0
+                    );
                 }
+
                 *prev_frame_num = Some(telemetry.frame_num);
                 if telemetry.frame_num % 2700 == 0 {
                     info!("Got frame #{}", telemetry.frame_num);
