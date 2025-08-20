@@ -48,6 +48,7 @@ pub struct CameraHandshakeInfo {
 
 #[repr(u8)]
 #[derive(Copy, Clone, PartialEq, Debug)]
+#[allow(dead_code)]
 pub enum ExtTransferMessage {
     CameraConnectInfo = 0x1,
     CameraRawFrameTransfer = 0x2,
@@ -161,10 +162,12 @@ pub fn enter_camera_transfer_loop(
     let mut device_config: DeviceConfig = initial_config;
     let mut rp2040_needs_reset = false;
     let mut sent_reset_request = false;
+    let mut rp2040_reset_in_progress = false;
     let mut header_integrity_check_has_failed = false;
     let mut got_startup_info = false;
     let mut radiometry_enabled = false;
     let mut firmware_version = 0;
+    let mut config_crc = 0;
     let mut lepton_serial_number = String::from("");
     let mut is_audio_device = device_config.is_audio_device();
     let mut is_thermal_device = device_config.is_thermal_device();
@@ -181,6 +184,7 @@ pub fn enter_camera_transfer_loop(
             &mut is_audio_device,
             &mut is_thermal_device,
             &mut rp2040_needs_reset,
+            rp2040_reset_in_progress,
         );
 
         // Check if we need to force offload
@@ -236,6 +240,7 @@ pub fn enter_camera_transfer_loop(
             if restart_rp2040_ack.load(Ordering::Relaxed) {
                 // Reset this atomic bool if the reset has been processed by the frame server thread.
                 sent_reset_request = false;
+                rp2040_reset_in_progress = true;
                 restart_rp2040_ack.store(false, Ordering::Relaxed);
             }
         }
@@ -389,6 +394,7 @@ pub fn enter_camera_transfer_loop(
                     LittleEndian::write_u16(&mut return_payload_buf[6..8], crc);
 
                     if transfer_type == CAMERA_STARTUP_HANDSHAKE {
+                        rp2040_reset_in_progress = false;
                         info!("Got camera startup handshake {chunk:?}");
                         // Write all the info we need about the device:
                         let force_offload_files_now =
@@ -396,11 +402,17 @@ pub fn enter_camera_transfer_loop(
                         let prefer_not_to_offload_files_now =
                             pending_prioritise_frames_request.take().is_some();
 
-                        device_config.write_to_slice(
-                            &mut return_payload_buf[8..],
+                        let config_length = device_config.write_to_slice(
+                            &mut return_payload_buf[14..],
                             prefer_not_to_offload_files_now,
                             force_offload_files_now,
                         );
+                        config_crc = crc_check
+                            .checksum(&return_payload_buf[14..14 + usize::from(config_length)]);
+                        LittleEndian::write_u16(&mut return_payload_buf[8..10], config_crc);
+                        LittleEndian::write_u16(&mut return_payload_buf[10..12], config_crc);
+                        return_payload_buf[12] = config_length;
+                        return_payload_buf[13] = config_length;
                         info!("Sending camera device config to rp2040");
                     } else if transfer_type == CAMERA_GET_MOTION_DETECTION_MASK {
                         let piece_number = &chunk[0];
@@ -426,11 +438,20 @@ pub fn enter_camera_transfer_loop(
 
                         match transfer_type {
                             CAMERA_STARTUP_HANDSHAKE => {
-                                firmware_version = LittleEndian::read_u32(&chunk[4..8]);
+                                firmware_version = LittleEndian::read_u32(&chunk[2..6]);
 
-                                let num_files_to_offload = LittleEndian::read_u32(&chunk[8..12]);
-                                let num_blocks_to_offload = LittleEndian::read_u32(&chunk[12..16]);
-                                let num_events_to_offload = LittleEndian::read_u32(&chunk[0..4]);
+                                let num_files_to_offload = LittleEndian::read_u16(&chunk[6..8]);
+                                let num_blocks_to_offload = LittleEndian::read_u16(&chunk[8..10]);
+                                let num_events_to_offload = LittleEndian::read_u16(&chunk[0..2]);
+                                let device_config_crc = LittleEndian::read_u16(&chunk[10..12]);
+
+                                if device_config_crc != config_crc {
+                                    error!(
+                                        "RP2040 device config didn't match the one we sent it, forcing restart"
+                                    );
+                                    let _ = restart_rp2040_channel_tx.send(true);
+                                }
+
                                 recording_state.set_offload_totals(
                                     num_files_to_offload,
                                     num_blocks_to_offload,

@@ -6,7 +6,7 @@ use log::{error, info};
 use rustbus::DuplexConn;
 use std::process;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 // mod tc2_agent_state {
@@ -190,9 +190,9 @@ struct OffloadProgress {
     remaining_offload_bytes: AtomicU32,
     total_offload_bytes: AtomicU32,
     start_time: AtomicU64,
-    total_files: AtomicU32,
-    remaining_files: AtomicU32,
-    total_events: AtomicU32,
+    total_files: AtomicU16,
+    remaining_files: AtomicU16,
+    total_events: AtomicU16,
     remaining_events: AtomicU32,
 }
 
@@ -236,9 +236,9 @@ impl RecordingState {
                 remaining_offload_bytes: AtomicU32::new(0),
                 total_offload_bytes: AtomicU32::new(0),
                 start_time: AtomicU64::new(0),
-                total_files: AtomicU32::new(0),
-                remaining_files: AtomicU32::new(0),
-                total_events: AtomicU32::new(0),
+                total_files: AtomicU16::new(0),
+                remaining_files: AtomicU16::new(0),
+                total_events: AtomicU16::new(0),
                 remaining_events: AtomicU32::new(0),
             }),
             force_offload_request_state: Arc::new(AtomicBool::new(false)),
@@ -288,7 +288,7 @@ impl RecordingState {
         self.prioritise_frames_request_state.load(Ordering::Relaxed)
     }
 
-    pub fn get_offload_status(&self) -> (bool, u32, u32, u32, u32, u32, u32) {
+    pub fn get_offload_status(&self) -> (bool, u32, u32, u16, u16, u16, u32) {
         let total_files = self.offload_state.total_files.load(Ordering::Relaxed);
         let remaining_files = self.offload_state.remaining_files.load(Ordering::Relaxed);
         let total_events = self.offload_state.total_events.load(Ordering::Relaxed);
@@ -331,15 +331,15 @@ impl RecordingState {
 
     pub fn set_offload_totals(
         &mut self,
-        num_files_to_offload: u32,
-        num_blocks_to_offload: u32,
-        num_events_to_offload: u32,
+        num_files_to_offload: u16,
+        num_blocks_to_offload: u16,
+        num_events_to_offload: u16,
     ) {
         self.offload_state.total_files.store(num_files_to_offload, Ordering::Relaxed);
         self.offload_state.remaining_files.store(num_files_to_offload, Ordering::Relaxed);
         self.offload_state
             .total_offload_bytes
-            .store(num_blocks_to_offload * 64 * 2048, Ordering::Relaxed);
+            .store(u32::from(num_blocks_to_offload) * 64 * 2048, Ordering::Relaxed);
         self.offload_state.total_events.store(num_events_to_offload, Ordering::Relaxed);
     }
 
