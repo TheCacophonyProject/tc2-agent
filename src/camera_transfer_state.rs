@@ -168,6 +168,7 @@ pub fn enter_camera_transfer_loop(
     let mut radiometry_enabled = false;
     let mut firmware_version = 0;
     let mut config_crc = 0;
+    let mut config_crc_from_rp2040 = 0;
     let mut lepton_serial_number = String::from("");
     let mut is_audio_device = device_config.is_audio_device();
     let mut is_thermal_device = device_config.is_thermal_device();
@@ -409,6 +410,7 @@ pub fn enter_camera_transfer_loop(
                         );
                         config_crc = crc_check
                             .checksum(&return_payload_buf[14..14 + usize::from(config_length)]);
+
                         LittleEndian::write_u16(&mut return_payload_buf[8..10], config_crc);
                         LittleEndian::write_u16(&mut return_payload_buf[10..12], config_crc);
                         return_payload_buf[12] = config_length;
@@ -443,14 +445,7 @@ pub fn enter_camera_transfer_loop(
                                 let num_files_to_offload = LittleEndian::read_u16(&chunk[6..8]);
                                 let num_blocks_to_offload = LittleEndian::read_u16(&chunk[8..10]);
                                 let num_events_to_offload = LittleEndian::read_u16(&chunk[0..2]);
-                                let device_config_crc = LittleEndian::read_u16(&chunk[10..12]);
-
-                                if device_config_crc != config_crc {
-                                    error!(
-                                        "RP2040 device config didn't match the one we sent it, forcing restart"
-                                    );
-                                    let _ = restart_rp2040_channel_tx.send(true);
-                                }
+                                config_crc_from_rp2040 = LittleEndian::read_u16(&chunk[10..12]);
 
                                 recording_state.set_offload_totals(
                                     num_files_to_offload,
@@ -504,6 +499,16 @@ pub fn enter_camera_transfer_loop(
                                     });
                             }
                             CAMERA_CONNECT_INFO => {
+                                if config_crc_from_rp2040 != config_crc {
+                                    error!(
+                                        "RP2040 device config didn't match the one we sent it, forcing restart ({config_crc_from_rp2040} vs {config_crc})"
+                                    );
+                                    // Do we need to wait longer for it to write the new config?
+                                    sleep(Duration::from_millis(500));
+                                    rp2040_needs_reset = true;
+                                    continue 'transfer;
+                                }
+
                                 let recording_mode = if LittleEndian::read_u32(&chunk[12..16]) != 0
                                 {
                                     RecordingMode::Audio
