@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
-use std::{process, thread};
+use std::time::{Duration, Instant, SystemTime};
+use std::{fs, process, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
 pub struct FrameSocketServerMessage {
@@ -241,24 +241,50 @@ fn handle_payload_from_frame_acquire_thread(
         }
         _ => {
             if recording_state.recording_mode() == RecordingMode::Thermal {
-                const NUM_ATTEMPTS_BEFORE_REPROGRAM: usize = 20;
+                const NUM_ATTEMPTS_BEFORE_RESTART_OR_REPROGRAM: usize = 20;
                 *ms_elapsed += *recv_timeout_ms;
                 if *ms_elapsed > 10_000 {
                     *ms_elapsed = 0;
                     *reconnects += 1;
-                    if *reconnects == NUM_ATTEMPTS_BEFORE_REPROGRAM {
-                        match program_rp2040() {
-                            Ok(()) => process::exit(0),
-                            Err(e) => {
-                                error!("Failed to reprogram RP2040: {e}");
-                                process::exit(1);
+                    if *reconnects == NUM_ATTEMPTS_BEFORE_RESTART_OR_REPROGRAM {
+                        let reprogram_file = "/home/pi/last-rp2040-reprogram";
+                        let last_reprogram_over_1hr_ago = match fs::exists(reprogram_file) {
+                            Ok(_) => {
+                                let metadata = fs::metadata(reprogram_file)
+                                    .expect("Failed reading file metadata");
+                                let created = metadata
+                                    .created()
+                                    .expect("Failed reading file creation time metadata");
+                                SystemTime::now()
+                                    .duration_since(created)
+                                    .is_ok_and(|duration| duration > Duration::from_secs(60 * 60))
                             }
+                            Err(_) => true,
+                        };
+                        if last_reprogram_over_1hr_ago {
+                            let _ = fs::remove_file(reprogram_file);
+                            match program_rp2040() {
+                                Ok(()) => {
+                                    fs::write(reprogram_file, "<placeholder>")
+                                        .expect("Failed writing reprogram placeholder file");
+                                    process::exit(0)
+                                }
+                                Err(e) => {
+                                    error!("Failed to reprogram RP2040: {e}");
+                                    process::exit(1);
+                                }
+                            }
+                        } else {
+                            error!(
+                                "Failed to connect to rp2040 frame serving, restarting tc2-agent"
+                            );
+                            process::exit(0);
                         }
                     } else {
                         info!(
                             "-- #{reconnects} waiting to connect to rp2040 \
-                        (reprogram RP2040 after {} more attempts)",
-                            NUM_ATTEMPTS_BEFORE_REPROGRAM - *reconnects
+                        (will restart tc2-agent after {} more attempts)",
+                            NUM_ATTEMPTS_BEFORE_RESTART_OR_REPROGRAM - *reconnects
                         );
                     }
                 }
