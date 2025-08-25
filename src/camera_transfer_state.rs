@@ -17,7 +17,6 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz::Pacific__Auckland;
 use crc::{CRC_16_XMODEM, Crc};
 use log::{error, info, warn};
-use nom::complete::bool;
 use rppal::gpio::Trigger;
 use rppal::spi::{BitOrder, Bus, Mode, Polarity, SlaveSelect, Spi};
 use rustbus::connection::Timeout;
