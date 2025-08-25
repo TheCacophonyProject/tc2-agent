@@ -172,6 +172,7 @@ pub fn enter_camera_transfer_loop(
     let mut lepton_serial_number = String::from("");
     let mut is_audio_device = device_config.is_audio_device();
     let mut is_thermal_device = device_config.is_thermal_device();
+    let mut needs_to_offload_test_recording = false;
 
     let mut last_unknown_transfer_warning = None;
     let mut pending_forced_offload_request = None;
@@ -200,29 +201,33 @@ pub fn enter_camera_transfer_loop(
         }
         // Check if we need to cancel an in-progress offload
         maybe_cancel_in_progress_file_offload_session(&mut dbus_conn, &mut recording_state);
-        if is_thermal_device {
-            // Check if we need to prioritise frame serving
-            if recording_state.prioritise_frames_requested()
-                && !recording_state.is_recording()
-                && pending_prioritise_frames_request.is_none()
-            {
-                pending_prioritise_frames_request = Some(());
-                recording_state.prioritise_frames_request_sent();
-                let _ = restart_rp2040_channel_tx.send(true);
-                info!("Telling rp2040 to prioritise frame serving");
+        if !needs_to_offload_test_recording {
+            if is_thermal_device {
+                // Check if we need to prioritise frame serving
+                if recording_state.prioritise_frames_requested()
+                    && !recording_state.is_recording()
+                    && pending_prioritise_frames_request.is_none()
+                {
+                    pending_prioritise_frames_request = Some(());
+                    recording_state.prioritise_frames_request_sent();
+                    let _ = restart_rp2040_channel_tx.send(true);
+                    info!("Telling rp2040 to prioritise frame serving");
+                }
+                maybe_make_test_thermal_recording(
+                    &mut dbus_conn,
+                    &restart_rp2040_channel_tx,
+                    &mut recording_state,
+                    &mut needs_to_offload_test_recording,
+                );
             }
-            maybe_make_test_thermal_recording(
-                &mut dbus_conn,
-                &restart_rp2040_channel_tx,
-                &mut recording_state,
-            );
-        }
-        if is_audio_device {
-            maybe_make_test_audio_recording(
-                &mut dbus_conn,
-                &restart_rp2040_channel_tx,
-                &mut recording_state,
-            );
+            if is_audio_device {
+                maybe_make_test_audio_recording(
+                    &mut dbus_conn,
+                    &restart_rp2040_channel_tx,
+                    &mut recording_state,
+                    &mut needs_to_offload_test_recording,
+                );
+            }
         }
 
         if !recording_state.is_recording() && rp2040_needs_reset {
@@ -761,6 +766,7 @@ pub fn enter_camera_transfer_loop(
                                         file.len() + chunk.len(),
                                     );
                                     part_count = 0;
+                                    needs_to_offload_test_recording = false;
                                     file.extend_from_slice(chunk);
                                     recording_state.completed_file_offload();
                                     let shebang = LittleEndian::read_u16(&file[0..2]);
@@ -785,6 +791,7 @@ pub fn enter_camera_transfer_loop(
                                 }
                                 // Open and end new file transfer
                                 part_count = 0;
+                                needs_to_offload_test_recording = false;
                                 let mut file = Vec::new();
                                 file.extend_from_slice(chunk);
                                 let shebang = LittleEndian::read_u16(&file[0..2]);
@@ -867,6 +874,7 @@ fn maybe_make_test_audio_recording(
     dbus_conn: &mut DuplexConn,
     restart_rp2040_channel_tx: &Sender<bool>,
     recording_state: &mut RecordingState,
+    needs_to_offload_test_recording: &mut bool,
 ) {
     // If the rp2040 is making a recording, and a user test audio recording was requested,
     // do nothing.
@@ -876,6 +884,7 @@ fn maybe_make_test_audio_recording(
     if recording_state.user_requested_audio_recording()
         && recording_state.request_audio_recording_from_rp2040(dbus_conn)
     {
+        *needs_to_offload_test_recording = true;
         let _ = restart_rp2040_channel_tx.send(true);
         info!("Telling rp2040 to take test recording and restarting");
         let mut inner_recording_state = recording_state.clone();
@@ -932,6 +941,7 @@ fn maybe_make_test_thermal_recording(
     dbus_conn: &mut DuplexConn,
     restart_rp2040_channel_tx: &Sender<bool>,
     recording_state: &mut RecordingState,
+    needs_to_offload_test_recording: &mut bool,
 ) {
     // If the rp2040 is making a recording, and a user test thermal recording was requested,
     // do nothing.
@@ -941,6 +951,7 @@ fn maybe_make_test_thermal_recording(
     if recording_state.user_requested_thermal_recording()
         && recording_state.request_thermal_recording_from_rp2040(dbus_conn)
     {
+        *needs_to_offload_test_recording = true;
         let _ = restart_rp2040_channel_tx.send(true);
         info!("Telling rp2040 to take test recording and restarting");
         let mut inner_recording_state = recording_state.clone();
