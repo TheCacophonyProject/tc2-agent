@@ -333,7 +333,7 @@ impl LoggerEvent {
             let high_power_mode = new_config_info.high_power_mode;
             let rp2040_firmware_version = new_config_info.firmware_version;
             call.body
-                .push_param(format!(r#"{{ "audio-mode": "{audio_mode:?}", "continuous-recorder": "{continuous_recorder}", "high-power-mode": "{high_power_mode}", "rp20409-firmware-version": "{rp2040_firmware_version}" }}"#))
+                .push_param(format!(r#"{{ "audio-mode": "{audio_mode:?}", "continuous-recorder": "{continuous_recorder}", "high-power-mode": "{high_power_mode}", "rp2040-firmware-version": "{rp2040_firmware_version}" }}"#))
                 .unwrap();
             call.body.push_param("Rp2040GotNewConfig").unwrap();
         } else if let LoggerEventKind::UnrecoverableDataCorruption((block, page)) = self.event {

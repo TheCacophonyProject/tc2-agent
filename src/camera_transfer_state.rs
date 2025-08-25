@@ -557,7 +557,7 @@ pub fn enter_camera_transfer_loop(
                             }
                             CAMERA_SEND_LOGGER_EVENT => {
                                 let event_kind = LittleEndian::read_u16(&chunk[0..2]);
-                                let mut event_timestamp = LittleEndian::read_i64(&chunk[2..2 + 8]);
+                                let mut event_timestamp = LittleEndian::read_i64(&chunk[2..10]);
                                 let payload_bytes = &chunk[10..18];
                                 let event_payload = LittleEndian::read_u64(payload_bytes);
                                 if let Ok(mut event_kind) = LoggerEventKind::try_from(event_kind) {

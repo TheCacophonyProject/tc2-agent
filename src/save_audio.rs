@@ -45,6 +45,8 @@ fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
     cursor.into_inner()
 }
 
+const SAVE_RAW_AUDIO: bool = false;
+
 pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig) {
     let output_dir = String::from(device_config.output_dir());
     //let output_dir = String::from("/home/pi/temp");
@@ -63,17 +65,23 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     panic!("Failed to create AAC output directory {output_dir}")
                 });
             }
-            let debug_dir = String::from("/home/pi/temp");
-            if !fs::exists(&debug_dir).unwrap_or(false) {
-                fs::create_dir(&debug_dir).unwrap_or_else(|_| {
-                    panic!("Failed to create debug output directory {debug_dir}")
+            let temp_dir = String::from("/home/pi/temp");
+            if !fs::exists(&temp_dir).unwrap_or(false) {
+                fs::create_dir(&temp_dir).unwrap_or_else(|_| {
+                    panic!("Failed to create debug output directory {temp_dir}")
                 });
-                let output_path: String =
-                    format!("{debug_dir}/{}.raw", recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
-                fs::write(&output_path, &audio_bytes).unwrap();
+                if SAVE_RAW_AUDIO {
+                    let output_path: String = format!(
+                        "{temp_dir}/{}.raw",
+                        recording_date_time.format("%Y-%m-%d--%H-%M-%S")
+                    );
+                    fs::write(&output_path, &audio_bytes).unwrap();
+                }
             }
 
             let output_path: String =
+                format!("{}/{}.aac", temp_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
+            let final_output_path: String =
                 format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
             // If the file already exists, don't re-save it.
             if !fs::exists(&output_path).unwrap_or(false) {
@@ -177,6 +185,16 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     Ok(exit_status) => {
                         if exit_status.success() {
                             info!("Saved AAC file {output_path}");
+                            // Move completed file from temp to output.
+                            if !fs::exists(&final_output_path).unwrap_or(false) {
+                                fs::copy(&output_path, &final_output_path)
+                                    .expect("Failed to copy AAC file to upload dir");
+                            } else {
+                                error!(
+                                    "File {final_output_path} already exists, discarding duplicate"
+                                );
+                            }
+                            fs::remove_file(output_path).expect("Failed to remove temp AAC file");
                         } else {
                             let mut stderr = match cmd.stderr.take() {
                                 Some(stderr) => stderr,
