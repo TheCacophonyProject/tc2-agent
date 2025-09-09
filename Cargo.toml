@@ -31,6 +31,8 @@ rustbus = "0.19.3"
 sha256 = "1.5.0"
 sysinfo = "0.35.2"
 
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = "0.1.43"
 
 [package.metadata.deb]
 name = "tc2-agent"

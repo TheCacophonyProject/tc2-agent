@@ -52,7 +52,7 @@ use crate::recording_state::RecordingState;
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 32;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 33;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 
 const SEGMENT_LENGTH: usize = 9760;
@@ -98,6 +98,12 @@ fn check_for_sufficient_free_disk_space() {
         }
     }
 }
+
+// Avoid musl's default allocator due to lackluster performance
+// https://nickb.dev/blog/default-musl-allocator-considered-harmful-to-performance
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     let log_config = ConfigBuilder::default().set_time_level(LevelFilter::Off).build();
