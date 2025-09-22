@@ -476,7 +476,7 @@ pub fn enter_camera_transfer_loop(
                                         firmware version: {firmware_version}"
                                 );
                                 let estimated_offload_mb =
-                                    (num_blocks_to_offload * 128) as f32 / 1024.0;
+                                    num_blocks_to_offload as f32 * 128.0 / 1024.0;
                                 let estimated_offload_time_seconds =
                                     (estimated_offload_mb * 2.0) / 60.0;
                                 if num_files_to_offload > 0 && num_events_to_offload > 0 {
@@ -696,6 +696,7 @@ pub fn enter_camera_transfer_loop(
                             CAMERA_BEGIN_FILE_TRANSFER => {
                                 if file_download.is_some() {
                                     warn!("Trying to begin file without ending current");
+                                    part_count = 0;
                                 }
                                 info!("Begin file transfer");
                                 // Open new file transfer

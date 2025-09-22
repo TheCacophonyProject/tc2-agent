@@ -48,6 +48,8 @@ fn default_location_accuracy() -> Option<f32> {
 fn default_output_dir() -> String {
     String::from("/var/spool/cptv")
 }
+
+#[allow(dead_code)]
 fn default_activate_thermal_throttler() -> bool {
     false
 }
@@ -535,6 +537,7 @@ impl Default for ThermalRecordingSettings {
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
+#[allow(dead_code)]
 struct ThermalThrottlerSettings {
     #[serde(default = "default_activate_thermal_throttler")]
     activate: bool,

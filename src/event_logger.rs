@@ -90,6 +90,18 @@ impl From<u8> for FileType {
     }
 }
 
+impl FileType {
+    pub fn is_cptv(&self) -> bool {
+        matches!(
+            self,
+            FileType::CptvScheduled
+                | FileType::CptvUserRequested
+                | FileType::CptvStartup
+                | FileType::CptvShutdown
+        )
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub struct DiscardedRecordingInfo {
     pub recording_type: FileType,
@@ -324,8 +336,8 @@ impl LoggerEvent {
             let num_frames = discard_info.num_frames;
             let seconds_since_last_ffc = discard_info.seconds_since_last_ffc;
             call.body
-                .push_param(format!(r#"{{ "recording-type": "{recording_type:?}", "num-frames": "{num_frames}", "seconds-since-last-ffc": "{seconds_since_last_ffc}" }}"#))
-                .unwrap();
+                    .push_param(format!(r#"{{ "recording-type": "{recording_type:?}", "num-frames": "{num_frames}", "seconds-since-last-ffc": "{seconds_since_last_ffc}" }}"#))
+                    .unwrap();
             call.body.push_param("WouldDiscardAsFalsePositive").unwrap();
         } else if let LoggerEventKind::Rp2040GotNewConfig(new_config_info) = self.event {
             let audio_mode = new_config_info.audio_mode;

@@ -24,11 +24,11 @@ impl DoubleBuffer {
 
     pub fn get_front(&self) -> &Mutex<RefCell<Option<Frame>>> {
         let val = self.swapper.load(Ordering::Acquire);
-        if val % 2 == 0 { &self.front } else { &self.back }
+        if val.is_multiple_of(2) { &self.front } else { &self.back }
     }
 
     pub fn get_back(&self) -> &Mutex<RefCell<Option<Frame>>> {
         let val = self.swapper.load(Ordering::Acquire);
-        if val % 2 == 0 { &self.back } else { &self.front }
+        if val.is_multiple_of(2) { &self.back } else { &self.front }
     }
 }
