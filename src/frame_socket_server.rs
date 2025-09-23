@@ -278,7 +278,7 @@ fn handle_payload_from_frame_acquire_thread(
                                     let timestamp_seconds = now
                                         .duration_since(UNIX_EPOCH)
                                         .expect("Time went backwards")
-                                        .as_secs_f64();
+                                        .as_secs();
                                     fs::write(reprogram_file, format!("{timestamp_seconds}"))
                                         .expect("Failed writing reprogram placeholder file");
                                     process::exit(0)
