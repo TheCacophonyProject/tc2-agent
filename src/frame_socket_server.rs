@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, process, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
@@ -249,23 +249,37 @@ fn handle_payload_from_frame_acquire_thread(
                     if *reconnects == NUM_ATTEMPTS_BEFORE_RESTART_OR_REPROGRAM {
                         let reprogram_file = "/home/pi/last-rp2040-reprogram";
                         let last_reprogram_over_1hr_ago = match fs::exists(reprogram_file) {
-                            Ok(_) => {
+                            Ok(true) => {
                                 let metadata = fs::metadata(reprogram_file)
                                     .expect("Failed reading file metadata");
-                                let created = metadata
-                                    .created()
-                                    .expect("Failed reading file creation time metadata");
+                                let created = metadata.modified().unwrap_or_else(|_| {
+                                    let timestamp_str = fs::read(reprogram_file)
+                                        .map(|file_contents| {
+                                            String::from_utf8(file_contents)
+                                                .unwrap_or(String::from("0"))
+                                        })
+                                        .expect("Failed getting timestamp string");
+                                    let timestamp_seconds =
+                                        timestamp_str.parse::<u64>().unwrap_or(0);
+                                    let timestamp = Duration::from_secs(timestamp_seconds);
+                                    UNIX_EPOCH + timestamp
+                                });
                                 SystemTime::now()
                                     .duration_since(created)
                                     .is_ok_and(|duration| duration > Duration::from_secs(60 * 60))
                             }
-                            Err(_) => true,
+                            Ok(false) | Err(_) => true,
                         };
                         if last_reprogram_over_1hr_ago {
                             let _ = fs::remove_file(reprogram_file);
                             match program_rp2040() {
                                 Ok(()) => {
-                                    fs::write(reprogram_file, "<placeholder>")
+                                    let now = SystemTime::now();
+                                    let timestamp_seconds = now
+                                        .duration_since(UNIX_EPOCH)
+                                        .expect("Time went backwards")
+                                        .as_secs();
+                                    fs::write(reprogram_file, format!("{timestamp_seconds}"))
                                         .expect("Failed writing reprogram placeholder file");
                                     process::exit(0)
                                 }
