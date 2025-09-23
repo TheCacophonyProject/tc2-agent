@@ -254,11 +254,11 @@ fn handle_payload_from_frame_acquire_thread(
                                     .expect("Failed reading file metadata");
                                 let created = metadata.modified().unwrap_or_else(|_| {
                                     let timestamp_str = fs::read(reprogram_file)
-                                        .and_then(|file_contents| {
-                                            Ok(String::from_utf8(file_contents)
-                                                .unwrap_or(String::from("0")))
+                                        .map(|file_contents| {
+                                            String::from_utf8(file_contents)
+                                                .unwrap_or(String::from("0"))
                                         })
-                                        .expect("Should get timestamp string");
+                                        .expect("Failed getting timestamp string");
                                     let timestamp_seconds =
                                         timestamp_str.parse::<u64>().unwrap_or(0);
                                     let timestamp = Duration::from_secs(timestamp_seconds);
@@ -279,11 +279,8 @@ fn handle_payload_from_frame_acquire_thread(
                                         .duration_since(UNIX_EPOCH)
                                         .expect("Time went backwards")
                                         .as_secs_f64();
-                                    fs::write(
-                                        reprogram_file,
-                                        String::from(format!("{timestamp_seconds}")),
-                                    )
-                                    .expect("Failed writing reprogram placeholder file");
+                                    fs::write(reprogram_file, format!("{timestamp_seconds}"))
+                                        .expect("Failed writing reprogram placeholder file");
                                     process::exit(0)
                                 }
                                 Err(e) => {
