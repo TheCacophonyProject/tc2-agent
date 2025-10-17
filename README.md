@@ -13,7 +13,7 @@ Gathered frames are then output to either a unix domain socket on the Raspberry 
 
 ## Making release with updated firmware 
 - In [`tc2-firmware`](https://github.com/TheCacophonyProject/tc2-firmware) you will first need to.
-    - Increase by 1 the `FIRMWARE_VERSION` in `src/main.rs`.
+    - Increase by 1 the `FIRMWARE_VERSION` in `src/constants.rs`.
     - Merge that then make a new release.
 - Back in the `tc2-agent` repo, update `RP2040_FIRMWARE_VERSION` in `.github/workflows/release.yaml` to match the new github release version.
 - Update `EXPECTED_RP2040_FIRMWARE_VERSION` in `src/main.rs` to the new firmware version.

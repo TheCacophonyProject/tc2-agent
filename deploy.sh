@@ -19,6 +19,7 @@ readonly DEB_SOURCE_DIR=./target/${TARGET_ARCH}/debian/
 
 DEB_OPTION=false
 WIFI_OPTION=false
+BUILD_FIRMWARE=false
 
 # Iterate over the arguments, starting from index 2
 for i in "${@:2}"; do
@@ -29,12 +30,24 @@ for i in "${@:2}"; do
     --wifi)
       WIFI_OPTION=true
       ;;
+    --build-firmware)
+      BUILD_FIRMWARE=true
+      ;;
     *)
       echo "Unknown option: $i"
       exit 1
       ;;
   esac
 done
+
+if [ "$BUILD_FIRMWARE" = true ]; then
+  echo "Building firmware..."
+  cd ../tc2-firmware
+  cargo build --release
+  cd -
+  cp ../tc2-firmware/target/thumbv6m-none-eabi/release/tc2-firmware ./_releases/tc2-firmware
+  sha256sum ./_releases/tc2-firmware | cut -d ' ' -f 1 > ./_releases/tc2-firmware.sha256
+fi
 
 cargo build --release --target=${TARGET_ARCH}
 
