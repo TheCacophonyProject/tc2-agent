@@ -26,7 +26,7 @@ use sun_times::sun_times;
 use toml::Value;
 use toml::value::Offset as TomlDateTimeOffset;
 
-static TZ_FINDER: LazyLock<tzf_rs::DefaultFinder> = LazyLock::new(|| tzf_rs::DefaultFinder::new());
+static TZ_FINDER: LazyLock<tzf_rs::DefaultFinder> = LazyLock::new(tzf_rs::DefaultFinder::new);
 
 fn default_constant_recorder() -> bool {
     false
@@ -345,7 +345,7 @@ struct HourMin {
 fn timezone_offset_seconds(lat: f32, lng: f32) -> i32 {
     let tz_from_lat_lng = TZ_FINDER.get_tz_name(lat as f64, lng as f64);
     let tz = Tz::from_str(tz_from_lat_lng)
-        .expect(&format!("Failed to parse timezone from lat lng {tz_from_lat_lng}"));
+        .unwrap_or_else(|_| panic!("Failed to parse timezone from lat lng {tz_from_lat_lng}"));
     let now_utc = Local::now().naive_utc();
     let offset = tz.offset_from_utc_datetime(&now_utc);
     offset.fix().local_minus_utc()
