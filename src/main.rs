@@ -149,7 +149,7 @@ fn main() {
     let current_config = device_config.unwrap();
 
     let (lat, lng) = current_config.lat_lng();
-    if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lat as f64, lng as f64)) {
+    if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64)) {
         error!("{e}");
         process::exit(1);
     }

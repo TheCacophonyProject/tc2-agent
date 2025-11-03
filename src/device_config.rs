@@ -919,7 +919,7 @@ pub fn watch_local_config_file_changes(
 
                             let (lat, lng) = current_config.lat_lng();
                             if let Err(e) =
-                                set_system_timezone(TZ_FINDER.get_tz_name(lat as f64, lng as f64))
+                                set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64))
                             {
                                 error!("{e}");
                                 process::exit(1);
