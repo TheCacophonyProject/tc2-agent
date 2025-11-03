@@ -2,12 +2,11 @@ use core::fmt;
 use std::collections::HashMap;
 // Read camera config file
 use crate::detection_mask::DetectionMask;
+use crate::set_system_timezone;
 use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{
-    DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone,
-    Utc,
+    DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
 };
-use chrono_tz::Tz;
 use log::{error, info, warn};
 use louvre::triangulate;
 use notify::event::{AccessKind, AccessMode};
@@ -24,9 +23,9 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::{fs, process};
 use sun_times::sun_times;
 use toml::Value;
-use toml::value::Offset as TomlDateTimeOffset;
+use toml::value::Offset;
 
-static TZ_FINDER: LazyLock<tzf_rs::DefaultFinder> = LazyLock::new(tzf_rs::DefaultFinder::new);
+pub static TZ_FINDER: LazyLock<tzf_rs::DefaultFinder> = LazyLock::new(tzf_rs::DefaultFinder::new);
 
 fn default_constant_recorder() -> bool {
     false
@@ -289,8 +288,8 @@ where
     let time = date_time.time.expect("should have time");
     let offset = date_time.offset.expect("should have offset");
     let offset_minutes = match offset {
-        TomlDateTimeOffset::Z => 0,
-        TomlDateTimeOffset::Custom { minutes } => minutes,
+        Offset::Z => 0,
+        Offset::Custom { minutes } => minutes,
     } as i32;
     let fixed_offset = if offset_minutes < 0 {
         FixedOffset::east_opt(offset_minutes * 60)
@@ -342,13 +341,12 @@ struct HourMin {
     min: u8,
 }
 
-fn timezone_offset_seconds(lat: f32, lng: f32) -> i32 {
-    let tz_from_lat_lng = TZ_FINDER.get_tz_name(lat as f64, lng as f64);
-    let tz = Tz::from_str(tz_from_lat_lng)
-        .unwrap_or_else(|_| panic!("Failed to parse timezone from lat lng {tz_from_lat_lng}"));
-    let now_utc = Local::now().naive_utc();
-    let offset = tz.offset_from_utc_datetime(&now_utc);
-    offset.fix().local_minus_utc()
+fn timezone_offset_seconds() -> i32 {
+    // IMPORTANT: This relies on the system timezone being set correctly to the same locale as the
+    // devices' GPS coordinates to work out correct absolute start/end recording window times.
+    let now = Local::now();
+    let local_tz = now.timezone();
+    local_tz.offset_from_utc_datetime(&now.naive_utc()).local_minus_utc()
 }
 #[derive(PartialEq, Clone)]
 pub struct AbsRelTime {
@@ -375,15 +373,14 @@ impl Debug for AbsRelTime {
 }
 
 impl AbsRelTime {
-    pub fn time_offset(&self, lat: f32, lng: f32) -> (bool, i32) {
+    pub fn time_offset(&self) -> (bool, i32) {
         // Absolute or relative time in seconds in the day
         if let Some(abs_time) = &self.absolute_time {
             // NOTE: We need to convert this to UTC offsets, since that's what our timestamp is.
             let seconds_past_midnight =
                 (abs_time.hour as i32 * 60 * 60) + (abs_time.min as i32 * 60);
             //info!("Seconds past midnight local {}", seconds_past_midnight);
-
-            let tz_offset = timezone_offset_seconds(lat, lng);
+            let tz_offset = timezone_offset_seconds();
             // info!(
             //     "TZ offset {}, seconds past UTC midnight {}",
             //     tz_offset,
@@ -683,13 +680,9 @@ impl DeviceConfig {
     }
 
     pub fn next_recording_window(&self, now_utc: &NaiveDateTime) -> (NaiveDateTime, NaiveDateTime) {
-        let location =
-            self.location.as_ref().expect("Relative recording windows require a location");
-        let (lat, lng) = self.lat_lng();
         let (is_absolute_start, mut start_offset) =
-            self.recording_window.start_recording.time_offset(lat, lng);
-        let (is_absolute_end, mut end_offset) =
-            self.recording_window.stop_recording.time_offset(lat, lng);
+            self.recording_window.start_recording.time_offset();
+        let (is_absolute_end, mut end_offset) = self.recording_window.stop_recording.time_offset();
         if is_absolute_end && end_offset < 0 {
             end_offset += 86_400;
         }
@@ -697,6 +690,12 @@ impl DeviceConfig {
             start_offset += 86_400;
         }
         let (window_start, window_end) = if !is_absolute_start || !is_absolute_end {
+            let location =
+                self.location.as_ref().expect("Relative recording windows require a location");
+            let (lat, lng) = (
+                location.latitude.expect("Relative recording windows require a valid latitude"),
+                location.longitude.expect("Relative recording windows require a valid longitude"),
+            );
             let altitude = location.altitude;
             let yesterday_utc = *now_utc - Duration::days(1);
             let (_, yesterday_sunset) = sun_times(
@@ -877,8 +876,8 @@ impl DeviceConfig {
         buf.write_u8(has_loc_accuracy).unwrap();
         buf.write_f32::<LittleEndian>(accuracy).unwrap();
         let (abs_rel_start, abs_rel_end) = self.recording_window();
-        let (start_is_abs, start_seconds_offset) = abs_rel_start.time_offset(latitude, longitude);
-        let (end_is_abs, end_seconds_offset) = abs_rel_end.time_offset(latitude, longitude);
+        let (start_is_abs, start_seconds_offset) = abs_rel_start.time_offset();
+        let (end_is_abs, end_seconds_offset) = abs_rel_end.time_offset();
         buf.write_u8(if start_is_abs { 1 } else { 0 }).unwrap();
         buf.write_i32::<LittleEndian>(start_seconds_offset).unwrap();
         buf.write_u8(if end_is_abs { 1 } else { 0 }).unwrap();
@@ -917,6 +916,15 @@ pub fn watch_local_config_file_changes(
                         if config != current_config {
                             current_config = config;
                             warn!("Config updated");
+
+                            let (lat, lng) = current_config.lat_lng();
+                            if let Err(e) =
+                                set_system_timezone(TZ_FINDER.get_tz_name(lat as f64, lng as f64))
+                            {
+                                error!("{e}");
+                                process::exit(1);
+                            }
+
                             let _ = config_tx.send(current_config.clone());
                         }
                     }
