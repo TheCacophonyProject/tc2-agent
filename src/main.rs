@@ -238,10 +238,9 @@ fn main() {
 pub fn set_system_timezone(timezone: &str) -> Result<(), String> {
     let local_tz = get_local_zone();
     if local_tz.is_none() {
-        return Err("Error getting system time zone".to_string());
+        error!("Error getting system time zone");
     }
-    let local_tz = local_tz.unwrap();
-    if timezone == local_tz {
+    if local_tz.is_some_and(|local_tz| timezone == local_tz) {
         info!("System timezone already set to {timezone}");
         return Ok(());
     }
