@@ -22,32 +22,32 @@ mod utils;
 
 use rppal::gpio::Gpio;
 
+use localzone::get_local_zone;
 use std::fs;
 use std::process;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::channel;
 use std::thread::sleep;
-
 use std::{thread, time::Duration};
 use thread_priority::ThreadBuilderExt;
 use thread_priority::*;
 
+use crate::camera_transfer_state::enter_camera_transfer_loop;
+use crate::dbus_attiny_i2c::exit_if_attiny_version_is_not_as_expected;
+use crate::dbus_managementd::setup_dbus_managementd_recording_service;
+use crate::device_config::watch_local_config_file_changes;
+use crate::device_config::{DeviceConfig, TZ_FINDER};
+use crate::frame_socket_server::spawn_frame_socket_server_thread;
+use crate::mode_config::ModeConfig;
+use crate::program_rp2040::check_if_rp2040_needs_programming;
+use crate::recording_state::RecordingState;
 use log::{error, info, warn};
 use rustbus::connection::Timeout;
 use rustbus::{DuplexConn, get_system_bus_path};
 use simplelog::*;
 use sysinfo::Disks;
-
-use crate::camera_transfer_state::enter_camera_transfer_loop;
-use crate::dbus_attiny_i2c::exit_if_attiny_version_is_not_as_expected;
-use crate::dbus_managementd::setup_dbus_managementd_recording_service;
-use crate::device_config::DeviceConfig;
-use crate::device_config::watch_local_config_file_changes;
-use crate::frame_socket_server::spawn_frame_socket_server_thread;
-use crate::mode_config::ModeConfig;
-use crate::program_rp2040::check_if_rp2040_needs_programming;
-use crate::recording_state::RecordingState;
 
 const AUDIO_SHEBANG: u16 = 1;
 
@@ -147,6 +147,13 @@ fn main() {
     let _dbus_audio_thread = setup_dbus_managementd_recording_service(&recording_state);
 
     let current_config = device_config.unwrap();
+
+    let (lat, lng) = current_config.lat_lng();
+    if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64)) {
+        error!("{e}");
+        process::exit(1);
+    }
+
     let initial_config = current_config.clone();
     let (device_config_change_channel_tx, device_config_change_channel_rx) = channel();
     let _file_watcher =
@@ -225,5 +232,47 @@ fn main() {
     if let Err(e) = handle.join() {
         error!("Thread panicked: {e:?}");
         process::exit(1);
+    }
+}
+
+pub fn set_system_timezone(timezone: &str) -> Result<(), String> {
+    let local_tz = get_local_zone();
+    if local_tz.is_none() {
+        error!("Error getting system time zone");
+    }
+    if local_tz.is_some_and(|local_tz| timezone == local_tz) {
+        info!("System timezone already set to {timezone}");
+        return Ok(());
+    }
+    match Command::new("sudo").arg("timedatectl").arg("set-timezone").arg(timezone).output() {
+        Ok(output) => {
+            if output.status.success() {
+                info!("System timezone successfully set to: {}", timezone);
+                match Command::new("sudo")
+                    .arg("dpkg-reconfigure")
+                    .arg("tzdata")
+                    .arg("-f")
+                    .arg("noninteractive")
+                    .output()
+                {
+                    Ok(output) => {
+                        if output.status.success() {
+                            info!("Successfully updated tzdata");
+                            Ok(())
+                        } else {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            Err(format!("Failed to update tzdata: {stderr}"))
+                        }
+                    }
+                    Err(e) => Err(format!(
+                        "Error executing dpkg-reconfigure tzdata -f noninteractive: {e}"
+                    )),
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(format!("Failed to set system timezone: {stderr}"))
+            }
+        }
+        Err(e) => Err(format!("Error executing timedatectl: {e}")),
     }
 }

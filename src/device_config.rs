@@ -2,6 +2,7 @@ use core::fmt;
 use std::collections::HashMap;
 // Read camera config file
 use crate::detection_mask::DetectionMask;
+use crate::set_system_timezone;
 use byteorder::{LittleEndian, WriteBytesExt};
 use chrono::{
     DateTime, Duration, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc,
@@ -17,11 +18,14 @@ use std::io::{Cursor, Write};
 use std::ops::Add;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::{fs, process};
 use sun_times::sun_times;
 use toml::Value;
 use toml::value::Offset;
+
+pub static TZ_FINDER: LazyLock<tzf_rs::DefaultFinder> = LazyLock::new(tzf_rs::DefaultFinder::new);
 
 fn default_constant_recorder() -> bool {
     false
@@ -582,9 +586,10 @@ impl DeviceConfig {
     }
 
     pub fn lat_lng(&self) -> (f32, f32) {
+        let location = self.location.as_ref().expect("A device location is required");
         (
-            self.location.as_ref().unwrap().latitude.unwrap(),
-            self.location.as_ref().unwrap().longitude.unwrap(),
+            location.latitude.expect("A valid latitude is required"),
+            location.longitude.expect("A valid longitude is required"),
         )
     }
     pub fn location_timestamp(&self) -> Option<u64> {
@@ -911,6 +916,15 @@ pub fn watch_local_config_file_changes(
                         if config != current_config {
                             current_config = config;
                             warn!("Config updated");
+
+                            let (lat, lng) = current_config.lat_lng();
+                            if let Err(e) =
+                                set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64))
+                            {
+                                error!("{e}");
+                                process::exit(1);
+                            }
+
                             let _ = config_tx.send(current_config.clone());
                         }
                     }
