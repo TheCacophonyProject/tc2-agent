@@ -249,12 +249,31 @@ pub fn set_system_timezone(timezone: &str) -> Result<(), String> {
         Ok(output) => {
             if output.status.success() {
                 info!("System timezone successfully set to: {}", timezone);
-                Ok(())
+                match Command::new("sudo")
+                    .arg("dpkg-reconfigure")
+                    .arg("tzdata")
+                    .arg("-f")
+                    .arg("noninteractive")
+                    .output()
+                {
+                    Ok(output) => {
+                        if output.status.success() {
+                            info!("Successfully updated tzdata");
+                            Ok(())
+                        } else {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            Err(format!("Failed to update tzdata: {stderr}"))
+                        }
+                    }
+                    Err(e) => Err(format!(
+                        "Error executing dpkg-reconfigure tzdata -f noninteractive: {e}"
+                    )),
+                }
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("Failed to set system timezone: {}", stderr))
+                Err(format!("Failed to set system timezone: {stderr}"))
             }
         }
-        Err(e) => Err(format!("Error executing timedatectl: {}", e)),
+        Err(e) => Err(format!("Error executing timedatectl: {e}")),
     }
 }
