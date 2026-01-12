@@ -53,6 +53,10 @@ fn default_output_dir() -> String {
     String::from("/var/spool/cptv")
 }
 
+fn default_postproccess() -> bool {
+    false
+}
+
 #[allow(dead_code)]
 fn default_activate_thermal_throttler() -> bool {
     false
@@ -510,6 +514,22 @@ struct DeviceRegistration {
     server: Option<String>,
 }
 
+
+#[derive(Deserialize, Debug, PartialEq, Clone)]
+struct ThermalMotionSettings {
+    #[serde(rename = "postprocess", default = "default_postproccess")]
+    postprocess: bool,
+}
+
+impl Default for ThermalMotionSettings {
+    fn default() -> Self {
+        ThermalMotionSettings {
+            postprocess: default_postproccess(),
+        }
+    }
+}
+
+
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 struct ThermalRecordingSettings {
     #[serde(rename = "output-dir", default = "default_output_dir")]
@@ -558,6 +578,9 @@ pub struct DeviceConfig {
     #[serde(rename = "thermal-recorder", default)]
     recording_settings: ThermalRecordingSettings,
     location: Option<LocationSettings>,
+
+    #[serde(rename = "thermal-motion", default)]
+    motion_settings: ThermalMotionSettings,
 }
 
 impl DeviceConfig {
@@ -621,6 +644,11 @@ impl DeviceConfig {
 
     pub fn output_dir(&self) -> &str {
         &self.recording_settings.output_dir
+    }
+
+
+    pub fn is_postprocessing_enabled(&self) -> bool {
+        return self.motion_settings.postprocess;
     }
 
     pub fn is_continuous_recorder(&self) -> bool {
