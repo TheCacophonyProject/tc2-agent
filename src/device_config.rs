@@ -514,7 +514,6 @@ struct DeviceRegistration {
     server: Option<String>,
 }
 
-
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 struct ThermalMotionSettings {
     #[serde(rename = "postprocess", default = "default_postproccess")]
@@ -523,12 +522,9 @@ struct ThermalMotionSettings {
 
 impl Default for ThermalMotionSettings {
     fn default() -> Self {
-        ThermalMotionSettings {
-            postprocess: default_postproccess(),
-        }
+        ThermalMotionSettings { postprocess: default_postproccess() }
     }
 }
-
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
 struct ThermalRecordingSettings {
@@ -645,7 +641,6 @@ impl DeviceConfig {
     pub fn output_dir(&self) -> &str {
         &self.recording_settings.output_dir
     }
-
 
     pub fn is_postprocessing_enabled(&self) -> bool {
         return self.motion_settings.postprocess;

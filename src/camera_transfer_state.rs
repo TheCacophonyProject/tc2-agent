@@ -160,7 +160,7 @@ pub fn enter_camera_transfer_loop(
     let crc_check = Crc::<u16>::new(&CRC_16_XMODEM);
     let max_size: usize = raw_read_buffer.len();
     let mut device_config: DeviceConfig = initial_config;
-    
+
     let mut rp2040_needs_reset = false;
     let mut sent_reset_request = false;
     let mut rp2040_reset_in_progress = false;
@@ -774,8 +774,12 @@ pub fn enter_camera_transfer_loop(
                                     let shebang = LittleEndian::read_u16(&file[0..2]);
                                     if shebang == AUDIO_SHEBANG {
                                         save_audio_file_to_disk(file, device_config.clone());
-                                    } else {        
-                                        save_cptv_file_to_disk(file, device_config.output_dir(),device_config.is_postprocessing_enabled())
+                                    } else {
+                                        save_cptv_file_to_disk(
+                                            file,
+                                            device_config.output_dir(),
+                                            device_config.is_postprocessing_enabled(),
+                                        )
                                     }
                                     let _ = camera_handshake_channel_tx.send(
                                         FrameSocketServerMessage {
@@ -799,8 +803,12 @@ pub fn enter_camera_transfer_loop(
                                 let shebang = LittleEndian::read_u16(&file[0..2]);
                                 if shebang == AUDIO_SHEBANG {
                                     save_audio_file_to_disk(file, device_config.clone());
-                                } else {        
-                                    save_cptv_file_to_disk(file, device_config.output_dir(),device_config.is_postprocessing_enabled())
+                                } else {
+                                    save_cptv_file_to_disk(
+                                        file,
+                                        device_config.output_dir(),
+                                        device_config.is_postprocessing_enabled(),
+                                    )
                                 }
                                 let _ =
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
