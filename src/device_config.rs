@@ -643,7 +643,7 @@ impl DeviceConfig {
     }
 
     pub fn is_postprocessing_enabled(&self) -> bool {
-        return self.motion_settings.postprocess;
+        self.motion_settings.postprocess
     }
 
     pub fn is_continuous_recorder(&self) -> bool {
