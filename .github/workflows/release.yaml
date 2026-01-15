@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     env:
-      RP2040_FIRMWARE_VERSION: 0.4.0
+      RP2040_FIRMWARE_VERSION: 0.5.0
 
     steps:
       - name: Checkout repository
