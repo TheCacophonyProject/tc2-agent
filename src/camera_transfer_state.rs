@@ -1,5 +1,7 @@
 use crate::cptv_frame_dispatch::FRAME_BUFFER;
 use crate::dbus_attiny_i2c::{exit_cleanly, process_interrupted};
+use std::io;
+use std::process::Command;
 
 use crate::device_config::{DeviceConfig, check_for_device_config_changes};
 use crate::event_logger::{
@@ -148,6 +150,7 @@ pub fn enter_camera_transfer_loop(
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
+    let mut started_thermal_recorder = false;
     let mut file_download: Option<Vec<u8>> = None;
     let header_length = 18;
     let mut return_payload_buf = [0u8; 32 + 104];
@@ -233,7 +236,10 @@ pub fn enter_camera_transfer_loop(
 
         if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
-            warn!("Requesting reset of rp2040 at {}", date.with_timezone(&Pacific__Auckland));
+            warn!(
+                "Requesting reset of rp2040 at {}",
+                date.with_timezone(&Pacific__Auckland)
+            );
             rp2040_needs_reset = false;
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
@@ -839,7 +845,7 @@ pub fn enter_camera_transfer_loop(
                         })
                         .unwrap();
                     // Frame
-                    let mut frame = [0u8; FRAME_LENGTH];
+                    let mut frame: [u8; 39040] = [0u8; FRAME_LENGTH];
                     BigEndian::write_u16_into(
                         u8_slice_as_u16_slice(
                             &raw_read_buffer[header_length..header_length + FRAME_LENGTH],
@@ -861,6 +867,11 @@ pub fn enter_camera_transfer_loop(
                         rp2040_needs_reset = true;
                     } else if !rp2040_needs_reset {
                         FRAME_BUFFER.swap();
+                        if !started_thermal_recorder {
+                            info!("starting thermal recorder");
+                            let _ = start_thermal_recorder_py();
+                        }
+                        started_thermal_recorder = true;
                         let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                             camera_handshake_info: Some(CameraHandshakeInfo {
                                 radiometry_enabled,
@@ -921,8 +932,11 @@ fn maybe_make_test_audio_recording(
                             // Re-sync our internal rp2040 state once every 1-2 seconds until
                             // we see that the state has entered taking_test_audio_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms =
-                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                2000
+                            } else {
+                                1000
+                            };
                             if inner_recording_state.is_taking_user_requested_audio_recording() {
                                 break;
                             }
@@ -931,8 +945,11 @@ fn maybe_make_test_audio_recording(
                         loop {
                             // Now wait until we've exited taking_test_audio_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms =
-                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                2000
+                            } else {
+                                1000
+                            };
                             if !inner_recording_state.is_taking_user_requested_audio_recording() {
                                 inner_recording_state
                                     .finished_taking_user_requested_audio_recording();
@@ -988,8 +1005,11 @@ fn maybe_make_test_thermal_recording(
                             // Re-sync our internal rp2040 state once every 1-2 seconds until
                             // we see that the state has entered taking_test_thermal_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms =
-                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                2000
+                            } else {
+                                1000
+                            };
                             if inner_recording_state.is_taking_user_requested_thermal_recording() {
                                 break;
                             }
@@ -998,8 +1018,11 @@ fn maybe_make_test_thermal_recording(
                         loop {
                             // Now wait until we've exited taking_test_thermal_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms =
-                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                2000
+                            } else {
+                                1000
+                            };
                             if !inner_recording_state.is_taking_user_requested_thermal_recording() {
                                 inner_recording_state
                                     .finished_taking_user_requested_thermal_recording();
@@ -1019,4 +1042,19 @@ fn maybe_cancel_in_progress_file_offload_session(
     recording_state: &mut RecordingState,
 ) {
     recording_state.cancel_offload_session(dbus_conn);
+}
+
+pub fn start_thermal_recorder_py() -> io::Result<()> {
+    let result = Command::new("sudo")
+        .arg("systemctl")
+        .arg("start")
+        .arg("thermal-recorder-py")
+        .spawn();
+    if let Err(err) = result {
+        info!("Couldn't start thermal recorder {} ", err);
+        return Err(err);
+    }
+
+    info!("Started thermal recorder py");
+    Ok(())
 }

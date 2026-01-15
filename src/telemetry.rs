@@ -20,5 +20,10 @@ pub fn read_telemetry(frame: &Frame) -> Telemetry {
     let status_bits = LittleEndian::read_u32(&buf[6..10]);
     let ffc_state = (status_bits >> 4) & 0b11;
     let ffc_in_progress = ffc_state == 0b10;
-    Telemetry { frame_num, msec_on, ffc_in_progress, msec_since_last_ffc }
+    Telemetry {
+        frame_num,
+        msec_on,
+        ffc_in_progress,
+        msec_since_last_ffc,
+    }
 }
