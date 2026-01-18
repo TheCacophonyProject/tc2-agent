@@ -49,9 +49,9 @@ pub fn spawn_frame_socket_server_thread(
     recording_state: &RecordingState,
 ) {
     let recording_state = recording_state.clone();
-    let _ = thread::Builder::new()
-        .name("frame-socket".to_string())
-        .spawn_with_priority(ThreadPriority::Max, move |result| {
+    let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(
+        ThreadPriority::Max,
+        move |result| {
             let address = get_socket_address(serve_frames_via_wifi);
             let management_address = "/var/spool/managementd".to_string();
             // Spawn a thread which can output the frames, converted to rgb grayscale
@@ -66,10 +66,8 @@ pub fn spawn_frame_socket_server_thread(
 
             let mut reconnects = 0;
             let mut prev_frame_num = None;
-            let mut sockets: [(String, bool, Option<SocketStream>); 2] = [
-                (address, serve_frames_via_wifi, None),
-                (management_address, false, None),
-            ];
+            let mut sockets: [(String, bool, Option<SocketStream>); 2] =
+                [(address, serve_frames_via_wifi, None), (management_address, false, None)];
 
             restart_rp2040_if_requested(
                 &restart_rp2040_channel_rx,
@@ -97,10 +95,8 @@ pub fn spawn_frame_socket_server_thread(
                         *stream = stream_connection;
                     }
 
-                    let connections = sockets
-                        .iter()
-                        .filter(|(_, _, stream)| stream.is_some())
-                        .count();
+                    let connections =
+                        sockets.iter().filter(|(_, _, stream)| stream.is_some()).count();
                     if connections == 0 {
                         sleep(Duration::from_millis(1000));
                         continue;
@@ -118,7 +114,8 @@ pub fn spawn_frame_socket_server_thread(
                     &mut recv_timeout_ms,
                 );
             }
-        });
+        },
+    );
 }
 
 fn handle_payload_from_frame_acquire_thread(
@@ -141,11 +138,7 @@ fn handle_payload_from_frame_acquire_thread(
                 }),
             camera_file_transfer_in_progress: false,
         }) => {
-            let model = if radiometry_enabled {
-                "lepton3.5"
-            } else {
-                "lepton3"
-            };
+            let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
             let header = format!(
                 "ResX: 160\n\
                         ResX: 160\n\
@@ -160,9 +153,7 @@ fn handle_payload_from_frame_acquire_thread(
             for (_, _, stream) in sockets.iter_mut().filter(|(_, use_wifi, stream)| {
                 stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header
             }) {
-                let stream = stream
-                    .as_mut()
-                    .expect("Never fails, because we filtered already.");
+                let stream = stream.as_mut().expect("Never fails, because we filtered already.");
                 if stream.write_all(header.as_bytes()).is_err() {
                     warn!("Failed sending header info");
                 }
@@ -192,11 +183,7 @@ fn handle_payload_from_frame_acquire_thread(
                     if !sent {
                         warn!(
                             "Send to {} failed",
-                            if *use_wifi {
-                                "tc2-frames server"
-                            } else {
-                                address
-                            }
+                            if *use_wifi { "tc2-frames server" } else { address }
                         );
                         let _ = stream.take().expect("Never fails").shutdown().is_ok();
                     }
@@ -242,11 +229,7 @@ fn handle_payload_from_frame_acquire_thread(
                     {
                         info!(
                             "Shutting down socket '{}'",
-                            if *use_wifi {
-                                "tc2-frames server"
-                            } else {
-                                address
-                            }
+                            if *use_wifi { "tc2-frames server" } else { address }
                         );
                         let _ = stream.take().unwrap().shutdown().is_ok();
                     }

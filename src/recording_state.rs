@@ -170,9 +170,7 @@ struct RecordingModeState {
 
 impl RecordingModeState {
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(AtomicU8::new(RecordingMode::Thermal as u8)),
-        }
+        Self { inner: Arc::new(AtomicU8::new(RecordingMode::Thermal as u8)) }
     }
 
     pub fn is_in_audio_mode(&self) -> bool {
@@ -263,18 +261,15 @@ impl RecordingState {
     }
 
     pub fn request_forced_file_offload(&self) {
-        self.force_offload_request_state
-            .store(true, Ordering::Relaxed);
+        self.force_offload_request_state.store(true, Ordering::Relaxed);
     }
 
     pub fn request_offload_cancellation(&self) {
-        self.cancel_offload_request_state
-            .store(true, Ordering::Relaxed);
+        self.cancel_offload_request_state.store(true, Ordering::Relaxed);
     }
 
     pub fn forced_file_offload_request_sent(&self) {
-        self.force_offload_request_state
-            .store(false, Ordering::Relaxed);
+        self.force_offload_request_state.store(false, Ordering::Relaxed);
     }
 
     pub fn forced_file_offload_requested(&self) -> bool {
@@ -282,13 +277,11 @@ impl RecordingState {
     }
 
     pub fn request_prioritise_frames(&self) {
-        self.prioritise_frames_request_state
-            .store(true, Ordering::Relaxed);
+        self.prioritise_frames_request_state.store(true, Ordering::Relaxed);
     }
 
     pub fn prioritise_frames_request_sent(&self) {
-        self.prioritise_frames_request_state
-            .store(false, Ordering::Relaxed);
+        self.prioritise_frames_request_state.store(false, Ordering::Relaxed);
     }
 
     pub fn prioritise_frames_requested(&self) -> bool {
@@ -305,14 +298,9 @@ impl RecordingState {
             let transfer_start_time = self.offload_state.start_time.load(Ordering::Relaxed);
             let now_ms = chrono::Local::now().timestamp_millis() as u64;
             let elapsed = now_ms - transfer_start_time;
-            let remaining_bytes = self
-                .offload_state
-                .remaining_offload_bytes
-                .load(Ordering::Relaxed);
-            let total_bytes = self
-                .offload_state
-                .total_offload_bytes
-                .load(Ordering::Relaxed);
+            let remaining_bytes =
+                self.offload_state.remaining_offload_bytes.load(Ordering::Relaxed);
+            let total_bytes = self.offload_state.total_offload_bytes.load(Ordering::Relaxed);
             let bytes_transferred = total_bytes - remaining_bytes;
             let bytes_per_second = bytes_transferred as f32 / ((elapsed as f32) / 1000.0);
             let remaining_seconds = remaining_bytes as f32 / bytes_per_second;
@@ -327,30 +315,18 @@ impl RecordingState {
                 remaining_events,
             )
         } else {
-            (
-                false,
-                0,
-                0,
-                total_files,
-                remaining_files,
-                total_events,
-                remaining_events,
-            )
+            (false, 0, 0, total_files, remaining_files, total_events, remaining_events)
         }
     }
 
     pub fn completed_file_offload(&mut self) {
         let remaining = self.offload_state.remaining_files.load(Ordering::Relaxed);
-        self.offload_state
-            .remaining_files
-            .store(remaining.saturating_sub(1), Ordering::Relaxed);
+        self.offload_state.remaining_files.store(remaining.saturating_sub(1), Ordering::Relaxed);
     }
 
     pub fn completed_event_offload(&mut self) {
         let remaining = self.offload_state.remaining_events.load(Ordering::Relaxed);
-        self.offload_state
-            .remaining_events
-            .store(remaining.saturating_sub(1), Ordering::Relaxed);
+        self.offload_state.remaining_events.store(remaining.saturating_sub(1), Ordering::Relaxed);
     }
 
     pub fn set_offload_totals(
@@ -359,19 +335,12 @@ impl RecordingState {
         num_blocks_to_offload: u16,
         num_events_to_offload: u16,
     ) {
+        self.offload_state.total_files.store(num_files_to_offload, Ordering::Relaxed);
+        self.offload_state.remaining_files.store(num_files_to_offload, Ordering::Relaxed);
         self.offload_state
-            .total_files
-            .store(num_files_to_offload, Ordering::Relaxed);
-        self.offload_state
-            .remaining_files
-            .store(num_files_to_offload, Ordering::Relaxed);
-        self.offload_state.total_offload_bytes.store(
-            u32::from(num_blocks_to_offload) * 64 * 2048,
-            Ordering::Relaxed,
-        );
-        self.offload_state
-            .total_events
-            .store(num_events_to_offload, Ordering::Relaxed);
+            .total_offload_bytes
+            .store(u32::from(num_blocks_to_offload) * 64 * 2048, Ordering::Relaxed);
+        self.offload_state.total_events.store(num_events_to_offload, Ordering::Relaxed);
     }
 
     pub fn update_offload_progress(&mut self, block: u16) {
@@ -381,39 +350,25 @@ impl RecordingState {
         let pages_remaining = (block as u32 + 1) * 64;
         let bytes_remaining = pages_remaining * 2048;
         if self.offload_state.start_time.load(Ordering::Relaxed) == 0 {
-            self.offload_state.start_time.store(
-                chrono::Local::now().timestamp_millis() as u64,
-                Ordering::Relaxed,
-            );
             self.offload_state
-                .total_offload_bytes
-                .store(bytes_remaining, Ordering::Relaxed);
+                .start_time
+                .store(chrono::Local::now().timestamp_millis() as u64, Ordering::Relaxed);
+            self.offload_state.total_offload_bytes.store(bytes_remaining, Ordering::Relaxed);
         }
         let pages_remaining = block as u32 * 64;
         let bytes_remaining = pages_remaining * 2048;
-        let last_remaining = self
-            .offload_state
-            .remaining_offload_bytes
-            .load(Ordering::Relaxed);
+        let last_remaining = self.offload_state.remaining_offload_bytes.load(Ordering::Relaxed);
         if bytes_remaining < last_remaining && last_remaining != 0 {
             // Make sure the number can only go down once offload has started.
-            self.offload_state
-                .remaining_offload_bytes
-                .store(bytes_remaining, Ordering::Relaxed);
+            self.offload_state.remaining_offload_bytes.store(bytes_remaining, Ordering::Relaxed);
         }
     }
 
     pub fn end_offload(&mut self) {
         self.offload_state.start_time.store(0, Ordering::Relaxed);
-        self.offload_state
-            .total_offload_bytes
-            .store(0, Ordering::Relaxed);
-        self.offload_state
-            .remaining_offload_bytes
-            .store(0, Ordering::Relaxed);
-        self.offload_state
-            .remaining_files
-            .store(0, Ordering::Relaxed);
+        self.offload_state.total_offload_bytes.store(0, Ordering::Relaxed);
+        self.offload_state.remaining_offload_bytes.store(0, Ordering::Relaxed);
+        self.offload_state.remaining_files.store(0, Ordering::Relaxed);
         self.offload_state.total_files.store(0, Ordering::Relaxed);
         self.offload_state.total_events.store(0, Ordering::Relaxed);
     }
@@ -592,49 +547,36 @@ impl RecordingState {
     }
 
     pub(crate) fn set_state(&mut self, new_state: u8) {
-        self.rp2040_recording_state_inner
-            .store(new_state, Ordering::Relaxed);
+        self.rp2040_recording_state_inner.store(new_state, Ordering::Relaxed);
     }
 
     pub fn request_long_audio_recording(&mut self) {
-        self.audio_test_recording_state_inner.store(
-            TestRecordingState::LongTestRecordingRequested as u8,
-            Ordering::Relaxed,
-        );
+        self.audio_test_recording_state_inner
+            .store(TestRecordingState::LongTestRecordingRequested as u8, Ordering::Relaxed);
     }
 
     pub fn request_long_thermal_recording(&mut self) {
-        self.lp_thermal_test_recording_state_inner.store(
-            TestRecordingState::LongTestRecordingRequested as u8,
-            Ordering::Relaxed,
-        );
+        self.lp_thermal_test_recording_state_inner
+            .store(TestRecordingState::LongTestRecordingRequested as u8, Ordering::Relaxed);
     }
 
     pub fn request_test_audio_recording(&mut self) {
-        self.audio_test_recording_state_inner.store(
-            TestRecordingState::ShortTestRecordingRequested as u8,
-            Ordering::Relaxed,
-        );
+        self.audio_test_recording_state_inner
+            .store(TestRecordingState::ShortTestRecordingRequested as u8, Ordering::Relaxed);
     }
     pub fn request_test_thermal_recording(&mut self) {
-        self.lp_thermal_test_recording_state_inner.store(
-            TestRecordingState::ShortTestRecordingRequested as u8,
-            Ordering::Relaxed,
-        );
+        self.lp_thermal_test_recording_state_inner
+            .store(TestRecordingState::ShortTestRecordingRequested as u8, Ordering::Relaxed);
     }
 
     pub fn user_requested_audio_recording(&self) -> bool {
-        let state: u8 = self
-            .audio_test_recording_state_inner
-            .load(Ordering::Relaxed);
+        let state: u8 = self.audio_test_recording_state_inner.load(Ordering::Relaxed);
         state == TestRecordingState::ShortTestRecordingRequested as u8
             || state == TestRecordingState::LongTestRecordingRequested as u8
     }
 
     pub fn user_requested_thermal_recording(&self) -> bool {
-        let state: u8 = self
-            .lp_thermal_test_recording_state_inner
-            .load(Ordering::Relaxed);
+        let state: u8 = self.lp_thermal_test_recording_state_inner.load(Ordering::Relaxed);
         state == TestRecordingState::ShortTestRecordingRequested as u8
             || state == TestRecordingState::LongTestRecordingRequested as u8
     }
@@ -677,9 +619,7 @@ impl RecordingState {
             info!("Requested audio test recording, but rp2040 is already recording");
             false
         } else {
-            let state: u8 = self
-                .audio_test_recording_state_inner
-                .load(Ordering::Relaxed);
+            let state: u8 = self.audio_test_recording_state_inner.load(Ordering::Relaxed);
             if state == TestRecordingState::ShortTestRecordingRequested as u8 {
                 self.merge_state_to_attiny(
                     Some(tc2_agent_state::AUDIO_MODE | tc2_agent_state::SHORT_TEST_RECORDING),
@@ -708,8 +648,7 @@ impl RecordingState {
                 info!("Cancel offload");
                 self.merge_state_to_attiny(None, Some(tc2_agent_state::OFFLOAD), conn);
             }
-            self.cancel_offload_request_state
-                .store(false, Ordering::Relaxed);
+            self.cancel_offload_request_state.store(false, Ordering::Relaxed);
         }
     }
 
@@ -719,9 +658,7 @@ impl RecordingState {
             info!("Requested thermal test recording, but rp2040 is already recording");
             false
         } else {
-            let state: u8 = self
-                .lp_thermal_test_recording_state_inner
-                .load(Ordering::Relaxed);
+            let state: u8 = self.lp_thermal_test_recording_state_inner.load(Ordering::Relaxed);
             if state == TestRecordingState::ShortTestRecordingRequested as u8 {
                 info!("Request short test thermal recording");
                 self.merge_state_to_attiny(

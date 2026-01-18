@@ -41,9 +41,7 @@ fn wav_header(audio_length: usize, sample_rate: u32) -> [u8; 44] {
 
     // Beginning of data block / end of header (8 bytes)
     cursor.write_all(b"data").unwrap();
-    cursor
-        .write_u32::<LittleEndian>(audio_length as u32)
-        .unwrap();
+    cursor.write_u32::<LittleEndian>(audio_length as u32).unwrap();
     cursor.into_inner()
 }
 
@@ -52,9 +50,9 @@ const SAVE_RAW_AUDIO: bool = false;
 pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceConfig) {
     let output_dir = String::from(device_config.output_dir());
     //let output_dir = String::from("/home/pi/temp");
-    let _ = thread::Builder::new()
-        .name("audio-transcode".to_string())
-        .spawn_with_priority(ThreadPriority::Min, move |_| {
+    let _ = thread::Builder::new().name("audio-transcode".to_string()).spawn_with_priority(
+        ThreadPriority::Min,
+        move |_| {
             // Reclaim some memory
             audio_bytes.shrink_to_fit();
             let timestamp = LittleEndian::read_u64(&audio_bytes[2..10]);
@@ -81,34 +79,22 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 }
             }
 
-            let output_path: String = format!(
-                "{}/{}.aac",
-                temp_dir,
-                recording_date_time.format("%Y-%m-%d--%H-%M-%S")
-            );
-            let final_output_path: String = format!(
-                "{}/{}.aac",
-                output_dir,
-                recording_date_time.format("%Y-%m-%d--%H-%M-%S")
-            );
+            let output_path: String =
+                format!("{}/{}.aac", temp_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
+            let final_output_path: String =
+                format!("{}/{}.aac", output_dir, recording_date_time.format("%Y-%m-%d--%H-%M-%S"));
             // If the file already exists, don't re-save it.
             if !fs::exists(&output_path).unwrap_or(false) {
                 let recording_date_time =
                     format!("recordingDateTime={}", recording_date_time.to_rfc3339());
                 let latitude = format!("latitude={}", device_config.lat_lng().0);
                 let longitude = format!("longitude={}", device_config.lat_lng().1);
-                let altitude = format!(
-                    "locAltitude={}",
-                    device_config.location_altitude().unwrap_or(0.0)
-                );
-                let location_accuracy = format!(
-                    "locAccuracy={}",
-                    device_config.location_accuracy().unwrap_or(0.0)
-                );
-                let location_timestamp = format!(
-                    "locTimestamp={}",
-                    device_config.location_timestamp().unwrap_or(0)
-                );
+                let altitude =
+                    format!("locAltitude={}", device_config.location_altitude().unwrap_or(0.0));
+                let location_accuracy =
+                    format!("locAccuracy={}", device_config.location_accuracy().unwrap_or(0.0));
+                let location_timestamp =
+                    format!("locTimestamp={}", device_config.location_timestamp().unwrap_or(0));
                 let device_id = format!("deviceId={}", device_config.device_id());
 
                 let original_sample_rate = LittleEndian::read_u16(&audio_bytes[10..12]) as u32;
@@ -191,9 +177,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     stdin
                         .write_all(&wav_header(audio_data.len(), sample_rate))
                         .expect("Failed to write WAV header to stdin");
-                    stdin
-                        .write_all(audio_data)
-                        .expect("Failed to write audio data to stdin");
+                    stdin.write_all(audio_data).expect("Failed to write audio data to stdin");
                     // Explicitly close stdin to signal EOF to ffmpeg
                     stdin.flush().expect("Failed to flush stdin");
                 }
@@ -233,5 +217,6 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
             } else {
                 error!("File {output_path} already exists, discarding duplicate");
             }
-        });
+        },
+    );
 }

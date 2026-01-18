@@ -262,9 +262,7 @@ impl TryFrom<u16> for LoggerEventKind {
             11 => Ok(LostSync),
             12 => Ok(SetAudioAlarm(0)),
             13 => Ok(GotPowerOnTimeout),
-            14 => Ok(WouldDiscardAsFalsePositive(
-                DiscardedRecordingInfo::from_bytes(&[0u8; 8]),
-            )),
+            14 => Ok(WouldDiscardAsFalsePositive(DiscardedRecordingInfo::from_bytes(&[0u8; 8]))),
             15 => Ok(StartedGettingFrames),
             16 => Ok(FlashStorageNearlyFull),
             17 => Ok(Rp2040WokenByAlarm),
@@ -272,9 +270,7 @@ impl TryFrom<u16> for LoggerEventKind {
             19 => Ok(AttinyCommError),
             20 => Ok(Rp2040MissedAudioAlarm(0)),
             21 => Ok(AudioRecordingFailed),
-            22 => Ok(ErasePartialOrCorruptRecording(
-                DiscardedRecordingInfo::from_bytes(&[0u8; 8]),
-            )),
+            22 => Ok(ErasePartialOrCorruptRecording(DiscardedRecordingInfo::from_bytes(&[0u8; 8]))),
             23 => Ok(StartedAudioRecording),
             24 => Ok(ThermalMode),
             25 => Ok(AudioMode),
@@ -313,40 +309,28 @@ impl LoggerEvent {
         // If the type is SavedNewConfig, maybe make the payload the config?
         if let LoggerEventKind::SetAudioAlarm(alarm) = self.event {
             // Microseconds to nanoseconds
-            call.body
-                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap();
             call.body.push_param("SetAudioAlarm").unwrap();
         } else if let LoggerEventKind::SetThermalAlarm(alarm) = self.event {
             // Microseconds to nanoseconds
-            call.body
-                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap();
             call.body.push_param("SetThermalAlarm").unwrap();
         } else if let LoggerEventKind::Rp2040MissedAudioAlarm(alarm) = self.event {
             // Microseconds to nanoseconds
-            call.body
-                .push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "alarm-time": {} }}"#, alarm * 1000)).unwrap();
             call.body.push_param("Rp2040MissedAudioAlarm").unwrap();
         } else if let LoggerEventKind::ToldRpiToWake(reason) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "wakeup-reason": "{reason}" }}"#))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "wakeup-reason": "{reason}" }}"#)).unwrap();
             call.body.push_param("ToldRpiToWake").unwrap();
         } else if let LoggerEventKind::LostFrames(lost_frames) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "lost-frames": "{lost_frames}" }}"#))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "lost-frames": "{lost_frames}" }}"#)).unwrap();
             call.body.push_param("LostFrames").unwrap();
         } else if let LoggerEventKind::ErasePartialOrCorruptRecording(discard_info) = self.event {
             let recording_type = discard_info.recording_type;
             call.body
                 .push_param(format!(r#"{{ "recording-type": "{recording_type:?}" }}"#))
                 .unwrap();
-            call.body
-                .push_param("ErasePartialOrCorruptRecording")
-                .unwrap();
+            call.body.push_param("ErasePartialOrCorruptRecording").unwrap();
         } else if let LoggerEventKind::WouldDiscardAsFalsePositive(discard_info) = self.event {
             let recording_type = discard_info.recording_type;
             let num_frames = discard_info.num_frames;
@@ -365,19 +349,13 @@ impl LoggerEvent {
                 .unwrap();
             call.body.push_param("Rp2040GotNewConfig").unwrap();
         } else if let LoggerEventKind::UnrecoverableDataCorruption((block, page)) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "block": "{block}", "page": "{page}" }}"#))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "block": "{block}", "page": "{page}" }}"#)).unwrap();
             call.body.push_param("UnrecoverableDataCorruption").unwrap();
         } else if let LoggerEventKind::OffloadedRecording(file_type) = self.event {
-            call.body
-                .push_param(format!(r#"{{ "file-type": "{file_type:?}" }}"#))
-                .unwrap();
+            call.body.push_param(format!(r#"{{ "file-type": "{file_type:?}" }}"#)).unwrap();
             call.body.push_param("OffloadedRecording").unwrap();
         } else {
-            call.body
-                .push_param(json_payload.unwrap_or(String::from("{}")))
-                .unwrap();
+            call.body.push_param(json_payload.unwrap_or(String::from("{}"))).unwrap();
             call.body.push_param(format!("{:?}", self.event)).unwrap();
         }
         // Microseconds to nanoseconds

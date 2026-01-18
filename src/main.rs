@@ -65,10 +65,8 @@ fn mb_disk_space_remaining() -> (usize, usize) {
     let mut available_space_bytes = 0;
     let mut total_space_bytes = 0;
     const ROOT_MOUNT_POINT: &str = "/";
-    let main_partition = disks
-        .list()
-        .iter()
-        .find(|disk| disk.mount_point().to_str().unwrap() == ROOT_MOUNT_POINT);
+    let main_partition =
+        disks.list().iter().find(|disk| disk.mount_point().to_str().unwrap() == ROOT_MOUNT_POINT);
     if let Some(main_partition) = main_partition {
         available_space_bytes += main_partition.available_space();
         total_space_bytes += main_partition.total_space();
@@ -108,16 +106,9 @@ fn check_for_sufficient_free_disk_space() {
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    let log_config = ConfigBuilder::default()
-        .set_time_level(LevelFilter::Off)
-        .build();
-    TermLogger::init(
-        LevelFilter::Info,
-        log_config,
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
-    .unwrap();
+    let log_config = ConfigBuilder::default().set_time_level(LevelFilter::Off).build();
+    TermLogger::init(LevelFilter::Info, log_config, TerminalMode::Mixed, ColorChoice::Auto)
+        .unwrap();
 
     println!(
         "\n=========\nStarting thermal camera 2 agent {VERSION}, run with --help to see options.\n"
@@ -253,12 +244,7 @@ pub fn set_system_timezone(timezone: &str) -> Result<(), String> {
         info!("System timezone already set to {timezone}");
         return Ok(());
     }
-    match Command::new("sudo")
-        .arg("timedatectl")
-        .arg("set-timezone")
-        .arg(timezone)
-        .output()
-    {
+    match Command::new("sudo").arg("timedatectl").arg("set-timezone").arg(timezone).output() {
         Ok(output) => {
             if output.status.success() {
                 info!("System timezone successfully set to: {}", timezone);

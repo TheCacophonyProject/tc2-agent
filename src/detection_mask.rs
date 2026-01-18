@@ -7,17 +7,13 @@ pub struct DetectionMask {
 
 impl Debug for DetectionMask {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DetectionMask")
-            .field("has_masking", &self.has_masking())
-            .finish()
+        f.debug_struct("DetectionMask").field("has_masking", &self.has_masking()).finish()
     }
 }
 
 impl DetectionMask {
     pub fn new(mask: Option<[u8; 2400]>) -> DetectionMask {
-        DetectionMask {
-            inner: mask.unwrap_or([0u8; 2400]),
-        }
+        DetectionMask { inner: mask.unwrap_or([0u8; 2400]) }
     }
     #[allow(unused)]
     pub fn is_masked_at_pos(&self, x: usize, y: usize) -> bool {
