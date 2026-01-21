@@ -842,7 +842,7 @@ pub fn enter_camera_transfer_loop(
                         })
                         .unwrap();
                     // Frame
-                    let mut frame: [u8; 39040] = [0u8; FRAME_LENGTH];
+                    let mut frame = [0u8; FRAME_LENGTH];
                     BigEndian::write_u16_into(
                         u8_slice_as_u16_slice(
                             &raw_read_buffer[header_length..header_length + FRAME_LENGTH],
