@@ -864,6 +864,8 @@ pub fn enter_camera_transfer_loop(
                         rp2040_needs_reset = true;
                     } else if !rp2040_needs_reset {
                         FRAME_BUFFER.swap();
+                        // ideally we should only do this in high power mode
+                        // but this would require changes to sidekick / management interface so can be done later.
                         if !started_thermal_recorder {
                             info!("starting thermal recorder");
                             let _ = start_thermal_recorder_py();
