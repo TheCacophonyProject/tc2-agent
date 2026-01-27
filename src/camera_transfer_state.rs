@@ -1033,7 +1033,7 @@ pub fn start_thermal_recorder_py() -> io::Result<()> {
     let result =
         Command::new("sudo").arg("systemctl").arg("start").arg("thermal-recorder-py").spawn();
     if let Err(err) = result {
-        info!("Couldn't start thermal recorder {} ", err);
+        error!("Couldn't start thermal recorder {} ", err);
         return Err(err);
     }
 
