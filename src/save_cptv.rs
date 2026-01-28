@@ -4,11 +4,16 @@ use log::{error, info};
 use std::{fs, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
-pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
+pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str, postprocess: bool) {
     {
         cptv_bytes.shrink_to_fit();
     }
-    let output_dir = String::from(output_dir);
+    let output_dir = if postprocess {
+        format!("{}{}", output_dir, String::from("/postprocess"))
+    } else {
+        String::from(output_dir)
+    };
+
     let _ = thread::Builder::new().name("cptv-save".to_string()).spawn_with_priority(
         ThreadPriority::Min,
         move |_| match decode_cptv_header_streaming(&cptv_bytes) {
@@ -25,7 +30,12 @@ pub fn save_cptv_file_to_disk(mut cptv_bytes: Vec<u8>, output_dir: &str) {
                         });
                     }
                     let filename = recording_date_time.format("%Y-%m-%d--%H-%M-%S");
-                    let path = format!("{output_dir}/{filename}.cptv",);
+                    let path = if postprocess {
+                        // tell postprocessing it's not expecting a metadata .txt file
+                        format!("{output_dir}/{filename}-track.cptv",)
+                    } else {
+                        format!("{output_dir}/{filename}.cptv",)
+                    };
                     //very slow and cpu intensive offered 18% saving on a 10 minute recording
                     // let decoder = MultiGzDecoder::new(&cptv_bytes[..]);
                     // let mut encoder = GzEncoder::new(decoder, Compression::default());

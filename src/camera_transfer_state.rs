@@ -1,5 +1,7 @@
 use crate::cptv_frame_dispatch::FRAME_BUFFER;
 use crate::dbus_attiny_i2c::{exit_cleanly, process_interrupted};
+use std::io;
+use std::process::Command;
 
 use crate::device_config::{DeviceConfig, check_for_device_config_changes};
 use crate::event_logger::{
@@ -148,6 +150,7 @@ pub fn enter_camera_transfer_loop(
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
+    let mut started_thermal_recorder = false;
     let mut file_download: Option<Vec<u8>> = None;
     let header_length = 18;
     let mut return_payload_buf = [0u8; 32 + 104];
@@ -160,6 +163,7 @@ pub fn enter_camera_transfer_loop(
     let crc_check = Crc::<u16>::new(&CRC_16_XMODEM);
     let max_size: usize = raw_read_buffer.len();
     let mut device_config: DeviceConfig = initial_config;
+
     let mut rp2040_needs_reset = false;
     let mut sent_reset_request = false;
     let mut rp2040_reset_in_progress = false;
@@ -774,7 +778,11 @@ pub fn enter_camera_transfer_loop(
                                     if shebang == AUDIO_SHEBANG {
                                         save_audio_file_to_disk(file, device_config.clone());
                                     } else {
-                                        save_cptv_file_to_disk(file, device_config.output_dir())
+                                        save_cptv_file_to_disk(
+                                            file,
+                                            device_config.output_dir(),
+                                            device_config.is_postprocessing_enabled(),
+                                        )
                                     }
                                     let _ = camera_handshake_channel_tx.send(
                                         FrameSocketServerMessage {
@@ -799,7 +807,11 @@ pub fn enter_camera_transfer_loop(
                                 if shebang == AUDIO_SHEBANG {
                                     save_audio_file_to_disk(file, device_config.clone());
                                 } else {
-                                    save_cptv_file_to_disk(file, device_config.output_dir())
+                                    save_cptv_file_to_disk(
+                                        file,
+                                        device_config.output_dir(),
+                                        device_config.is_postprocessing_enabled(),
+                                    )
                                 }
                                 let _ =
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
@@ -852,6 +864,13 @@ pub fn enter_camera_transfer_loop(
                         rp2040_needs_reset = true;
                     } else if !rp2040_needs_reset {
                         FRAME_BUFFER.swap();
+                        // ideally we should only do this in high power mode
+                        // but this would require changes to sidekick / management interface so can be done later.
+                        if !started_thermal_recorder {
+                            info!("starting thermal recorder");
+                            let _ = start_thermal_recorder_py();
+                        }
+                        started_thermal_recorder = true;
                         let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                             camera_handshake_info: Some(CameraHandshakeInfo {
                                 radiometry_enabled,
@@ -1010,4 +1029,16 @@ fn maybe_cancel_in_progress_file_offload_session(
     recording_state: &mut RecordingState,
 ) {
     recording_state.cancel_offload_session(dbus_conn);
+}
+
+pub fn start_thermal_recorder_py() -> io::Result<()> {
+    let result =
+        Command::new("sudo").arg("systemctl").arg("start").arg("thermal-recorder-py").spawn();
+    if let Err(err) = result {
+        error!("Couldn't start thermal recorder {} ", err);
+        return Err(err);
+    }
+
+    info!("Started thermal recorder py");
+    Ok(())
 }
