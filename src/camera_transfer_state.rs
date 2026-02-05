@@ -505,6 +505,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
+                                        frame_bytes:0,
                                     });
                             }
                             CAMERA_CONNECT_INFO => {
@@ -562,6 +563,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
+                                        frame_bytes:0,
                                     });
                             }
                             CAMERA_SEND_LOGGER_EVENT => {
@@ -714,6 +716,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: true,
+                                        frame_bytes:0
                                     });
                             }
                             CAMERA_RESUME_FILE_TRANSFER => {
@@ -737,6 +740,8 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: true,
+                                                                                    frame_bytes:0
+
                                         },
                                     );
                                 } else {
@@ -788,6 +793,7 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
+                                            frame_bytes:0
                                         },
                                     );
                                 } else {
@@ -817,6 +823,8 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
+                                                                                    frame_bytes:0
+
                                     });
                             }
                             CAMERA_GET_MOTION_DETECTION_MASK => {
@@ -832,7 +840,11 @@ pub fn enter_camera_transfer_loop(
                         warn!("Crc check failed, remote was notified and will re-transmit");
                     }
                 } else {
-                    spi.read(&mut raw_read_buffer[2066..num_bytes + header_length])
+                    let medium_power_mode = true;
+                    // header length is already in num_bytes....?
+                    let aligned_offset: usize = (num_bytes + 3) & !3;
+
+                    spi.read(&mut raw_read_buffer[2066..aligned_offset])
                         .map_err(|e| {
                             error!("SPI read error: {e:?}");
 
@@ -841,13 +853,15 @@ pub fn enter_camera_transfer_loop(
                             process::exit(1);
                         })
                         .unwrap();
-                    // Frame
+
+                        // Frame
                     let mut frame = [0u8; FRAME_LENGTH];
+
                     BigEndian::write_u16_into(
                         u8_slice_as_u16_slice(
-                            &raw_read_buffer[header_length..header_length + FRAME_LENGTH],
+                            &raw_read_buffer[header_length..num_bytes],
                         ),
-                        &mut frame,
+                        &mut frame[..num_bytes-header_length ],
                     );
                     let back = FRAME_BUFFER.get_back().lock().unwrap();
                     back.replace(Some(frame));
@@ -879,6 +893,7 @@ pub fn enter_camera_transfer_loop(
                                 camera_serial: lepton_serial_number.clone(),
                             }),
                             camera_file_transfer_in_progress: false,
+                            frame_bytes: num_bytes-header_length,
                         });
                     }
                 }

@@ -17,6 +17,7 @@ use thread_priority::{ThreadBuilderExt, ThreadPriority};
 pub struct FrameSocketServerMessage {
     pub(crate) camera_handshake_info: Option<CameraHandshakeInfo>,
     pub(crate) camera_file_transfer_in_progress: bool,
+    pub(crate) frame_bytes: usize,
 }
 
 fn restart_rp2040_if_requested(
@@ -137,7 +138,11 @@ fn handle_payload_from_frame_acquire_thread(
                     camera_serial,
                 }),
             camera_file_transfer_in_progress: false,
+            frame_bytes
         }) => {
+            if frame_bytes == 39040{
+                *ms_elapsed = 0;
+            }else{
             let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
             let header = format!(
                 "ResX: 160\n\
@@ -172,14 +177,23 @@ fn handle_payload_from_frame_acquire_thread(
             }
             let s = Instant::now();
             let mut telemetry: Option<Telemetry> = None;
-            let frame_data = cptv_frame_dispatch::get_frame(is_recording);
+             let frame_data: Option<[u8; 39040]> = if frame_bytes != 39040{
+                //first 4 bytes are frame data probably need something else to say its not a normal frame
+                info!("Getting raw frame as bytes are {}",frame_bytes);
+                 cptv_frame_dispatch::get_raw_frame()
+             }else{
+                cptv_frame_dispatch::get_frame(is_recording)
+             };
+              
             if let Some(fb) = frame_data {
-                telemetry = Some(read_telemetry(&fb));
+                if frame_bytes == 39040{
+                    telemetry = Some(read_telemetry(&fb));
+                }
                 for (address, use_wifi, stream) in
                     sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
                 {
                     let sent =
-                        cptv_frame_dispatch::send_frame(fb, stream.as_mut().expect("Never fails"));
+                        cptv_frame_dispatch::send_frame(&fb[..frame_bytes], stream.as_mut().expect("Never fails"));
                     if !sent {
                         warn!(
                             "Send to {} failed",
@@ -189,6 +203,7 @@ fn handle_payload_from_frame_acquire_thread(
                     }
                 }
             }
+            
             let e = s.elapsed().as_secs_f32();
             if e > 0.1 {
                 info!("socket send took {e}s");
@@ -215,9 +230,11 @@ fn handle_payload_from_frame_acquire_thread(
             }
             *ms_elapsed = 0;
         }
+        }
         Ok(FrameSocketServerMessage {
             camera_handshake_info: None,
             camera_file_transfer_in_progress: true,
+            ..
         }) => {
             // There's a file transfer in progress, and we got a recording mode change?
             *ms_elapsed = 0;
