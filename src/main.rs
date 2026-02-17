@@ -195,6 +195,7 @@ fn main() {
             // Used to indicate that a reset request was received and processed by the
             // frame-socket thread.
             let restart_rp2040_ack = Arc::new(AtomicBool::new(false));
+            let thermal_ready = Arc::new(AtomicBool::new(false));
 
             // The frame socket server takes frames from the main camera transfer loop,
             // and serves them to various consumers of frames.
@@ -207,6 +208,7 @@ fn main() {
                 run_pin,
                 restart_rp2040_ack.clone(),
                 &recording_state,
+                thermal_ready.clone(),
             );
             recording_state.set_ready(&mut dbus_conn);
             if initial_config.use_high_power_mode() || !recording_state.is_recording() {
@@ -223,6 +225,7 @@ fn main() {
                 camera_handshake_channel_tx,
                 restart_rp2040_ack,
                 recording_state,
+                thermal_ready,
             );
             info!("Exiting gracefully");
             Ok::<(), Error>(())

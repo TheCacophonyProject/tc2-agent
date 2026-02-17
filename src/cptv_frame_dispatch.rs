@@ -5,8 +5,8 @@ use crate::socket_stream::SocketStream;
 pub type Frame = [u8; FRAME_LENGTH];
 pub static FRAME_BUFFER: DoubleBuffer = DoubleBuffer::new();
 
-pub fn get_raw_frame()-> Option<[u8; 39040]> {
-    FRAME_BUFFER.get_front().lock().unwrap().take()   
+pub fn get_raw_frame() -> Option<[u8; 39040]> {
+    FRAME_BUFFER.get_front().lock().unwrap().take()
 }
 
 pub fn get_frame(is_recording: bool) -> Option<[u8; 39040]> {

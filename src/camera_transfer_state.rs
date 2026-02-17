@@ -93,6 +93,7 @@ pub fn enter_camera_transfer_loop(
     camera_handshake_channel_tx: Sender<FrameSocketServerMessage>,
     restart_rp2040_ack: Arc<AtomicBool>,
     mut recording_state: RecordingState,
+    thermal_ready: Arc<AtomicBool>,
 ) {
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
@@ -505,7 +506,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
-                                        frame_bytes:0,
+                                        frame_bytes: 0,
                                     });
                             }
                             CAMERA_CONNECT_INFO => {
@@ -563,7 +564,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
-                                        frame_bytes:0,
+                                        frame_bytes: 0,
                                     });
                             }
                             CAMERA_SEND_LOGGER_EVENT => {
@@ -716,7 +717,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: true,
-                                        frame_bytes:0
+                                        frame_bytes: 0,
                                     });
                             }
                             CAMERA_RESUME_FILE_TRANSFER => {
@@ -740,8 +741,7 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: true,
-                                                                                    frame_bytes:0
-
+                                            frame_bytes: 0,
                                         },
                                     );
                                 } else {
@@ -793,7 +793,7 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
-                                            frame_bytes:0
+                                            frame_bytes: 0,
                                         },
                                     );
                                 } else {
@@ -823,8 +823,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
-                                                                                    frame_bytes:0
-
+                                        frame_bytes: 0,
                                     });
                             }
                             CAMERA_GET_MOTION_DETECTION_MASK => {
@@ -842,33 +841,57 @@ pub fn enter_camera_transfer_loop(
                 } else {
                     let medium_power_mode = true;
                     // header length is already in num_bytes....?
-                    let aligned_offset: usize = (num_bytes + 3) & !3;
+                    let mut aligned_offset: usize = (num_bytes + 3) & !3;
+                    let mut ignore_frame = false;
+                    // if aligned_offset != 39060 {
+                    //     if !restart_rp2040_ack.load(Ordering::Relaxed) {
+                    //         // info!("Ignoring  as thermal rec not ready");
+                    //         ignore_frame = false;
+                    //     }
+                    //     //bit of a hack to make the rp2040 resend this frame
+                    //     thread::sleep(Duration::from_millis(100));
 
-                    spi.read(&mut raw_read_buffer[2066..aligned_offset])
-                        .map_err(|e| {
-                            error!("SPI read error: {e:?}");
+                    //     // ignore_frame = true;
+                    // }
 
-                            // TODO: Shutdown gracefully?
+                    if !ignore_frame {
+                        if aligned_offset < 2066 {
+                            aligned_offset = 2068;
+                        }
+                        spi.read(&mut raw_read_buffer[2066..aligned_offset])
+                            .map_err(|e| {
+                                error!("SPI read error: {e:?}");
 
-                            process::exit(1);
-                        })
-                        .unwrap();
+                                // TODO: Shutdown gracefully?
+
+                                process::exit(1);
+                            })
+                            .unwrap();
 
                         // Frame
-                    let mut frame = [0u8; FRAME_LENGTH];
-
-                    BigEndian::write_u16_into(
-                        u8_slice_as_u16_slice(
-                            &raw_read_buffer[header_length..num_bytes],
-                        ),
-                        &mut frame[..num_bytes-header_length ],
-                    );
-                    let back = FRAME_BUFFER.get_back().lock().unwrap();
-                    back.replace(Some(frame));
+                        let mut frame = [0u8; FRAME_LENGTH];
+                        if aligned_offset != 39060 {
+                            //these have been swizzled and need to be re swizzled
+                            num_bytes = (num_bytes + 1) & !1;
+                            LittleEndian::write_u16_into(
+                                u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
+                                &mut frame[..num_bytes - header_length],
+                            );
+                            // info!("FIrst bytes are {:?} ", &frame[..20])
+                        } else {
+                            BigEndian::write_u16_into(
+                                u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
+                                &mut frame[..num_bytes - header_length],
+                            );
+                        }
+                        let back = FRAME_BUFFER.get_back().lock().unwrap();
+                        back.replace(Some(frame));
+                    }
                     if !got_first_frame {
                         got_first_frame = true;
                         info!("Got first frame from rp2040, got startup info {got_startup_info}");
                     }
+
                     // FIXME: Should is_recording bit only be set in high power mode?
                     // FIXME: Check this out.
                     let is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
@@ -877,7 +900,6 @@ pub fn enter_camera_transfer_loop(
                         warn!("Requesting reset of rp2040 to force handshake");
                         rp2040_needs_reset = true;
                     } else if !rp2040_needs_reset {
-                        FRAME_BUFFER.swap();
                         // ideally we should only do this in high power mode
                         // but this would require changes to sidekick / management interface so can be done later.
                         if !started_thermal_recorder {
@@ -885,6 +907,10 @@ pub fn enter_camera_transfer_loop(
                             let _ = start_thermal_recorder_py();
                         }
                         started_thermal_recorder = true;
+                        if !ignore_frame {
+                            FRAME_BUFFER.swap();
+                        }
+
                         let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                             camera_handshake_info: Some(CameraHandshakeInfo {
                                 radiometry_enabled,
@@ -893,7 +919,7 @@ pub fn enter_camera_transfer_loop(
                                 camera_serial: lepton_serial_number.clone(),
                             }),
                             camera_file_transfer_in_progress: false,
-                            frame_bytes: num_bytes-header_length,
+                            frame_bytes: num_bytes - header_length,
                         });
                     }
                 }

@@ -48,11 +48,17 @@ pub fn spawn_frame_socket_server_thread(
     mut run_pin: OutputPin,
     mut restart_rp2040_ack: Arc<AtomicBool>,
     recording_state: &RecordingState,
+    thermal_ready: Arc<AtomicBool>,
 ) {
+    let medium_power = true;
+    let mut file_download: Option<Vec<u8>> = None;
+
     let recording_state = recording_state.clone();
     let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(
         ThreadPriority::Max,
         move |result| {
+            let mut is_recording = false;
+            let mut thermal_connected = false;
             let address = get_socket_address(serve_frames_via_wifi);
             let management_address = "/var/spool/managementd".to_string();
             // Spawn a thread which can output the frames, converted to rgb grayscale
@@ -67,8 +73,10 @@ pub fn spawn_frame_socket_server_thread(
 
             let mut reconnects = 0;
             let mut prev_frame_num = None;
-            let mut sockets: [(String, bool, Option<SocketStream>); 2] =
-                [(address, serve_frames_via_wifi, None), (management_address, false, None)];
+            let mut sockets: [(String, bool, Option<SocketStream>, bool); 2] = [
+                (address, serve_frames_via_wifi, None, true),
+                (management_address, false, None, false),
+            ];
 
             restart_rp2040_if_requested(
                 &restart_rp2040_channel_rx,
@@ -85,34 +93,66 @@ pub fn spawn_frame_socket_server_thread(
                     &mut restart_rp2040_ack,
                 );
                 if recording_state.recording_mode() == RecordingMode::Thermal {
-                    for (address, use_wifi, stream) in
-                        sockets.iter_mut().filter(|(_, _, stream)| stream.is_none())
+                    for (address, use_wifi, stream, thermal_rec) in
+                        sockets.iter_mut().filter(|(_, _, stream, _)| stream.is_none())
                     {
                         let stream_connection: Option<SocketStream> =
                             SocketStream::from_address(address, *use_wifi).ok();
                         if stream_connection.is_some() {
                             println!("Connected to {address}");
+                            if *thermal_rec {
+                                info!("Connected to thermal");
+                                thermal_connected = true;
+                            }
                         }
                         *stream = stream_connection;
                     }
 
                     let connections =
-                        sockets.iter().filter(|(_, _, stream)| stream.is_some()).count();
+                        sockets.iter().filter(|(_, _, stream, _)| stream.is_some()).count();
                     if connections == 0 {
                         sleep(Duration::from_millis(1000));
                         continue;
                     }
                 }
 
-                handle_payload_from_frame_acquire_thread(
-                    camera_handshake_channel_rx
-                        .recv_timeout(Duration::from_millis(recv_timeout_ms)),
+                let message = camera_handshake_channel_rx
+                    .recv_timeout(Duration::from_millis(recv_timeout_ms));
+
+                if medium_power {
+                    let socket = sockets.iter_mut().find(|(sock_address, use_wifi, stream, _)| {
+                        stream.is_some() && sock_address == address
+                    });
+                    if socket.is_some() {
+                        if let Ok(FrameSocketServerMessage {
+                            camera_handshake_info:
+                                Some(CameraHandshakeInfo {
+                                    radiometry_enabled,
+                                    is_recording,
+                                    firmware_version,
+                                    camera_serial,
+                                }),
+                            camera_file_transfer_in_progress: false,
+                            frame_bytes,
+                        }) = message.as_ref()
+                        {
+                            if *frame_bytes > 0 && *frame_bytes < 39040 {
+                                handle_medium_power(socket.unwrap(), frame_bytes, is_recording);
+                            }
+                        }
+                    }
+                }
+                let frame_bytes = handle_payload_from_frame_acquire_thread(
+                    message,
                     &mut sockets,
                     &mut ms_elapsed,
                     &mut reconnects,
                     &mut prev_frame_num,
                     &recording_state,
                     &mut recv_timeout_ms,
+                    &mut thermal_connected,
+                    &mut file_download,
+                    is_recording,
                 );
             }
         },
@@ -121,13 +161,17 @@ pub fn spawn_frame_socket_server_thread(
 
 fn handle_payload_from_frame_acquire_thread(
     result: Result<FrameSocketServerMessage, RecvTimeoutError>,
-    sockets: &mut [(String, bool, Option<SocketStream>); 2],
+    sockets: &mut [(String, bool, Option<SocketStream>, bool); 2],
     ms_elapsed: &mut u64,
     reconnects: &mut usize,
     prev_frame_num: &mut Option<u32>,
     recording_state: &RecordingState,
     recv_timeout_ms: &mut u64,
-) {
+    thermal_ready: &mut bool,
+    mut file_download: &mut Option<Vec<u8>>,
+    was_recording: bool,
+) -> usize {
+    let medium_power = true;
     match result {
         Ok(FrameSocketServerMessage {
             camera_handshake_info:
@@ -138,29 +182,32 @@ fn handle_payload_from_frame_acquire_thread(
                     camera_serial,
                 }),
             camera_file_transfer_in_progress: false,
-            frame_bytes
+            frame_bytes,
         }) => {
-            if frame_bytes == 39040{
-                *ms_elapsed = 0;
-            }else{
+            let is_recording = frame_bytes != 39040;
             let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
             let header = format!(
                 "ResX: 160\n\
-                        ResX: 160\n\
-                        ResY: 120\n\
-                        FrameSize: 39040\n\
-                        Model: {model}\n\
-                        Brand: flir\n\
-                        FPS: 9\n\
-                        Firmware: DOC-AI-v0.{firmware_version}\n\
-                        CameraSerial: {camera_serial}\n\n",
+                    ResX: 160\n\
+                    ResY: 120\n\
+                    FrameSize: 39040\n\
+                    Model: {model}\n\
+                    Brand: flir\n\
+                    FPS: 9\n\
+                    Firmware: DOC-AI-v0.{firmware_version}\n\
+                    CameraSerial: {camera_serial}\n\n",
             );
-            for (_, _, stream) in sockets.iter_mut().filter(|(_, use_wifi, stream)| {
-                stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header
-            }) {
+            for (_, _, stream, thermal_rec) in
+                sockets.iter_mut().filter(|(_, use_wifi, stream, _)| {
+                    stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header
+                })
+            {
                 let stream = stream.as_mut().expect("Never fails, because we filtered already.");
                 if stream.write_all(header.as_bytes()).is_err() {
-                    warn!("Failed sending header info");
+                    warn!(
+                        "Fail[INFO] THermal ready? true was reco false is_rec false bytes 39040
+ed sending header info"
+                    );
                 }
                 // Clear existing
                 if stream.write_all(b"clear").is_err() {
@@ -168,32 +215,51 @@ fn handle_payload_from_frame_acquire_thread(
                 }
                 let _ = stream.flush();
                 stream.sent_header = true;
+                if *thermal_rec {
+                    info!("Connected to thermal");
+                    *thermal_ready = true;
+                }
             }
-
+            // info!("THermal ready? {} was reco {} is_rec {} bytes {}", thermal_ready,was_recording,is_recording,frame_bytes);
+            if *thermal_ready && was_recording && !is_recording {
+                info!("Ending recording");
+                for (address, use_wifi, stream, _) in sockets
+                    .iter_mut()
+                    .filter(|(_, _, stream, thermal_rec)| *thermal_rec && stream.is_some())
+                {
+                    let stream =
+                        stream.as_mut().expect("Never fails, because we filtered already.");
+                    if stream.write_all(b"clear").is_err() {
+                        warn!("Failed clearing buffer");
+                    }
+                }
+            }
+            if !is_recording {
+                *ms_elapsed = 0;
+                // info!("Ignoring as not recording for debug purposes");
+                return frame_bytes;
+            }
             if *reconnects > 0 {
                 info!("Got frame connection");
                 *prev_frame_num = None;
                 *reconnects = 0;
             }
             let s = Instant::now();
-            let mut telemetry: Option<Telemetry> = None;
-             let frame_data: Option<[u8; 39040]> = if frame_bytes != 39040{
-                //first 4 bytes are frame data probably need something else to say its not a normal frame
-                info!("Getting raw frame as bytes are {}",frame_bytes);
-                 cptv_frame_dispatch::get_raw_frame()
-             }else{
-                cptv_frame_dispatch::get_frame(is_recording)
-             };
-              
-            if let Some(fb) = frame_data {
-                if frame_bytes == 39040{
-                    telemetry = Some(read_telemetry(&fb));
-                }
-                for (address, use_wifi, stream) in
-                    sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
+
+            if *thermal_ready && file_download.is_some() {
+                info!("Thermal is ready and have some file so send it....");
+                for (address, use_wifi, stream, _) in sockets
+                    .iter_mut()
+                    .filter(|(_, _, stream, thermal_rec)| *thermal_rec && stream.is_some())
                 {
-                    let sent =
-                        cptv_frame_dispatch::send_frame(&fb[..frame_bytes], stream.as_mut().expect("Never fails"));
+                    info!("Sending");
+                    let data = &file_download.take().unwrap();
+                    info!("Sending file to thermal {}", data.len());
+
+                    let sent = cptv_frame_dispatch::send_frame(
+                        data,
+                        stream.as_mut().expect("Never fails"),
+                    );
                     if !sent {
                         warn!(
                             "Send to {} failed",
@@ -203,7 +269,57 @@ fn handle_payload_from_frame_acquire_thread(
                     }
                 }
             }
-            
+
+            let mut telemetry: Option<Telemetry> = None;
+            let frame_data: Option<[u8; 39040]> = if frame_bytes != 39040 {
+                //first 4 bytes are frame data probably need something else to say its not a normal frame
+                // info!("Getting raw frame as bytes are {}", frame_bytes);
+                cptv_frame_dispatch::get_raw_frame()
+            } else {
+                cptv_frame_dispatch::get_frame(is_recording)
+            };
+
+            if medium_power && !*thermal_ready && is_recording {
+                // [...frame_bytes];
+                info!(
+                    "Adding bytes {} to memory file frame is none {}",
+                    frame_bytes,
+                    frame_data.is_none()
+                );
+
+                if let Some(chunk) = frame_data {
+                    info!("Adding bytes {} to memory file", frame_bytes);
+                    if let Some(file) = &mut file_download {
+                        file.extend_from_slice(&chunk[..frame_bytes]);
+                    } else {
+                        let mut file = Vec::with_capacity(50_000_000);
+                        file.extend_from_slice(&chunk[..frame_bytes]);
+                        file_download = &mut Some(file);
+                    }
+                }
+            }
+
+            if let Some(fb) = frame_data {
+                if frame_bytes == 39040 {
+                    telemetry = Some(read_telemetry(&fb));
+                }
+                for (address, use_wifi, stream, _) in
+                    sockets.iter_mut().filter(|(_, _, stream, _)| stream.is_some())
+                {
+                    let sent = cptv_frame_dispatch::send_frame(
+                        &fb[..frame_bytes],
+                        stream.as_mut().expect("Never fails"),
+                    );
+                    if !sent {
+                        warn!(
+                            "Send to {} failed",
+                            if *use_wifi { "tc2-frames server" } else { address }
+                        );
+                        let _ = stream.take().expect("Never fails").shutdown().is_ok();
+                    }
+                }
+            }
+
             let e = s.elapsed().as_secs_f32();
             if e > 0.1 {
                 info!("socket send took {e}s");
@@ -229,7 +345,7 @@ fn handle_payload_from_frame_acquire_thread(
                 }
             }
             *ms_elapsed = 0;
-        }
+            return frame_bytes;
         }
         Ok(FrameSocketServerMessage {
             camera_handshake_info: None,
@@ -241,14 +357,17 @@ fn handle_payload_from_frame_acquire_thread(
             match recording_state.recording_mode() {
                 RecordingMode::Audio => {
                     *recv_timeout_ms = 1000;
-                    for (address, use_wifi, stream) in
-                        sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
+                    for (address, use_wifi, stream, thermal_rec) in
+                        sockets.iter_mut().filter(|(_, _, stream, _)| stream.is_some())
                     {
                         info!(
                             "Shutting down socket '{}'",
                             if *use_wifi { "tc2-frames server" } else { address }
                         );
                         let _ = stream.take().unwrap().shutdown().is_ok();
+                        if *thermal_rec {
+                            *thermal_ready = false;
+                        }
                     }
                 }
                 RecordingMode::Thermal => {
@@ -320,6 +439,80 @@ fn handle_payload_from_frame_acquire_thread(
                     }
                 }
             }
+        }
+    }
+    return 0;
+}
+
+fn handle_medium_power(
+    socket: &mut (String, bool, Option<SocketStream>, bool),
+    frame_bytes: usize,
+    was_recording: bool,
+) {
+    let is_recording = frame_bytes == 39040;
+    let medium_power = true;
+    // let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
+    // let header = format!(
+    //     "ResX: 160\n\
+    //         ResX: 160\n\
+    //         ResY: 120\n\
+    //         FrameSize: 39040\n\
+    //         Model: {model}\n\
+    //         Brand: flir\n\
+    //         FPS: 9\n\
+    //         Firmware: DOC-AI-v0.{firmware_version}\n\
+    //         CameraSerial: {camera_serial}\n\n",
+    // );
+    let (address, use_wifi, stream, _) = socket;
+    let stream = stream.as_mut().expect("Never fails, because we filtered already.");
+    if stream.write_all(header.as_bytes()).is_err() {
+        warn!(
+            "Fail[INFO] THermal ready? true was reco false is_rec false bytes 39040
+ed sending header info"
+        );
+    }
+    // Clear existing
+    if stream.write_all(b"clear").is_err() {
+        warn!("Failed clearing buffer");
+    }
+    let _ = stream.flush();
+    stream.sent_header = true;
+
+    // info!("THermal ready? {} was reco {} is_rec {} bytes {}", thermal_ready,was_recording,is_recording,frame_bytes);
+    if was_recording && !is_recording {
+        info!("Ending recording");
+        if stream.write_all(b"clear").is_err() {
+            warn!("Failed clearing buffer");
+        }
+    }
+    if !is_recording {
+        return;
+    }
+    let s = Instant::now();
+
+    if file_download.is_some() {
+        info!("Thermal is ready and have some file so send it....");
+
+        info!("Sending");
+        let data = &file_download.take().unwrap();
+        info!("Sending file to thermal {}", data.len());
+
+        let sent = cptv_frame_dispatch::send_frame(data, stream);
+        if !sent {
+            warn!("Send to {} failed", if *use_wifi { "tc2-frames server" } else { address });
+            let _ = stream.shutdown().is_ok();
+        }
+    }
+
+    let frame_data: Option<[u8; 39040]> = cptv_frame_dispatch::get_raw_frame();
+    //first 4 bytes are frame data probably need something else to say its not a normal frame
+    // info!("Getting raw frame as bytes are {}", frame_bytes);
+
+    if let Some(fb) = frame_data {
+        let sent = cptv_frame_dispatch::send_frame(&fb[..frame_bytes], stream);
+        if !sent {
+            warn!("Send to {} failed", if *use_wifi { "tc2-frames server" } else { address });
+            let _ = stream.shutdown().is_ok();
         }
     }
 }
