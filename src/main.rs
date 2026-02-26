@@ -145,26 +145,26 @@ fn main() {
 
     let mut recording_state = RecordingState::new();
     let _dbus_audio_thread = setup_dbus_managementd_recording_service(&recording_state);
-
+    info!("Set up dbus");
     let current_config = device_config.unwrap();
+    info!("Config");
 
     let (lat, lng) = current_config.lat_lng();
-    if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64)) {
-        error!("{e}");
-        process::exit(1);
-    }
+    // if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64)) {
+    //     error!("{e}");
+    //     process::exit(1);
+    // }
 
     let initial_config = current_config.clone();
     let (device_config_change_channel_tx, device_config_change_channel_rx) = channel();
     let _file_watcher =
         watch_local_config_file_changes(current_config, &device_config_change_channel_tx);
-
+    info!("FILEWATCHER");
     // NOTE: This handles gracefully exiting the process if ctrl-c etc is pressed
     //  while running in an interactive terminal.
     let sig_term_state = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, sig_term_state.clone()).unwrap();
-    signal_hook::flag::register(signal_hook::consts::SIGINT, sig_term_state.clone()).unwrap();
-    exit_if_attiny_version_is_not_as_expected(&mut dbus_conn);
+
+    info!("ready for frame");
 
     // We want real-time priority for all the work we do.
     let handle = thread::Builder::new()
@@ -195,12 +195,14 @@ fn main() {
             // Used to indicate that a reset request was received and processed by the
             // frame-socket thread.
             let restart_rp2040_ack = Arc::new(AtomicBool::new(false));
-            let thermal_ready = Arc::new(AtomicBool::new(false));
 
             // The frame socket server takes frames from the main camera transfer loop,
             // and serves them to various consumers of frames.
             // For mostly historical reasons, it's also the thread that handles actually restarting
             // the rp2040 – but it would perhaps be cleaner to handle this in a separate thread?
+            info!("SPaw frame socket");
+            let medium_power_mode = initial_config.use_medium_power_mode();
+
             spawn_frame_socket_server_thread(
                 restart_rp2040_channel_rx,
                 camera_handshake_channel_rx,
@@ -208,29 +210,39 @@ fn main() {
                 run_pin,
                 restart_rp2040_ack.clone(),
                 &recording_state,
-                thermal_ready.clone(),
+                medium_power_mode,
             );
+            info!("Set ready");
+
             recording_state.set_ready(&mut dbus_conn);
-            if initial_config.use_high_power_mode() || !recording_state.is_recording() {
+            if (initial_config.use_high_power_mode() || !recording_state.is_recording())
+                && !medium_power_mode
+            {
                 // NOTE: Always reset rp2040 on startup if it's safe to do so.
+                info!("Sending initial reboot");
                 let _ = restart_rp2040_channel_tx.send(true);
             }
+            info!("enter_camera_transfer_loop");
+
             enter_camera_transfer_loop(
                 initial_config,
                 dbus_conn,
                 spi_speed_mhz,
                 device_config_change_channel_rx,
                 restart_rp2040_channel_tx,
-                sig_term_state,
+                sig_term_state.clone(),
                 camera_handshake_channel_tx,
                 restart_rp2040_ack,
                 recording_state,
-                thermal_ready,
             );
             info!("Exiting gracefully");
             Ok::<(), Error>(())
         })
         .unwrap();
+
+    // signal_hook::flag::register(signal_hook::consts::SIGTERM, sig_term_state.clone()).unwrap();
+    // signal_hook::flag::register(signal_hook::consts::SIGINT, sig_term_state.clone()).unwrap();
+    // exit_if_attiny_version_is_not_as_expected(&mut dbus_conn);
 
     if let Err(e) = handle.join() {
         error!("Thread panicked: {e:?}");
@@ -247,6 +259,7 @@ pub fn set_system_timezone(timezone: &str) -> Result<(), String> {
         info!("System timezone already set to {timezone}");
         return Ok(());
     }
+
     match Command::new("sudo").arg("timedatectl").arg("set-timezone").arg(timezone).output() {
         Ok(output) => {
             if output.status.success() {

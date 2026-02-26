@@ -93,18 +93,27 @@ pub fn enter_camera_transfer_loop(
     camera_handshake_channel_tx: Sender<FrameSocketServerMessage>,
     restart_rp2040_ack: Arc<AtomicBool>,
     mut recording_state: RecordingState,
-    thermal_ready: Arc<AtomicBool>,
 ) {
+    let medium_power_mode = initial_config.use_medium_power_mode();
+
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
-    info!("Initialising SPI at {spi_speed_mhz}Mhz");
-    let mut spi = match Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3) {
-        Ok(spi) => spi,
-        Err(e) => {
-            error!("Failed to get SPI0: {e}");
-            process::exit(1);
-        }
-    };
+    let mut spi;
+    loop {
+        info!("Initialising SPI at {spi_speed_mhz}Mhz");
+
+        spi = match Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3) {
+            Ok(spi) => spi,
+            Err(e) => {
+                error!("Failed to get SPI0: {e}");
+                sleep(Duration::from_millis(100));
+
+                continue;
+                // process::exit(1);
+            }
+        };
+        break;
+    }
     if spi.set_bits_per_word(8).is_err() {
         error!("Failed to set SPI bits per word");
         process::exit(1);
@@ -117,37 +126,42 @@ pub fn enter_camera_transfer_loop(
         error!("Failed to set SPI SS polarity");
         process::exit(1);
     }
-    let gpio = match rppal::gpio::Gpio::new() {
+    let  gpio = match rppal::gpio::Gpio::new() {
         Err(e) => {
             error!("Failed to get GPIO: {e}");
             process::exit(1);
         }
         Ok(gpio) => gpio,
     };
-    let mut pin = match gpio.get(7) {
-        Ok(pin) => pin.into_input(),
-        Err(e) => {
-            error!(
-                "Failed to get pi ping interrupt pin ({e}), \
+    let mut pin;
+    loop {
+        pin = match gpio.get(7) {
+            Ok(pin) => pin.into_input(),
+            Err(e) => {
+                error!(
+                    "Failed to get pi ping interrupt pin ({e}), \
         is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
-            );
-            process::exit(1);
-        }
-    };
-    pin.clear_interrupt()
-        .map_err(|e| {
-            error!("Unable to clear pi ping interrupt pin: {e}");
-            process::exit(1);
-        })
-        .unwrap();
+                );
+                process::exit(1);
+            }
+        };
+        pin.clear_interrupt()
+            .map_err(|e| {
+                error!("Unable to clear pi ping interrupt pin: {e}");
+                process::exit(1);
+            })
+            .unwrap();
 
-    // NOTE: `rppal` now has a `debounce` option here which may be worth exploring.
-    pin.set_interrupt(Trigger::RisingEdge, None)
-        .map_err(|e| {
-            error!("Unable to set pi ping interrupt: {e}");
-            process::exit(1);
-        })
-        .unwrap();
+        // NOTE: `rppal` now has a `debounce` option here which may be worth exploring.
+        let res: Result<(), rppal::gpio::Error> = pin.set_interrupt(Trigger::RisingEdge, None);
+        if res.is_err() {
+            error!("Unable to set pi ping interrupt");
+            sleep(Duration::from_millis(100));
+            drop(pin);
+            continue;
+        }
+        break;
+    }
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
@@ -839,10 +853,8 @@ pub fn enter_camera_transfer_loop(
                         warn!("Crc check failed, remote was notified and will re-transmit");
                     }
                 } else {
-                    let medium_power_mode = true;
                     // header length is already in num_bytes....?
                     let mut aligned_offset: usize = (num_bytes + 3) & !3;
-                    let mut ignore_frame = false;
                     // if aligned_offset != 39060 {
                     //     if !restart_rp2040_ack.load(Ordering::Relaxed) {
                     //         // info!("Ignoring  as thermal rec not ready");
@@ -854,49 +866,53 @@ pub fn enter_camera_transfer_loop(
                     //     // ignore_frame = true;
                     // }
 
-                    if !ignore_frame {
-                        if aligned_offset < 2066 {
-                            aligned_offset = 2068;
-                        }
-                        spi.read(&mut raw_read_buffer[2066..aligned_offset])
-                            .map_err(|e| {
-                                error!("SPI read error: {e:?}");
-
-                                // TODO: Shutdown gracefully?
-
-                                process::exit(1);
-                            })
-                            .unwrap();
-
-                        // Frame
-                        let mut frame = [0u8; FRAME_LENGTH];
-                        if aligned_offset != 39060 {
-                            //these have been swizzled and need to be re swizzled
-                            num_bytes = (num_bytes + 1) & !1;
-                            LittleEndian::write_u16_into(
-                                u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
-                                &mut frame[..num_bytes - header_length],
-                            );
-                            // info!("FIrst bytes are {:?} ", &frame[..20])
-                        } else {
-                            BigEndian::write_u16_into(
-                                u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
-                                &mut frame[..num_bytes - header_length],
-                            );
-                        }
-                        let back = FRAME_BUFFER.get_back().lock().unwrap();
-                        back.replace(Some(frame));
+                    if aligned_offset < 2066 {
+                        aligned_offset = 2068;
                     }
+                    spi.read(&mut raw_read_buffer[2066..aligned_offset])
+                        .map_err(|e| {
+                            error!("SPI read error: {e:?}");
+
+                            // TODO: Shutdown gracefully?
+
+                            process::exit(1);
+                        })
+                        .unwrap();
+
+                    // Frame
+                    let is_recording: bool;
+                    let mut frame = [0u8; FRAME_LENGTH];
+                    if aligned_offset != 39060 {
+                        //these have been swizzled and need to be re swizzled
+                        num_bytes = (num_bytes + 1) & !1;
+                        LittleEndian::write_u16_into(
+                            u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
+                            &mut frame[..num_bytes - header_length],
+                        );
+                        is_recording = true;
+                        // info!("FIrst bytes are {:?} ", &frame[..20])
+                    } else {
+                        BigEndian::write_u16_into(
+                            u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
+                            &mut frame[..num_bytes - header_length],
+                        );
+                        // FIXME: Should is_recording bit only be set in high power mode?
+                        // FIXME: Check this out.
+                        is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
+                        recording_state.set_is_recording(is_recording);
+                    }
+                    let back = FRAME_BUFFER.get_back().lock().unwrap();
+                    back.replace(Some(frame));
+
                     if !got_first_frame {
                         got_first_frame = true;
-                        info!("Got first frame from rp2040, got startup info {got_startup_info}");
+                        info!(
+                            "Got first frame from rp2040, got startup info {got_startup_info} needs reset {}",
+                            rp2040_needs_reset
+                        );
                     }
 
-                    // FIXME: Should is_recording bit only be set in high power mode?
-                    // FIXME: Check this out.
-                    let is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
-                    recording_state.set_is_recording(is_recording);
-                    if !got_startup_info {
+                    if !got_startup_info && !medium_power_mode {
                         warn!("Requesting reset of rp2040 to force handshake");
                         rp2040_needs_reset = true;
                     } else if !rp2040_needs_reset {
@@ -904,17 +920,15 @@ pub fn enter_camera_transfer_loop(
                         // but this would require changes to sidekick / management interface so can be done later.
                         if !started_thermal_recorder {
                             info!("starting thermal recorder");
-                            let _ = start_thermal_recorder_py();
+                            // let _ = start_thermal_recorder_py();
                         }
                         started_thermal_recorder = true;
-                        if !ignore_frame {
-                            FRAME_BUFFER.swap();
-                        }
+                        FRAME_BUFFER.swap();
 
                         let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                             camera_handshake_info: Some(CameraHandshakeInfo {
                                 radiometry_enabled,
-                                is_recording: recording_state.is_recording(),
+                                is_recording,
                                 firmware_version,
                                 camera_serial: lepton_serial_number.clone(),
                             }),
