@@ -126,7 +126,7 @@ pub fn enter_camera_transfer_loop(
         error!("Failed to set SPI SS polarity");
         process::exit(1);
     }
-    let  gpio = match rppal::gpio::Gpio::new() {
+    let gpio = match rppal::gpio::Gpio::new() {
         Err(e) => {
             error!("Failed to get GPIO: {e}");
             process::exit(1);

@@ -85,7 +85,6 @@ pub fn spawn_frame_socket_server_thread(
             info!("Connecting to frame sockets");
             let mut ms_elapsed = 0;
             let address = &get_socket_address(serve_frames_via_wifi);
-
             loop {
                 restart_rp2040_if_requested(
                     &restart_rp2040_channel_rx,
@@ -100,6 +99,7 @@ pub fn spawn_frame_socket_server_thread(
                             SocketStream::from_address(address, *use_wifi).ok();
                         if stream_connection.is_some() {
                             println!("Connected to {address}");
+                            
                         }
                         *stream = stream_connection;
                     }
@@ -117,9 +117,7 @@ pub fn spawn_frame_socket_server_thread(
                 if medium_power_mode {
                     if let Ok(FrameSocketServerMessage {
                         camera_handshake_info:
-                            Some(CameraHandshakeInfo {
-                                radiometry_enabled,                             
-                                firmware_version,
+                            Some(CameraHandshakeInfo {radiometry_enabled,firmware_version,
                                 camera_serial,
                                 ..
                             }),
@@ -149,7 +147,7 @@ pub fn spawn_frame_socket_server_thread(
                                         // what do we do here???
                                         // force rp2040 to offload last file??
                                         // if we could send a message ask for the start again
-                                        return;
+                                        continue;
                                  }
                             }
                         }
@@ -171,18 +169,17 @@ pub fn spawn_frame_socket_server_thread(
                                     &frame_data,
                                 );
 
-                                if !was_recording {
-                                    info!("No longer recording");
+                                // if !was_recording {
+                                //     info!("No longer recording");
 
-                                    // clear cache if not already
-                                    // might want to send the message again below??
-                                    // file_download = None;
-                                }
+                                //     // clear cache if not already
+                                //     // might want to send the message again below??
+                                //     // file_download = None;
+                                // }
                             }
                         }
 
                         if !was_sent && is_recording {
-
                             if let Some(chunk) = frame_data {
                                 if let Some(file) = &mut file_download {
                                     info!("Adding bytes {} to memory file", frame_bytes);
@@ -192,15 +189,7 @@ pub fn spawn_frame_socket_server_thread(
                                     if was_recording{
                                         info!("Not starting new file part way through recording (Something must have gone wrong)")
                                     }else{
-                                        info!(
-                                            "New recording should be gzip header {:?} chunk 0 is {}",
-                                            &chunk[..10],
-                                            chunk[0]
-                                        );
-                                        if chunk[0] != 31 {
-                                            error!("Not gzip bytes are {}", frame_bytes);
-                                            return;
-                                        }
+                                        info!("Starting new file");
                                         let mut file: Vec<u8> = Vec::with_capacity(50_000_000);
                                         file.extend_from_slice(&chunk[..*frame_bytes]);
                                         file_download = Some(file);
@@ -727,6 +716,7 @@ fn handle_medium_power(
     let stream = og_stream.as_mut().expect("Never fails, because we filtered already.");
 
     if !stream.sent_header {
+        info!("Sending header");
         let _ = stream.flush();
         let model = if *radiometry_enabled { "lepton3.5" } else { "lepton3" };
         let header = format!(
@@ -742,10 +732,7 @@ fn handle_medium_power(
         );
 
         if stream.write_all(header.as_bytes()).is_err() {
-            warn!(
-                "Fail[INFO] THermal ready? true was reco false is_rec false bytes 39040
-    ed sending header info"
-            );
+            warn!("Failed sending header info");
         }
         // Clear existing
         if stream.write_all(b"clear").is_err() {
@@ -753,6 +740,7 @@ fn handle_medium_power(
         }
         let sent: bool = stream.flush().is_ok();
         if !sent {
+            info!("Shutting down socket");
             let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
             return false;
         }
@@ -788,24 +776,11 @@ fn handle_medium_power(
             return false;
         }
     }
-    if let Some(fb) = frame_data {
-        let sent = cptv_frame_dispatch::send_frame(&fb[..frame_bytes], stream);
-        if !sent {
-            warn!(
-                "Medium Power Send to {} failed",
-                if *use_wifi { "tc2-frames server" } else { address }
-            );
-            let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
-            return false;
-        }
-    }
-
     if !is_recording {
         *ms_elapsed = 0;
 
         return true;
     }
-
     if let Some(fb) = frame_data {
         let sent = cptv_frame_dispatch::send_frame(&fb[..frame_bytes], stream);
         if !sent {
@@ -815,6 +790,8 @@ fn handle_medium_power(
             );
             let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
             return false;
+        } else {
+            info!("Send frame {}", frame_bytes);
         }
     }
     *ms_elapsed = 0;
