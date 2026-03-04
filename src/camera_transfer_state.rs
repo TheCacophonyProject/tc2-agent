@@ -152,16 +152,18 @@ pub fn enter_camera_transfer_loop(
             })
             .unwrap();
 
-        // NOTE: `rppal` now has a `debounce` option here which may be worth exploring.
-        let res: Result<(), rppal::gpio::Error> = pin.set_interrupt(Trigger::RisingEdge, None);
-        if res.is_err() {
-            error!("Unable to set pi ping interrupt");
-            sleep(Duration::from_millis(100));
-            drop(pin);
-            continue;
+        let res = pin.set_interrupt(Trigger::RisingEdge, None);
+        match res {
+            Ok(()) => break,
+            Err(e) => {
+                free_gpio7();
+                info!("Pin interrupts failed, trying again {e}");
+                sleep(Duration::from_millis(100));
+            }
         }
-        break;
+        drop(pin);
     }
+
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
@@ -251,7 +253,10 @@ pub fn enter_camera_transfer_loop(
 
         if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
-            warn!("Requesting reset of rp2040 at {}", date.with_timezone(&Pacific__Auckland));
+            warn!(
+                "Requesting reset of rp2040 at {}",
+                date.with_timezone(&Pacific__Auckland)
+            );
             rp2040_needs_reset = false;
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
@@ -986,8 +991,11 @@ fn maybe_make_test_audio_recording(
                             // Re-sync our internal rp2040 state once every 1-2 seconds until
                             // we see that the state has entered taking_test_audio_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms =
-                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                2000
+                            } else {
+                                1000
+                            };
                             if inner_recording_state.is_taking_user_requested_audio_recording() {
                                 break;
                             }
@@ -996,8 +1004,11 @@ fn maybe_make_test_audio_recording(
                         loop {
                             // Now wait until we've exited taking_test_audio_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms =
-                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                2000
+                            } else {
+                                1000
+                            };
                             if !inner_recording_state.is_taking_user_requested_audio_recording() {
                                 inner_recording_state
                                     .finished_taking_user_requested_audio_recording();
@@ -1053,8 +1064,11 @@ fn maybe_make_test_thermal_recording(
                             // Re-sync our internal rp2040 state once every 1-2 seconds until
                             // we see that the state has entered taking_test_thermal_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms =
-                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                2000
+                            } else {
+                                1000
+                            };
                             if inner_recording_state.is_taking_user_requested_thermal_recording() {
                                 break;
                             }
@@ -1063,8 +1077,11 @@ fn maybe_make_test_thermal_recording(
                         loop {
                             // Now wait until we've exited taking_test_thermal_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms =
-                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
+                            let sleep_duration_ms = if inner_recording_state.is_recording() {
+                                2000
+                            } else {
+                                1000
+                            };
                             if !inner_recording_state.is_taking_user_requested_thermal_recording() {
                                 inner_recording_state
                                     .finished_taking_user_requested_thermal_recording();
@@ -1086,9 +1103,26 @@ fn maybe_cancel_in_progress_file_offload_session(
     recording_state.cancel_offload_session(dbus_conn);
 }
 
+pub fn free_gpio7() -> io::Result<()> {
+    let result = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("echo 7 > /sys/class/gpio/unexport")
+        .spawn();
+    if let Err(err) = result {
+        error!("Couldn't free gpio 7 {} ", err);
+        return Err(err);
+    }
+
+    info!("freed gpio7");
+    Ok(())
+}
+
 pub fn start_thermal_recorder_py() -> io::Result<()> {
-    let result =
-        Command::new("sudo").arg("systemctl").arg("start").arg("thermal-recorder-py").spawn();
+    let result = Command::new("sudo")
+        .arg("systemctl")
+        .arg("start")
+        .arg("thermal-recorder-py")
+        .spawn();
     if let Err(err) = result {
         error!("Couldn't start thermal recorder {} ", err);
         return Err(err);

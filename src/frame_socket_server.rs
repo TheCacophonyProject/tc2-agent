@@ -526,7 +526,11 @@ fn handle_payload_from_frame_acquire_thread(
             camera_file_transfer_in_progress: false,
             frame_bytes,
         }) => {
-            let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
+            let model = if radiometry_enabled {
+                "lepton3.5"
+            } else {
+                "lepton3"
+            };
             let header = format!(
                 "ResX: 160\n\
                         ResX: 160\n\
@@ -541,7 +545,9 @@ fn handle_payload_from_frame_acquire_thread(
             for (_, _, stream) in sockets.iter_mut().filter(|(_, use_wifi, stream)| {
                 stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header
             }) {
-                let stream = stream.as_mut().expect("Never fails, because we filtered already.");
+                let stream = stream
+                    .as_mut()
+                    .expect("Never fails, because we filtered already.");
                 if stream.write_all(header.as_bytes()).is_err() {
                     warn!("Failed sending header info");
                 }
@@ -575,7 +581,11 @@ fn handle_payload_from_frame_acquire_thread(
                         if !sent {
                             warn!(
                                 "Send to {} failed",
-                                if *use_wifi { "tc2-frames server" } else { address }
+                                if *use_wifi {
+                                    "tc2-frames server"
+                                } else {
+                                    address
+                                }
                             );
                             let _ = stream.take().expect("Never fails").shutdown().is_ok();
                         }
@@ -623,7 +633,11 @@ fn handle_payload_from_frame_acquire_thread(
                     {
                         info!(
                             "Shutting down socket '{}'",
-                            if *use_wifi { "tc2-frames server" } else { address }
+                            if *use_wifi {
+                                "tc2-frames server"
+                            } else {
+                                address
+                            }
                         );
                         let _ = stream.take().unwrap().shutdown().is_ok();
                     }
@@ -713,12 +727,18 @@ fn handle_medium_power(
     frame_data: &Option<[u8; 39040]>,
 ) -> bool {
     let (address, use_wifi, og_stream) = socket;
-    let stream = og_stream.as_mut().expect("Never fails, because we filtered already.");
+    let stream = og_stream
+        .as_mut()
+        .expect("Never fails, because we filtered already.");
 
     if !stream.sent_header {
         info!("Sending header");
         let _ = stream.flush();
-        let model = if *radiometry_enabled { "lepton3.5" } else { "lepton3" };
+        let model = if *radiometry_enabled {
+            "lepton3.5"
+        } else {
+            "lepton3"
+        };
         let header = format!(
             "ResX: 160\n\
                 ResX: 160\n\
@@ -754,7 +774,11 @@ fn handle_medium_power(
         info!("Thermal is ready and have some file so send it....");
 
         let data: &mut Vec<u8> = file_download.as_mut().unwrap();
-        info!("Sending file to thermal {} first 10 {:?}", data.len(), &data[..10]);
+        info!(
+            "Sending file to thermal {} first 10 {:?}",
+            data.len(),
+            &data[..10]
+        );
         for chunk in data.chunks(39040) {
             info!("Sending chunk {}", chunk.len());
             let sent = cptv_frame_dispatch::send_frame(chunk, stream);
@@ -786,7 +810,11 @@ fn handle_medium_power(
         if !sent {
             warn!(
                 "Medium Power Send to {} failed",
-                if *use_wifi { "tc2-frames server" } else { address }
+                if *use_wifi {
+                    "tc2-frames server"
+                } else {
+                    address
+                }
             );
             let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
             return false;

@@ -65,11 +65,17 @@ fn default_activate_thermal_throttler() -> bool {
 }
 
 fn default_recording_start_time() -> AbsRelTime {
-    AbsRelTime { relative_time_seconds: Some(-(60 * 30)), absolute_time: None }
+    AbsRelTime {
+        relative_time_seconds: Some(-(60 * 30)),
+        absolute_time: None,
+    }
 }
 
 fn default_recording_stop_time() -> AbsRelTime {
-    AbsRelTime { relative_time_seconds: Some(60 * 30), absolute_time: None }
+    AbsRelTime {
+        relative_time_seconds: Some(60 * 30),
+        absolute_time: None,
+    }
 }
 
 #[derive(Debug)]
@@ -281,7 +287,10 @@ where
         error!("Failed to parse window time: {s}");
         Err(Error::custom(format!("Failed to parse window time: {s}")))
     } else {
-        Ok(AbsRelTime { absolute_time, relative_time_seconds })
+        Ok(AbsRelTime {
+            absolute_time,
+            relative_time_seconds,
+        })
     }
 }
 
@@ -326,7 +335,11 @@ where
     D: Deserializer<'de>,
 {
     let location_accuracy: f32 = Deserialize::deserialize(deserializer)?;
-    if location_accuracy == 0.0 { Ok(None) } else { Ok(Some(location_accuracy)) }
+    if location_accuracy == 0.0 {
+        Ok(None)
+    } else {
+        Ok(Some(location_accuracy))
+    }
 }
 
 #[derive(Deserialize, Debug, PartialEq, Clone)]
@@ -335,9 +348,15 @@ struct LocationSettings {
     longitude: Option<f32>,
     altitude: Option<f32>,
 
-    #[serde(deserialize_with = "timestamp_to_u64", default = "default_location_timestamp")]
+    #[serde(
+        deserialize_with = "timestamp_to_u64",
+        default = "default_location_timestamp"
+    )]
     timestamp: Option<u64>,
-    #[serde(deserialize_with = "location_accuracy_to_f32", default = "default_location_accuracy")]
+    #[serde(
+        deserialize_with = "location_accuracy_to_f32",
+        default = "default_location_accuracy"
+    )]
     accuracy: Option<f32>,
 }
 
@@ -352,7 +371,9 @@ fn timezone_offset_seconds() -> i32 {
     // devices' GPS coordinates to work out correct absolute start/end recording window times.
     let now = Local::now();
     let local_tz = now.timezone();
-    local_tz.offset_from_utc_datetime(&now.naive_utc()).local_minus_utc()
+    local_tz
+        .offset_from_utc_datetime(&now.naive_utc())
+        .local_minus_utc()
 }
 #[derive(PartialEq, Clone)]
 pub struct AbsRelTime {
@@ -372,7 +393,10 @@ impl Debug for AbsRelTime {
                 .finish();
         }
         if let Some(time) = relative_time {
-            return f.debug_struct("RelativeOffset").field("secs", &time).finish();
+            return f
+                .debug_struct("RelativeOffset")
+                .field("secs", &time)
+                .finish();
         }
         Err(fmt::Error)
     }
@@ -483,7 +507,10 @@ pub struct AudioSettings {
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        AudioSettings { audio_mode: default_audio_mode(), audio_seed: 0 }
+        AudioSettings {
+            audio_mode: default_audio_mode(),
+            audio_seed: 0,
+        }
     }
 }
 
@@ -504,7 +531,9 @@ where
         Ok(mode)
     } else {
         error!("Failed to parse audio mode: {audio_mode_raw}");
-        Err(Error::custom(format!("Failed to parse audio mode: {audio_mode_raw}")))
+        Err(Error::custom(format!(
+            "Failed to parse audio mode: {audio_mode_raw}"
+        )))
     }
 }
 
@@ -524,7 +553,9 @@ struct ThermalMotionSettings {
 
 impl Default for ThermalMotionSettings {
     fn default() -> Self {
-        ThermalMotionSettings { postprocess: default_postproccess() }
+        ThermalMotionSettings {
+            postprocess: default_postproccess(),
+        }
     }
 }
 
@@ -606,11 +637,20 @@ impl DeviceConfig {
     }
 
     pub fn device_name(&self) -> &[u8] {
-        self.device_info.as_ref().unwrap().name.as_ref().unwrap().as_bytes()
+        self.device_info
+            .as_ref()
+            .unwrap()
+            .name
+            .as_ref()
+            .unwrap()
+            .as_bytes()
     }
 
     pub fn lat_lng(&self) -> (f32, f32) {
-        let location = self.location.as_ref().expect("A device location is required");
+        let location = self
+            .location
+            .as_ref()
+            .expect("A device location is required");
         (
             location.latitude.expect("A valid latitude is required"),
             location.longitude.expect("A valid longitude is required"),
@@ -653,7 +693,11 @@ impl DeviceConfig {
 
     pub fn is_continuous_recorder(&self) -> bool {
         self.recording_settings.constant_recorder
-            || (self.recording_window.start_recording.absolute_time.is_some()
+            || (self
+                .recording_window
+                .start_recording
+                .absolute_time
+                .is_some()
                 && self.recording_window.stop_recording.absolute_time.is_some()
                 && self.recording_window.start_recording == self.recording_window.stop_recording)
     }
@@ -720,11 +764,17 @@ impl DeviceConfig {
             start_offset += 86_400;
         }
         let (window_start, window_end) = if !is_absolute_start || !is_absolute_end {
-            let location =
-                self.location.as_ref().expect("Relative recording windows require a location");
+            let location = self
+                .location
+                .as_ref()
+                .expect("Relative recording windows require a location");
             let (lat, lng) = (
-                location.latitude.expect("Relative recording windows require a valid latitude"),
-                location.longitude.expect("Relative recording windows require a valid longitude"),
+                location
+                    .latitude
+                    .expect("Relative recording windows require a valid latitude"),
+                location
+                    .longitude
+                    .expect("Relative recording windows require a valid longitude"),
             );
             let altitude = location.altitude;
             let yesterday_utc = *now_utc - Duration::days(1);
@@ -737,9 +787,13 @@ impl DeviceConfig {
             .unwrap();
             let yesterday_sunset =
                 yesterday_sunset.naive_utc() + Duration::seconds(start_offset as i64);
-            let (today_sunrise, today_sunset) =
-                sun_times(now_utc.date(), lat as f64, lng as f64, altitude.unwrap_or(0.0) as f64)
-                    .unwrap();
+            let (today_sunrise, today_sunset) = sun_times(
+                now_utc.date(),
+                lat as f64,
+                lng as f64,
+                altitude.unwrap_or(0.0) as f64,
+            )
+            .unwrap();
             let today_sunrise = today_sunrise.naive_utc() + Duration::seconds(end_offset as i64);
             let today_sunset = today_sunset.naive_utc() + Duration::seconds(start_offset as i64);
             let tomorrow_utc = *now_utc + Duration::days(1);
@@ -912,17 +966,27 @@ impl DeviceConfig {
         buf.write_i32::<LittleEndian>(start_seconds_offset).unwrap();
         buf.write_u8(if end_is_abs { 1 } else { 0 }).unwrap();
         buf.write_i32::<LittleEndian>(end_seconds_offset).unwrap();
-        buf.write_u8(if self.is_continuous_recorder() { 1 } else { 0 }).unwrap();
-        buf.write_u8(if self.use_low_power_mode() { 1 } else { 0 }).unwrap();
+        buf.write_u8(if self.is_continuous_recorder() { 1 } else { 0 })
+            .unwrap();
+        buf.write_u8(if self.use_low_power_mode() { 1 } else { 0 })
+            .unwrap();
         let device_name = self.device_name();
         let device_name_length = device_name.len().min(63);
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write_all(&device_name[0..device_name_length]).unwrap();
-        buf.write_u32::<LittleEndian>(self.audio_info.audio_seed).unwrap();
-        buf.write_u8(if self.use_medium_power_mode() { 1 } else { 0 }).unwrap();
+        buf.write_u32::<LittleEndian>(self.audio_info.audio_seed)
+            .unwrap();
+        buf.write_u8(if self.use_medium_power_mode() { 1 } else { 0 })
+            .unwrap();
 
-        buf.write_u8(if prefer_not_to_offload_files_now { 5 } else { 0 }).unwrap();
-        buf.write_u8(if force_offload_files_now { 1 } else { 0 }).unwrap();
+        buf.write_u8(if prefer_not_to_offload_files_now {
+            5
+        } else {
+            0
+        })
+        .unwrap();
+        buf.write_u8(if force_offload_files_now { 1 } else { 0 })
+            .unwrap();
 
         // ignore the last two non-config bytes
         buf.position() as u8 - 2
@@ -976,7 +1040,10 @@ pub fn watch_local_config_file_changes(
     // Add a path to be watched. All files and directories at that path and
     // below will be monitored for changes.
     watcher
-        .watch(Path::new("/etc/cacophony/config.toml"), RecursiveMode::NonRecursive)
+        .watch(
+            Path::new("/etc/cacophony/config.toml"),
+            RecursiveMode::NonRecursive,
+        )
         .map_err(|e| {
             error!("File watcher setup error: {e}");
             process::exit(1);

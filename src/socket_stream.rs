@@ -22,8 +22,14 @@ impl SocketStream {
         } else {
             TcpStream::connect(address).map(|stream| {
                 stream.set_nodelay(true).unwrap();
-                stream.set_write_timeout(Some(Duration::from_millis(1500))).unwrap();
-                SocketStream { unix: None, tcp: Some(stream), sent_header: false }
+                stream
+                    .set_write_timeout(Some(Duration::from_millis(1500)))
+                    .unwrap();
+                SocketStream {
+                    unix: None,
+                    tcp: Some(stream),
+                    sent_header: false,
+                }
             })
         }
     }
@@ -93,5 +99,9 @@ pub fn get_socket_address(serve_frames_via_wifi: bool) -> String {
         panic!("t2c-frames service not found on local network");
     }
     let address = address.unwrap_or_default();
-    if serve_frames_via_wifi { format!("{address}:34254") } else { address }
+    if serve_frames_via_wifi {
+        format!("{address}:34254")
+    } else {
+        address
+    }
 }
