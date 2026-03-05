@@ -41,6 +41,7 @@ pub const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
 pub const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
 pub const CAMERA_STARTUP_HANDSHAKE: u8 = 0x9;
 
+pub const RAW_FRAME_SIZE:usize = 39060;
 pub struct CameraHandshakeInfo {
     pub radiometry_enabled: bool,
     pub is_recording: bool,
@@ -95,7 +96,6 @@ pub fn enter_camera_transfer_loop(
     mut recording_state: RecordingState,
 ) {
     let medium_power_mode = initial_config.use_medium_power_mode();
-
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
     let mut spi;
@@ -526,6 +526,8 @@ pub fn enter_camera_transfer_loop(
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
                                         frame_bytes: 0,
+                                                                                is_last_part:false,
+
                                     });
                             }
                             CAMERA_CONNECT_INFO => {
@@ -737,6 +739,7 @@ pub fn enter_camera_transfer_loop(
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: true,
                                         frame_bytes: 0,
+                                        is_last_part:false,
                                     });
                             }
                             CAMERA_RESUME_FILE_TRANSFER => {
@@ -761,6 +764,8 @@ pub fn enter_camera_transfer_loop(
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: true,
                                             frame_bytes: 0,
+                                                                                    is_last_part:false,
+
                                         },
                                     );
                                 } else {
@@ -813,6 +818,7 @@ pub fn enter_camera_transfer_loop(
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
                                             frame_bytes: 0,
+                                            is_last_part: false,
                                         },
                                     );
                                 } else {
@@ -843,6 +849,7 @@ pub fn enter_camera_transfer_loop(
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
                                         frame_bytes: 0,
+                                        is_last_part: false,
                                     });
                             }
                             CAMERA_GET_MOTION_DETECTION_MASK => {
@@ -860,16 +867,6 @@ pub fn enter_camera_transfer_loop(
                 } else {
                     // header length is already in num_bytes....?
                     let mut aligned_offset: usize = (num_bytes + 3) & !3;
-                    // if aligned_offset != 39060 {
-                    //     if !restart_rp2040_ack.load(Ordering::Relaxed) {
-                    //         // info!("Ignoring  as thermal rec not ready");
-                    //         ignore_frame = false;
-                    //     }
-                    //     //bit of a hack to make the rp2040 resend this frame
-                    //     thread::sleep(Duration::from_millis(100));
-
-                    //     // ignore_frame = true;
-                    // }
 
                     if aligned_offset < 2066 {
                         aligned_offset = 2068;
@@ -887,15 +884,16 @@ pub fn enter_camera_transfer_loop(
                     // Frame
                     let is_recording: bool;
                     let mut frame = [0u8; FRAME_LENGTH];
-                    if aligned_offset != 39060 {
+                    let mut is_last_part = false;
+                    if aligned_offset != RAW_FRAME_SIZE {
                         //these have been swizzled and need to be re swizzled
                         num_bytes = (num_bytes + 1) & !1;
+                        is_last_part = raw_read_buffer[header_length] > 0 ;
                         LittleEndian::write_u16_into(
-                            u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
+                            u8_slice_as_u16_slice(&raw_read_buffer[header_length+2..num_bytes]),
                             &mut frame[..num_bytes - header_length],
                         );
                         is_recording = true;
-                        // info!("FIrst bytes are {:?} ", &frame[..20])
                     } else {
                         BigEndian::write_u16_into(
                             u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
@@ -939,6 +937,7 @@ pub fn enter_camera_transfer_loop(
                             }),
                             camera_file_transfer_in_progress: false,
                             frame_bytes: num_bytes - header_length,
+                            is_last_part: is_last_part,
                         });
                     }
                 }

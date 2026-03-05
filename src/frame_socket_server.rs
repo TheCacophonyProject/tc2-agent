@@ -17,7 +17,11 @@ use thread_priority::{ThreadBuilderExt, ThreadPriority};
 pub struct FrameSocketServerMessage {
     pub(crate) camera_handshake_info: Option<CameraHandshakeInfo>,
     pub(crate) camera_file_transfer_in_progress: bool,
+    pub(crate) file_offload: Option<FileOffloadInfo>,
+}
+pub struct FileOffloadInfo{
     pub(crate) frame_bytes: usize,
+    pub(crate) is_last_part: bool,
 }
 
 fn restart_rp2040_if_requested(
@@ -123,6 +127,7 @@ pub fn spawn_frame_socket_server_thread(
                             }),
                         camera_file_transfer_in_progress: false,
                         frame_bytes,
+                        is_last_part
                     }) = message.as_ref()
                     {
                         let is_recording = *frame_bytes != 39040 && *frame_bytes > 0;
@@ -151,31 +156,23 @@ pub fn spawn_frame_socket_server_thread(
                                  }
                             }
                         }
+
                         if socket.is_some() {
-                            if (*frame_bytes > 0 && (is_recording || was_recording))
+                            if is_recording
                                 || file_download.is_some()
                             {
                                 message_sent = true;
                                 was_sent = handle_medium_power(
                                     socket.expect("Never fails, because we filtered already."),
                                     radiometry_enabled,
-                                    &is_recording,
                                     firmware_version,
                                     camera_serial,
                                     *frame_bytes,
-                                    was_recording,
                                     &mut file_download,
                                     &mut ms_elapsed,
                                     &frame_data,
+                                    *is_last_part,
                                 );
-
-                                // if !was_recording {
-                                //     info!("No longer recording");
-
-                                //     // clear cache if not already
-                                //     // might want to send the message again below??
-                                //     // file_download = None;
-                                // }
                             }
                         }
 
@@ -525,6 +522,7 @@ fn handle_payload_from_frame_acquire_thread(
                 }),
             camera_file_transfer_in_progress: false,
             frame_bytes,
+            is_last_part,
         }) => {
             let model = if radiometry_enabled {
                 "lepton3.5"
@@ -622,6 +620,7 @@ fn handle_payload_from_frame_acquire_thread(
             camera_handshake_info: None,
             camera_file_transfer_in_progress: true,
             frame_bytes,
+            is_last_part,
         }) => {
             // There's a file transfer in progress, and we got a recording mode change?
             *ms_elapsed = 0;
@@ -717,14 +716,13 @@ fn handle_payload_from_frame_acquire_thread(
 fn handle_medium_power(
     socket: &mut (String, bool, Option<SocketStream>),
     radiometry_enabled: &bool,
-    is_recording: &bool,
     firmware_version: &u32,
     camera_serial: &String,
     frame_bytes: usize,
-    mut was_recording: bool,
     file_download: &mut Option<Vec<u8>>,
     ms_elapsed: &mut u64,
     frame_data: &Option<[u8; 39040]>,
+    is_last_part: bool,
 ) -> bool {
     let (address, use_wifi, og_stream) = socket;
     let stream = og_stream
@@ -770,7 +768,6 @@ fn handle_medium_power(
     let s = Instant::now();
 
     if file_download.is_some() {
-        was_recording = true;
         info!("Thermal is ready and have some file so send it....");
 
         let data: &mut Vec<u8> = file_download.as_mut().unwrap();
@@ -793,18 +790,7 @@ fn handle_medium_power(
         info!("Sent all of file download");
     }
     // info!("THermal ready? {} was reco {} is_rec {} bytes {}", thermal_ready,was_recording,is_recording,frame_bytes);
-    if was_recording && !is_recording {
-        info!("Ending recording");
-        if stream.write_all(b"clear").is_err() {
-            let _ = stream.shutdown().is_ok();
-            return false;
-        }
-    }
-    if !is_recording {
-        *ms_elapsed = 0;
 
-        return true;
-    }
     if let Some(fb) = frame_data {
         let sent = cptv_frame_dispatch::send_frame(&fb[..frame_bytes], stream);
         if !sent {
@@ -820,6 +806,13 @@ fn handle_medium_power(
             return false;
         } else {
             info!("Send frame {}", frame_bytes);
+        }
+    }
+    if is_last_part {
+        info!("Ending recording");
+        if stream.write_all(b"clear").is_err() {
+            let _ = stream.shutdown().is_ok();
+            return false;
         }
     }
     *ms_elapsed = 0;
