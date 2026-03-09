@@ -7,7 +7,7 @@ use crate::device_config::{DeviceConfig, check_for_device_config_changes};
 use crate::event_logger::{
     DiscardedRecordingInfo, FileType, LoggerEvent, LoggerEventKind, NewConfigInfo, WakeReason,
 };
-use crate::frame_socket_server::FrameSocketServerMessage;
+use crate::frame_socket_server::{FileOffloadInfo, FrameSocketServerMessage};
 use crate::program_rp2040::program_rp2040;
 use crate::recording_state::RecordingMode;
 use crate::save_audio::save_audio_file_to_disk;
@@ -164,6 +164,7 @@ pub fn enter_camera_transfer_loop(
         drop(pin);
     }
 
+    let mut frame_i = 0;
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
@@ -525,9 +526,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
-                                        frame_bytes: 0,
-                                                                                is_last_part:false,
-
+                                        file_offload: None,
                                     });
                             }
                             CAMERA_CONNECT_INFO => {
@@ -585,7 +584,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
-                                        frame_bytes: 0,
+                                        file_offload: None,
                                     });
                             }
                             CAMERA_SEND_LOGGER_EVENT => {
@@ -738,8 +737,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: true,
-                                        frame_bytes: 0,
-                                        is_last_part:false,
+                                        file_offload: None,
                                     });
                             }
                             CAMERA_RESUME_FILE_TRANSFER => {
@@ -763,9 +761,7 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: true,
-                                            frame_bytes: 0,
-                                                                                    is_last_part:false,
-
+                                            file_offload: None,
                                         },
                                     );
                                 } else {
@@ -817,8 +813,7 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
-                                            frame_bytes: 0,
-                                            is_last_part: false,
+                                            file_offload: None,
                                         },
                                     );
                                 } else {
@@ -848,8 +843,7 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
-                                        frame_bytes: 0,
-                                        is_last_part: false,
+                                        file_offload: None,
                                     });
                             }
                             CAMERA_GET_MOTION_DETECTION_MASK => {
@@ -883,27 +877,40 @@ pub fn enter_camera_transfer_loop(
 
                     // Frame
                     let is_recording: bool;
-                    let mut frame = [0u8; FRAME_LENGTH];
-                    let mut is_last_part = false;
+                           let mut frame = [0u8;FRAME_LENGTH];
+
+                    let mut file_offload = None;
                     if aligned_offset != RAW_FRAME_SIZE {
+
                         //these have been swizzled and need to be re swizzled
                         num_bytes = (num_bytes + 1) & !1;
-                        is_last_part = raw_read_buffer[header_length] > 0 ;
+                        let is_last_part = raw_read_buffer[header_length] > 0 ;
+                        let frame_bytes= num_bytes - header_length-2;
+
                         LittleEndian::write_u16_into(
                             u8_slice_as_u16_slice(&raw_read_buffer[header_length+2..num_bytes]),
-                            &mut frame[..num_bytes - header_length],
+                            &mut frame[..frame_bytes],
                         );
+
                         is_recording = true;
+                        file_offload = Some(FileOffloadInfo {
+                                frame_bytes: frame_bytes,
+                                is_last_part,
+                            });
                     } else {
+
                         BigEndian::write_u16_into(
                             u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
                             &mut frame[..num_bytes - header_length],
                         );
+                        // frame_bytes = num_bytes - header_length;
                         // FIXME: Should is_recording bit only be set in high power mode?
                         // FIXME: Check this out.
                         is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
                         recording_state.set_is_recording(is_recording);
+                      
                     }
+                    
                     let back = FRAME_BUFFER.get_back().lock().unwrap();
                     back.replace(Some(frame));
 
@@ -921,11 +928,12 @@ pub fn enter_camera_transfer_loop(
                     } else if !rp2040_needs_reset {
                         // ideally we should only do this in high power mode
                         // but this would require changes to sidekick / management interface so can be done later.
-                        if !started_thermal_recorder {
+                        if !started_thermal_recorder && !medium_power_mode {
                             info!("starting thermal recorder");
-                            // let _ = start_thermal_recorder_py();
+                            let _ = start_thermal_recorder_py();
+                            started_thermal_recorder = true;
+
                         }
-                        started_thermal_recorder = true;
                         FRAME_BUFFER.swap();
 
                         let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
@@ -936,8 +944,7 @@ pub fn enter_camera_transfer_loop(
                                 camera_serial: lepton_serial_number.clone(),
                             }),
                             camera_file_transfer_in_progress: false,
-                            frame_bytes: num_bytes - header_length,
-                            is_last_part: is_last_part,
+                            file_offload: file_offload,
                         });
                     }
                 }
