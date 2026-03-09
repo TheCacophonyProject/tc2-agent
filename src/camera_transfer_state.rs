@@ -41,7 +41,7 @@ pub const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
 pub const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
 pub const CAMERA_STARTUP_HANDSHAKE: u8 = 0x9;
 
-pub const RAW_FRAME_SIZE:usize = 39060;
+pub const RAW_FRAME_SIZE: usize = 39060;
 pub struct CameraHandshakeInfo {
     pub radiometry_enabled: bool,
     pub is_recording: bool,
@@ -99,17 +99,22 @@ pub fn enter_camera_transfer_loop(
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
     let mut spi;
+    let attempts = 10;
+    let mut attempt = 0;
     loop {
         info!("Initialising SPI at {spi_speed_mhz}Mhz");
 
         spi = match Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3) {
             Ok(spi) => spi,
             Err(e) => {
-                error!("Failed to get SPI0: {e}");
+                if attempt == attempts - 1 {
+                    error!("Failed to get SPI0: {e}");
+                    process::exit(1);
+                }
+                error!("Failed to get SPI0: {e} trying again in 100ms");
                 sleep(Duration::from_millis(100));
-
+                attempt += 1;
                 continue;
-                // process::exit(1);
             }
         };
         break;
@@ -134,6 +139,8 @@ pub fn enter_camera_transfer_loop(
         Ok(gpio) => gpio,
     };
     let mut pin;
+    let attempts = 10;
+    attempt = 0;
     loop {
         pin = match gpio.get(7) {
             Ok(pin) => pin.into_input(),
@@ -156,15 +163,19 @@ pub fn enter_camera_transfer_loop(
         match res {
             Ok(()) => break,
             Err(e) => {
+                if attempt == attempts - 1 {
+                    error!("Failed to set Pin interrupts: {e}");
+                    process::exit(1);
+                }
                 free_gpio7();
-                info!("Pin interrupts failed, trying again {e}");
+                info!("Pin interrupts failed, trying again {e} in 100ms");
                 sleep(Duration::from_millis(100));
+                attempt += 1;
             }
         }
         drop(pin);
     }
 
-    let mut frame_i = 0;
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
@@ -254,10 +265,7 @@ pub fn enter_camera_transfer_loop(
 
         if !recording_state.is_recording() && rp2040_needs_reset {
             let date = chrono::Local::now();
-            warn!(
-                "Requesting reset of rp2040 at {}",
-                date.with_timezone(&Pacific__Auckland)
-            );
+            warn!("Requesting reset of rp2040 at {}", date.with_timezone(&Pacific__Auckland));
             rp2040_needs_reset = false;
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
@@ -877,28 +885,28 @@ pub fn enter_camera_transfer_loop(
 
                     // Frame
                     let is_recording: bool;
-                           let mut frame = [0u8;FRAME_LENGTH];
+                    let mut frame = [0u8; FRAME_LENGTH];
 
                     let mut file_offload = None;
                     if aligned_offset != RAW_FRAME_SIZE {
-
+                        let data_crc =
+                            crc_check.checksum(&raw_read_buffer[header_length..num_bytes]);
                         //these have been swizzled and need to be re swizzled
                         num_bytes = (num_bytes + 1) & !1;
-                        let is_last_part = raw_read_buffer[header_length] > 0 ;
-                        let frame_bytes= num_bytes - header_length-2;
+                        let is_last_part = raw_read_buffer[header_length] > 0;
+                        let frame_bytes = num_bytes - header_length - 2;
 
                         LittleEndian::write_u16_into(
-                            u8_slice_as_u16_slice(&raw_read_buffer[header_length+2..num_bytes]),
+                            u8_slice_as_u16_slice(&raw_read_buffer[header_length + 2..num_bytes]),
                             &mut frame[..frame_bytes],
                         );
-
+                        if crc_from_remote != data_crc {
+                            error!("Medium mode gz offload crc failed restart rp2040");
+                            rp2040_needs_reset = true;
+                        }
                         is_recording = true;
-                        file_offload = Some(FileOffloadInfo {
-                                frame_bytes: frame_bytes,
-                                is_last_part,
-                            });
+                        file_offload = Some(FileOffloadInfo { frame_bytes, is_last_part });
                     } else {
-
                         BigEndian::write_u16_into(
                             u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
                             &mut frame[..num_bytes - header_length],
@@ -908,9 +916,8 @@ pub fn enter_camera_transfer_loop(
                         // FIXME: Check this out.
                         is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
                         recording_state.set_is_recording(is_recording);
-                      
                     }
-                    
+
                     let back = FRAME_BUFFER.get_back().lock().unwrap();
                     back.replace(Some(frame));
 
@@ -932,7 +939,6 @@ pub fn enter_camera_transfer_loop(
                             info!("starting thermal recorder");
                             let _ = start_thermal_recorder_py();
                             started_thermal_recorder = true;
-
                         }
                         FRAME_BUFFER.swap();
 
@@ -944,7 +950,7 @@ pub fn enter_camera_transfer_loop(
                                 camera_serial: lepton_serial_number.clone(),
                             }),
                             camera_file_transfer_in_progress: false,
-                            file_offload: file_offload,
+                            file_offload,
                         });
                     }
                 }
@@ -997,11 +1003,8 @@ fn maybe_make_test_audio_recording(
                             // Re-sync our internal rp2040 state once every 1-2 seconds until
                             // we see that the state has entered taking_test_audio_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms = if inner_recording_state.is_recording() {
-                                2000
-                            } else {
-                                1000
-                            };
+                            let sleep_duration_ms =
+                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
                             if inner_recording_state.is_taking_user_requested_audio_recording() {
                                 break;
                             }
@@ -1010,11 +1013,8 @@ fn maybe_make_test_audio_recording(
                         loop {
                             // Now wait until we've exited taking_test_audio_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms = if inner_recording_state.is_recording() {
-                                2000
-                            } else {
-                                1000
-                            };
+                            let sleep_duration_ms =
+                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
                             if !inner_recording_state.is_taking_user_requested_audio_recording() {
                                 inner_recording_state
                                     .finished_taking_user_requested_audio_recording();
@@ -1070,11 +1070,8 @@ fn maybe_make_test_thermal_recording(
                             // Re-sync our internal rp2040 state once every 1-2 seconds until
                             // we see that the state has entered taking_test_thermal_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms = if inner_recording_state.is_recording() {
-                                2000
-                            } else {
-                                1000
-                            };
+                            let sleep_duration_ms =
+                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
                             if inner_recording_state.is_taking_user_requested_thermal_recording() {
                                 break;
                             }
@@ -1083,11 +1080,8 @@ fn maybe_make_test_thermal_recording(
                         loop {
                             // Now wait until we've exited taking_test_thermal_recording.
                             inner_recording_state.sync_state_from_attiny(&mut conn);
-                            let sleep_duration_ms = if inner_recording_state.is_recording() {
-                                2000
-                            } else {
-                                1000
-                            };
+                            let sleep_duration_ms =
+                                if inner_recording_state.is_recording() { 2000 } else { 1000 };
                             if !inner_recording_state.is_taking_user_requested_thermal_recording() {
                                 inner_recording_state
                                     .finished_taking_user_requested_thermal_recording();
@@ -1110,10 +1104,7 @@ fn maybe_cancel_in_progress_file_offload_session(
 }
 
 pub fn free_gpio7() -> io::Result<()> {
-    let result = Command::new("/bin/sh")
-        .arg("-c")
-        .arg("echo 7 > /sys/class/gpio/unexport")
-        .spawn();
+    let result = Command::new("/bin/sh").arg("-c").arg("echo 7 > /sys/class/gpio/unexport").spawn();
     if let Err(err) = result {
         error!("Couldn't free gpio 7 {} ", err);
         return Err(err);
@@ -1124,11 +1115,8 @@ pub fn free_gpio7() -> io::Result<()> {
 }
 
 pub fn start_thermal_recorder_py() -> io::Result<()> {
-    let result = Command::new("sudo")
-        .arg("systemctl")
-        .arg("start")
-        .arg("thermal-recorder-py")
-        .spawn();
+    let result =
+        Command::new("sudo").arg("systemctl").arg("start").arg("thermal-recorder-py").spawn();
     if let Err(err) = result {
         error!("Couldn't start thermal recorder {} ", err);
         return Err(err);

@@ -65,10 +65,8 @@ fn mb_disk_space_remaining() -> (usize, usize) {
     let mut available_space_bytes = 0;
     let mut total_space_bytes = 0;
     const ROOT_MOUNT_POINT: &str = "/";
-    let main_partition = disks
-        .list()
-        .iter()
-        .find(|disk| disk.mount_point().to_str().unwrap() == ROOT_MOUNT_POINT);
+    let main_partition =
+        disks.list().iter().find(|disk| disk.mount_point().to_str().unwrap() == ROOT_MOUNT_POINT);
     if let Some(main_partition) = main_partition {
         available_space_bytes += main_partition.available_space();
         total_space_bytes += main_partition.total_space();
@@ -108,16 +106,9 @@ fn check_for_sufficient_free_disk_space() {
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
-    let log_config = ConfigBuilder::default()
-        .set_time_level(LevelFilter::Off)
-        .build();
-    TermLogger::init(
-        LevelFilter::Info,
-        log_config,
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
-    .unwrap();
+    let log_config = ConfigBuilder::default().set_time_level(LevelFilter::Off).build();
+    TermLogger::init(LevelFilter::Info, log_config, TerminalMode::Mixed, ColorChoice::Auto)
+        .unwrap();
 
     println!(
         "\n=========\nStarting thermal camera 2 agent {VERSION}, run with --help to see options.\n"
@@ -154,15 +145,15 @@ fn main() {
 
     let mut recording_state = RecordingState::new();
     let _dbus_audio_thread = setup_dbus_managementd_recording_service(&recording_state);
-    info!("Set up dbus");
     let current_config = device_config.unwrap();
     info!("Config");
 
     let (lat, lng) = current_config.lat_lng();
-    // if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64)) {
-    //     error!("{e}");
-    //     process::exit(1);
-    // }
+    if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64)) {
+        error!("{e}");
+        process::exit(1);
+    }
+    info!("TZ");
 
     let initial_config = current_config.clone();
     let (device_config_change_channel_tx, device_config_change_channel_rx) = channel();
@@ -174,7 +165,7 @@ fn main() {
     let sig_term_state = Arc::new(AtomicBool::new(false));
 
     info!("ready for frame");
-
+    let sig_term_clone = sig_term_state.clone();
     // We want real-time priority for all the work we do.
     let handle = thread::Builder::new()
         .name("frame-acquire".to_string())
@@ -239,7 +230,7 @@ fn main() {
                 spi_speed_mhz,
                 device_config_change_channel_rx,
                 restart_rp2040_channel_tx,
-                sig_term_state.clone(),
+                sig_term_clone,
                 camera_handshake_channel_tx,
                 restart_rp2040_ack,
                 recording_state,
@@ -249,9 +240,20 @@ fn main() {
         })
         .unwrap();
 
-    // signal_hook::flag::register(signal_hook::consts::SIGTERM, sig_term_state.clone()).unwrap();
-    // signal_hook::flag::register(signal_hook::consts::SIGINT, sig_term_state.clone()).unwrap();
-    // exit_if_attiny_version_is_not_as_expected(&mut dbus_conn);
+    // this can take a while so will do after thread stuff
+    info!("Starting attiny stuff");
+    let mut dbus_conn = DuplexConn::connect_to_bus(session_path, true).unwrap_or_else(|e| {
+        error!("Error connecting to system DBus: {e}");
+        process::exit(1);
+    });
+    let _unique_name: String = dbus_conn.send_hello(Timeout::Infinite).unwrap_or_else(|e| {
+        error!("Error getting handshake with system DBus: {e}");
+        process::exit(1);
+    });
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, sig_term_state.clone()).unwrap();
+    signal_hook::flag::register(signal_hook::consts::SIGINT, sig_term_state.clone()).unwrap();
+    exit_if_attiny_version_is_not_as_expected(&mut dbus_conn);
+    info!("Finished attiny stuff");
 
     if let Err(e) = handle.join() {
         error!("Thread panicked: {e:?}");
@@ -269,12 +271,7 @@ pub fn set_system_timezone(timezone: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    match Command::new("sudo")
-        .arg("timedatectl")
-        .arg("set-timezone")
-        .arg(timezone)
-        .output()
-    {
+    match Command::new("sudo").arg("timedatectl").arg("set-timezone").arg(timezone).output() {
         Ok(output) => {
             if output.status.success() {
                 info!("System timezone successfully set to: {}", timezone);

@@ -1,9 +1,9 @@
 use crate::camera_transfer_state::CameraHandshakeInfo;
-use crate::{FRAME_LENGTH, cptv_frame_dispatch};
 use crate::program_rp2040::program_rp2040;
 use crate::recording_state::{RecordingMode, RecordingState};
 use crate::socket_stream::{SocketStream, get_socket_address};
 use crate::telemetry::{Telemetry, read_telemetry};
+use crate::{FRAME_LENGTH, cptv_frame_dispatch};
 use log::{debug, error, info, warn};
 use rppal::gpio::OutputPin;
 use std::sync::Arc;
@@ -19,10 +19,9 @@ pub struct FrameSocketServerMessage {
     pub(crate) camera_file_transfer_in_progress: bool,
     pub(crate) file_offload: Option<FileOffloadInfo>,
 }
-pub struct FileOffloadInfo{
+pub struct FileOffloadInfo {
     pub(crate) frame_bytes: usize,
     pub(crate) is_last_part: bool,
-
 }
 
 fn restart_rp2040_if_requested(
@@ -34,16 +33,29 @@ fn restart_rp2040_if_requested(
 
     // Check if we need to reset rp2040 because of a config change
     if restart_rp2040_channel_rx.try_recv().is_ok() {
-        restart_rp2040_ack.store(true, Ordering::Relaxed);
-        info!("Restarting rp2040");
-        if !run_pin.is_set_high() {
-            run_pin.set_high();
-            sleep(Duration::from_millis(1000));
-        }
-        run_pin.set_low();
-        sleep(Duration::from_millis(1000));
-        run_pin.set_high();
+        restart_rp2040(run_pin, restart_rp2040_ack);
+        // restart_rp2040_ack.store(true, Ordering::Relaxed);
+        // info!("Restarting rp2040");
+        // if !run_pin.is_set_high() {
+        //     run_pin.set_high();
+        //     sleep(Duration::from_millis(1000));
+        // }
+        // run_pin.set_low();
+        // sleep(Duration::from_millis(1000));
+        // run_pin.set_high();
     }
+}
+
+fn restart_rp2040(run_pin: &mut OutputPin, restart_rp2040_ack: &mut Arc<AtomicBool>) {
+    restart_rp2040_ack.store(true, Ordering::Relaxed);
+    info!("Restarting rp2040");
+    if !run_pin.is_set_high() {
+        run_pin.set_high();
+        sleep(Duration::from_millis(1000));
+    }
+    run_pin.set_low();
+    sleep(Duration::from_millis(1000));
+    run_pin.set_high();
 }
 
 pub fn spawn_frame_socket_server_thread(
@@ -64,7 +76,7 @@ pub fn spawn_frame_socket_server_thread(
             let mut file_download: Option<Vec<u8>> = None;
             let gzip_header: [u8; 10] = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff];
             let mut frame_i = 0;
-            let mut was_recording = false;
+            // let mut was_recording = false;
             let address = get_socket_address(serve_frames_via_wifi);
             let management_address = "/var/spool/managementd".to_string();
             // Spawn a thread which can output the frames, converted to rgb grayscale
@@ -104,8 +116,7 @@ pub fn spawn_frame_socket_server_thread(
                         let stream_connection: Option<SocketStream> =
                             SocketStream::from_address(address, *use_wifi).ok();
                         if stream_connection.is_some() {
-                            println!("Connected to {address}");
-                            
+                            println!("Connected to {address}");                            
                         }
                         *stream = stream_connection;
                     }
@@ -142,13 +153,12 @@ pub fn spawn_frame_socket_server_thread(
                         }
                         let is_recording = frame_bytes != FRAME_LENGTH && frame_bytes > 0;
 
-                        if !was_recording && is_recording {
+                        if frame_i ==0 && is_recording {
                             info!("Reset file download as have new recording");
                             file_download = None;
                             frame_i = 0;
+                            // was_recording = false;
                         }
-                        
-
                         let mut was_sent = false;
                         let mut frame_data: Option<[u8; FRAME_LENGTH]> = None;
                         if is_recording {
@@ -157,7 +167,8 @@ pub fn spawn_frame_socket_server_thread(
                              if let Some(chunk) = frame_data {
                                  if frame_i ==0 && chunk[..10]!= gzip_header{
                                     // ensure is a gzip
-                                        error!("New file is missing the GZIP header {:?}",&chunk[..10]);
+                                        error!("New file is missing the GZIP header {:?} restart rp2040",&chunk[..10]);
+                                        restart_rp2040(&mut run_pin, &mut restart_rp2040_ack);
                                         // what do we do here???
                                         // force rp2040 to offload last file??
                                         // if we could send a message ask for the start again
@@ -165,7 +176,7 @@ pub fn spawn_frame_socket_server_thread(
                                  }
                                  frame_i+=1;
                             }else{
-                                info!("Raw frame is none but it shoulnd't be .... {}",frame_bytes);
+                                info!("Raw frame is none but it shoulnd't be .... ");
                             }
                         }
 
@@ -188,7 +199,7 @@ pub fn spawn_frame_socket_server_thread(
                                     &mut ms_elapsed,
                                     frame_data,
                                     is_last_part,
-                                    was_recording,
+                                    frame_i == 1,
                                 );
                             }
                         }
@@ -200,8 +211,13 @@ pub fn spawn_frame_socket_server_thread(
 
                                     file.extend_from_slice(&chunk[..frame_bytes]);
                                 } else {
-                                    if was_recording{
-                                        info!("Not starting new file part way through recording (Something must have gone wrong)")
+                                    if frame_i > 1{
+                                        error!("Lost socket connection part way through medium power offload (Something must have gone wrong), Restarting RP2040");
+                                        // restart rp2040 and offload the file
+                                        restart_rp2040(&mut run_pin, &mut restart_rp2040_ack);
+                                        frame_i = 0;
+                                        continue
+
                                     }else{
                                         info!("Starting new file");
                                         let mut file: Vec<u8> = Vec::with_capacity(50_000_000);
@@ -210,11 +226,10 @@ pub fn spawn_frame_socket_server_thread(
                                     }
                                 }
                             }
-                            was_recording = true;
+                            // was_recording = true;
 
-                        }
-                         else if frame_bytes > 0 {
-                            was_recording = !is_last_part;
+                        }else  if !is_recording{
+                            frame_i =0;
                         }
 
                     }
@@ -254,14 +269,9 @@ fn handle_payload_from_frame_acquire_thread(
                     camera_serial,
                 }),
             camera_file_transfer_in_progress: false,
-                                    file_offload: None,
-
+            file_offload: None,
         }) => {
-            let model = if radiometry_enabled {
-                "lepton3.5"
-            } else {
-                "lepton3"
-            };
+            let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
             let header = format!(
                 "ResX: 160\n\
                         ResX: 160\n\
@@ -276,9 +286,7 @@ fn handle_payload_from_frame_acquire_thread(
             for (_, _, stream) in sockets.iter_mut().filter(|(_, use_wifi, stream)| {
                 stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header
             }) {
-                let stream = stream
-                    .as_mut()
-                    .expect("Never fails, because we filtered already.");
+                let stream = stream.as_mut().expect("Never fails, because we filtered already.");
                 if stream.write_all(header.as_bytes()).is_err() {
                     warn!("Failed sending header info");
                 }
@@ -304,18 +312,12 @@ fn handle_payload_from_frame_acquire_thread(
                 for (address, use_wifi, stream) in
                     sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
                 {
-                    let sent = cptv_frame_dispatch::send_frame(
-                        &fb,
-                        stream.as_mut().expect("Never fails"),
-                    );
+                    let sent =
+                        cptv_frame_dispatch::send_frame(&fb, stream.as_mut().expect("Never fails"));
                     if !sent {
                         warn!(
                             "Send to {} failed",
-                            if *use_wifi {
-                                "tc2-frames server"
-                            } else {
-                                address
-                            }
+                            if *use_wifi { "tc2-frames server" } else { address }
                         );
                         let _ = stream.take().expect("Never fails").shutdown().is_ok();
                     }
@@ -345,7 +347,7 @@ fn handle_payload_from_frame_acquire_thread(
                     info!("Got frame #{}", telemetry.frame_num);
                 }
             }
-            
+
             *ms_elapsed = 0;
         }
         Ok(FrameSocketServerMessage {
@@ -363,11 +365,7 @@ fn handle_payload_from_frame_acquire_thread(
                     {
                         info!(
                             "Shutting down socket '{}'",
-                            if *use_wifi {
-                                "tc2-frames server"
-                            } else {
-                                address
-                            }
+                            if *use_wifi { "tc2-frames server" } else { address }
                         );
                         let _ = stream.take().unwrap().shutdown().is_ok();
                     }
@@ -454,21 +452,15 @@ fn handle_medium_power(
     ms_elapsed: &mut u64,
     frame_data: Option<[u8; FRAME_LENGTH]>,
     is_last_part: bool,
-    was_recording: bool,
+    first_part: bool,
 ) -> bool {
     let (address, use_wifi, og_stream) = socket;
-    let stream = og_stream
-        .as_mut()
-        .expect("Never fails, because we filtered already.");
+    let stream = og_stream.as_mut().expect("Never fails, because we filtered already.");
 
     if !stream.sent_header {
         info!("Sending header");
         let _ = stream.flush();
-        let model = if *radiometry_enabled {
-            "lepton3.5"
-        } else {
-            "lepton3"
-        };
+        let model = if *radiometry_enabled { "lepton3.5" } else { "lepton3" };
         let header = format!(
             "ResX: 160\n\
                 ResX: 160\n\
@@ -496,8 +488,8 @@ fn handle_medium_power(
         }
         stream.sent_header = true;
     }
-    
-    if !was_recording || file_download.is_some(){
+
+    if first_part || file_download.is_some() {
         info!("Sending start");
         if stream.write_all(b"start\n\n").is_err() {
             warn!("Failed sending start rec");
@@ -514,11 +506,7 @@ fn handle_medium_power(
         info!("Thermal is ready and have some file so send it....");
 
         let data: &mut Vec<u8> = file_download.as_mut().unwrap();
-        info!(
-            "Sending file to thermal {} first 10 {:?}",
-            data.len(),
-            &data[..10]
-        );
+        info!("Sending file to thermal {} first 10 {:?}", data.len(), &data[..10]);
         for chunk in data.chunks(FRAME_LENGTH) {
             info!("Sending chunk {}", chunk.len());
             let sent = cptv_frame_dispatch::send_frame(chunk, stream);
@@ -539,11 +527,7 @@ fn handle_medium_power(
         if !sent {
             warn!(
                 "Medium Power Send to {} failed",
-                if *use_wifi {
-                    "tc2-frames server"
-                } else {
-                    address
-                }
+                if *use_wifi { "tc2-frames server" } else { address }
             );
             let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
             return false;

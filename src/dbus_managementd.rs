@@ -83,13 +83,7 @@ fn managementd_handler(
         "audiostatus" => {
             let mut response = msg.dynheader.make_response();
             let status = recording_state_ctx.get_test_audio_recording_status();
-            response
-                .body
-                .push_param(if recording_state_ctx.is_in_audio_mode() {
-                    1
-                } else {
-                    0
-                })?;
+            response.body.push_param(if recording_state_ctx.is_in_audio_mode() { 1 } else { 0 })?;
             response.body.push_param(status as u8)?;
             Ok(Some(response))
         }
@@ -97,13 +91,11 @@ fn managementd_handler(
             // TODO: Check what the receivers of these calls expect
             let mut response = msg.dynheader.make_response();
             let status = recording_state_ctx.get_test_thermal_recording_status();
-            response
-                .body
-                .push_param(if recording_state_ctx.is_in_thermal_mode() {
-                    1
-                } else {
-                    0
-                })?;
+            response.body.push_param(if recording_state_ctx.is_in_thermal_mode() {
+                1
+            } else {
+                0
+            })?;
             response.body.push_param(status as u8)?;
             Ok(Some(response))
         }
@@ -118,9 +110,7 @@ fn managementd_handler(
                 total_events,
                 remaining_events,
             ) = recording_state_ctx.get_offload_status();
-            response
-                .body
-                .push_param(if is_offloading { 1 } else { 0 })?; // offload in progress
+            response.body.push_param(if is_offloading { 1 } else { 0 })?; // offload in progress
             response.body.push_param(percent_complete)?; // percent_complete
             response.body.push_param(remaining_seconds)?; // remaining_seconds
             response.body.push_param(total_files)?; // total files
@@ -147,17 +137,13 @@ fn managementd_handler(
         "forcerp2040offload" => {
             let mut response = msg.dynheader.make_response();
             recording_state_ctx.request_forced_file_offload();
-            response
-                .body
-                .push_param("Requested offload of files from rp2040")?;
+            response.body.push_param("Requested offload of files from rp2040")?;
             Ok(Some(response))
         }
         "prioritiseframeserve" => {
             let mut response = msg.dynheader.make_response();
             recording_state_ctx.request_prioritise_frames();
-            response
-                .body
-                .push_param("Requested priority frame serving from rp2040")?;
+            response.body.push_param("Requested priority frame serving from rp2040")?;
             Ok(Some(response))
         }
         _ => Ok(None),
@@ -180,9 +166,9 @@ pub fn setup_dbus_managementd_recording_service(
     // to make test audio recordings, and for getting the status of any file offloads
     let recording_state = recording_state.clone();
     let session_path = get_system_bus_path().unwrap();
-    thread::Builder::new()
-        .name("dbus-managementd-service".to_string())
-        .spawn_with_priority(ThreadPriority::Max, move |_| {
+    thread::Builder::new().name("dbus-managementd-service".to_string()).spawn_with_priority(
+        ThreadPriority::Max,
+        move |_| {
             let mut dbus_conn =
                 DuplexConn::connect_to_bus(session_path, false).unwrap_or_else(|e| {
                     error!("Error connecting to system DBus: {e}");
@@ -206,5 +192,6 @@ pub fn setup_dbus_managementd_recording_service(
                 DispatchConn::new(dbus_conn, recording_state, Box::new(default_handler));
             dispatch_conn.add_handler("/org/cacophony/TC2Agent", Box::new(managementd_handler));
             dispatch_conn.run().unwrap();
-        })
+        },
+    )
 }
