@@ -138,27 +138,26 @@ pub fn enter_camera_transfer_loop(
         }
         Ok(gpio) => gpio,
     };
-    let mut pin;
+    let mut pin = match gpio.get(7) {
+        Ok(pin) => pin.into_input(),
+        Err(e) => {
+            error!(
+                "Failed to get pi ping interrupt pin ({e}), \
+    is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
+            );
+            process::exit(1);
+        }
+    };
+    pin.clear_interrupt()
+        .map_err(|e| {
+            error!("Unable to clear pi ping interrupt pin: {e}");
+            process::exit(1);
+        })
+        .unwrap();
+
     let attempts = 10;
     attempt = 0;
     loop {
-        pin = match gpio.get(7) {
-            Ok(pin) => pin.into_input(),
-            Err(e) => {
-                error!(
-                    "Failed to get pi ping interrupt pin ({e}), \
-        is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
-                );
-                process::exit(1);
-            }
-        };
-        pin.clear_interrupt()
-            .map_err(|e| {
-                error!("Unable to clear pi ping interrupt pin: {e}");
-                process::exit(1);
-            })
-            .unwrap();
-
         let res = pin.set_interrupt(Trigger::RisingEdge, None);
         match res {
             Ok(()) => break,
@@ -167,15 +166,13 @@ pub fn enter_camera_transfer_loop(
                     error!("Failed to set Pin interrupts: {e}");
                     process::exit(1);
                 }
-                free_gpio7();
+                let _ = free_gpio7();
                 info!("Pin interrupts failed, trying again {e} in 100ms");
                 sleep(Duration::from_millis(100));
                 attempt += 1;
             }
         }
-        drop(pin);
     }
-
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
@@ -283,6 +280,7 @@ pub fn enter_camera_transfer_loop(
                 restart_rp2040_ack.store(false, Ordering::Relaxed);
             }
         }
+
         let poll_result = pin.poll_interrupt(false, Some(Duration::from_millis(2000)));
         if let Ok(_pin_level) = poll_result
             && _pin_level.is_some()
@@ -335,7 +333,6 @@ pub fn enter_camera_transfer_loop(
                     }
                 }
             }
-
             spi.read(&mut raw_read_buffer[..2066]).unwrap();
             {
                 let header_slice = &raw_read_buffer[..header_length];
@@ -873,6 +870,21 @@ pub fn enter_camera_transfer_loop(
                     if aligned_offset < 2066 {
                         aligned_offset = 2068;
                     }
+                    if !num_bytes_check || !header_crc_check || !transfer_type_check {
+                        // force transfer to fail
+                        info!("Forcing transfer to fail as header integrity failed");
+                        sleep(Duration::from_millis(100));
+                        spi.read(&mut raw_read_buffer[2066..aligned_offset])
+                            .map_err(|e| {
+                                error!("SPI read error: {e:?}");
+
+                                // TODO: Shutdown gracefully?
+
+                                process::exit(1);
+                            })
+                            .unwrap();
+                        continue;
+                    }
                     spi.read(&mut raw_read_buffer[2066..aligned_offset])
                         .map_err(|e| {
                             error!("SPI read error: {e:?}");
@@ -885,7 +897,6 @@ pub fn enter_camera_transfer_loop(
 
                     // Frame
                     let is_recording: bool;
-                    let mut frame = [0u8; FRAME_LENGTH];
 
                     let mut file_offload = None;
                     if aligned_offset != RAW_FRAME_SIZE {
@@ -895,18 +906,22 @@ pub fn enter_camera_transfer_loop(
                         num_bytes = (num_bytes + 1) & !1;
                         let is_last_part = raw_read_buffer[header_length] > 0;
                         let frame_bytes = num_bytes - header_length - 2;
-
+                        let mut frame_data = vec![0; frame_bytes];
                         LittleEndian::write_u16_into(
                             u8_slice_as_u16_slice(&raw_read_buffer[header_length + 2..num_bytes]),
-                            &mut frame[..frame_bytes],
+                            &mut frame_data[..frame_bytes],
                         );
                         if crc_from_remote != data_crc {
                             error!("Medium mode gz offload crc failed restart rp2040");
                             rp2040_needs_reset = true;
                         }
                         is_recording = true;
-                        file_offload = Some(FileOffloadInfo { frame_bytes, is_last_part });
+                        file_offload =
+                            Some(FileOffloadInfo { frame_bytes, is_last_part, data: frame_data });
+                        frame_i += 1;
                     } else {
+                        let mut frame = [0u8; FRAME_LENGTH];
+
                         BigEndian::write_u16_into(
                             u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
                             &mut frame[..num_bytes - header_length],
@@ -916,10 +931,12 @@ pub fn enter_camera_transfer_loop(
                         // FIXME: Check this out.
                         is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
                         recording_state.set_is_recording(is_recording);
+                        let back: std::sync::MutexGuard<
+                            '_,
+                            std::cell::RefCell<Option<[u8; 39040]>>,
+                        > = FRAME_BUFFER.get_back().lock().unwrap();
+                        back.replace(Some(frame));
                     }
-
-                    let back = FRAME_BUFFER.get_back().lock().unwrap();
-                    back.replace(Some(frame));
 
                     if !got_first_frame {
                         got_first_frame = true;

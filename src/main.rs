@@ -146,25 +146,17 @@ fn main() {
     let mut recording_state = RecordingState::new();
     let _dbus_audio_thread = setup_dbus_managementd_recording_service(&recording_state);
     let current_config = device_config.unwrap();
-    info!("Config");
 
     let (lat, lng) = current_config.lat_lng();
-    if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64)) {
-        error!("{e}");
-        process::exit(1);
-    }
-    info!("TZ");
 
     let initial_config = current_config.clone();
     let (device_config_change_channel_tx, device_config_change_channel_rx) = channel();
     let _file_watcher =
         watch_local_config_file_changes(current_config, &device_config_change_channel_tx);
-    info!("FILEWATCHER");
     // NOTE: This handles gracefully exiting the process if ctrl-c etc is pressed
     //  while running in an interactive terminal.
     let sig_term_state = Arc::new(AtomicBool::new(false));
 
-    info!("ready for frame");
     let sig_term_clone = sig_term_state.clone();
     // We want real-time priority for all the work we do.
     let handle = thread::Builder::new()
@@ -200,7 +192,6 @@ fn main() {
             // and serves them to various consumers of frames.
             // For mostly historical reasons, it's also the thread that handles actually restarting
             // the rp2040 – but it would perhaps be cleaner to handle this in a separate thread?
-            info!("SPaw frame socket");
             let medium_power_mode = initial_config.use_medium_power_mode();
 
             spawn_frame_socket_server_thread(
@@ -239,9 +230,11 @@ fn main() {
             Ok::<(), Error>(())
         })
         .unwrap();
-
+    if let Err(e) = set_system_timezone(TZ_FINDER.get_tz_name(lng as f64, lat as f64)) {
+        error!("{e}");
+        process::exit(1);
+    }
     // this can take a while so will do after thread stuff
-    info!("Starting attiny stuff");
     let mut dbus_conn = DuplexConn::connect_to_bus(session_path, true).unwrap_or_else(|e| {
         error!("Error connecting to system DBus: {e}");
         process::exit(1);
@@ -253,7 +246,6 @@ fn main() {
     signal_hook::flag::register(signal_hook::consts::SIGTERM, sig_term_state.clone()).unwrap();
     signal_hook::flag::register(signal_hook::consts::SIGINT, sig_term_state.clone()).unwrap();
     exit_if_attiny_version_is_not_as_expected(&mut dbus_conn);
-    info!("Finished attiny stuff");
 
     if let Err(e) = handle.join() {
         error!("Thread panicked: {e:?}");

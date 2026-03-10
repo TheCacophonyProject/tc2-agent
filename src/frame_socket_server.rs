@@ -22,6 +22,7 @@ pub struct FrameSocketServerMessage {
 pub struct FileOffloadInfo {
     pub(crate) frame_bytes: usize,
     pub(crate) is_last_part: bool,
+    pub(crate) data: Vec<u8>,
 }
 
 fn restart_rp2040_if_requested(
@@ -145,25 +146,25 @@ pub fn spawn_frame_socket_server_thread(
                         file_offload
                     }) = message.as_ref()
                     {
+                        let mut frame_data: Option<&[u8]> = None;
                         let mut frame_bytes = 0;
                         let mut is_last_part = false;
                         if let Some(file_info) = file_offload{
                             frame_bytes = file_info.frame_bytes;
                             is_last_part = file_info.is_last_part;
+                            frame_data = Some(&file_info.data);
                         }
                         let is_recording = frame_bytes != FRAME_LENGTH && frame_bytes > 0;
 
                         if frame_i ==0 && is_recording {
                             info!("Reset file download as have new recording");
                             file_download = None;
-                            frame_i = 0;
                             // was_recording = false;
                         }
                         let mut was_sent = false;
-                        let mut frame_data: Option<[u8; FRAME_LENGTH]> = None;
                         if is_recording {
                             //get it here so we can re use the data if needed
-                             frame_data = cptv_frame_dispatch::get_raw_frame();
+                            //  frame_data = cptv_frame_dispatch::get_raw_frame();
                              if let Some(chunk) = frame_data {
                                  if frame_i ==0 && chunk[..10]!= gzip_header{
                                     // ensure is a gzip
@@ -203,6 +204,9 @@ pub fn spawn_frame_socket_server_thread(
                                 );
                             }
                         }
+                        if is_last_part{
+                            info!("Have got last part");
+                        }
 
                         if !was_sent && is_recording {
                             if let Some(chunk) = frame_data {
@@ -228,7 +232,7 @@ pub fn spawn_frame_socket_server_thread(
                             }
                             // was_recording = true;
 
-                        }else  if !is_recording{
+                        }else  if !is_recording || is_last_part{
                             frame_i =0;
                         }
 
@@ -303,7 +307,6 @@ fn handle_payload_from_frame_acquire_thread(
                 *prev_frame_num = None;
                 *reconnects = 0;
             }
-            // info!("Handle normal message trying to send a frame... why???? {} ",is_recording);
             let s = Instant::now();
             let mut telemetry: Option<Telemetry> = None;
             let frame_data = cptv_frame_dispatch::get_frame(is_recording);
@@ -450,7 +453,7 @@ fn handle_medium_power(
     frame_bytes: usize,
     file_download: &mut Option<Vec<u8>>,
     ms_elapsed: &mut u64,
-    frame_data: Option<[u8; FRAME_LENGTH]>,
+    frame_data: Option<&[u8]>,
     is_last_part: bool,
     first_part: bool,
 ) -> bool {
@@ -488,6 +491,7 @@ fn handle_medium_power(
         }
         stream.sent_header = true;
     }
+    let s = Instant::now();
 
     if first_part || file_download.is_some() {
         info!("Sending start");
@@ -523,7 +527,7 @@ fn handle_medium_power(
     // info!("THermal ready? {} was reco {} is_rec {} bytes {}", thermal_ready,was_recording,is_recording,frame_bytes);
 
     if let Some(fb) = frame_data {
-        let sent = cptv_frame_dispatch::send_frame(&fb[..frame_bytes], stream);
+        let sent = cptv_frame_dispatch::send_frame(fb, stream);
         if !sent {
             warn!(
                 "Medium Power Send to {} failed",
@@ -539,6 +543,10 @@ fn handle_medium_power(
             let _ = stream.shutdown().is_ok();
             return false;
         }
+    }
+    let e = s.elapsed().as_secs_f32();
+    if e > 0.1 {
+        info!("socket send took {e}s");
     }
     *ms_elapsed = 0;
     true
