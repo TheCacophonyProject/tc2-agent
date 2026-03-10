@@ -204,10 +204,6 @@ pub fn spawn_frame_socket_server_thread(
                                 );
                             }
                         }
-                        if is_last_part{
-                            info!("Have got last part");
-                        }
-
                         if !was_sent && is_recording {
                             if let Some(chunk) = frame_data {
                                 if let Some(file) = &mut file_download {
@@ -234,6 +230,7 @@ pub fn spawn_frame_socket_server_thread(
 
                         }else  if !is_recording || is_last_part{
                             frame_i =0;
+                            //need to ensure end the end message is always sent, it maybe a discarded fp recording
                         }
 
                     }
