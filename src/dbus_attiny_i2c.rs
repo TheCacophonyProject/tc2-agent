@@ -93,8 +93,9 @@ pub fn dbus_attiny_command_attempt(
     let mut attempts = 0;
     // Now wait for the reply that matches our call id
     loop {
-        if let Ok(message) =
-            conn.recv.get_next_message(Timeout::Duration(Duration::from_millis(10)))
+        if let Ok(message) = conn
+            .recv
+            .get_next_message(Timeout::Duration(Duration::from_millis(10)))
         {
             match message.typ {
                 MessageType::Reply => {
@@ -106,7 +107,11 @@ pub fn dbus_attiny_command_attempt(
                             let response = &message.get_buf()[4..][0..3];
                             let crc = Crc::<u16>::new(&CRC_AUG_CCITT).checksum(&response[0..1]);
                             let received_crc = BigEndian::read_u16(&response[1..=2]);
-                            if received_crc != crc { Err("CRC Mismatch") } else { Ok(response[0]) }
+                            if received_crc != crc {
+                                Err("CRC Mismatch")
+                            } else {
+                                Ok(response[0])
+                            }
                         } else {
                             // Check that the written value was actually written correctly.
                             let set_value = dbus_attiny_command(conn, command, None);
