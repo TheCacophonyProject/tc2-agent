@@ -918,7 +918,6 @@ pub fn enter_camera_transfer_loop(
                         is_recording = true;
                         file_offload =
                             Some(FileOffloadInfo { frame_bytes, is_last_part, data: frame_data });
-                        frame_i += 1;
                     } else {
                         let mut frame = [0u8; FRAME_LENGTH];
 
