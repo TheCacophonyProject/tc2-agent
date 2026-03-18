@@ -905,6 +905,8 @@ pub fn enter_camera_transfer_loop(
                         //these have been swizzled and need to be re swizzled
                         num_bytes = (num_bytes + 1) & !1;
                         let is_last_part = raw_read_buffer[header_length] > 0;
+                        let package_num = raw_read_buffer[header_length + 1];
+
                         let frame_bytes = num_bytes - header_length - 2;
                         let mut frame_data = vec![0; frame_bytes];
                         LittleEndian::write_u16_into(
@@ -916,8 +918,12 @@ pub fn enter_camera_transfer_loop(
                             rp2040_needs_reset = true;
                         }
                         is_recording = true;
-                        file_offload =
-                            Some(FileOffloadInfo { frame_bytes, is_last_part, data: frame_data });
+                        file_offload = Some(FileOffloadInfo {
+                            frame_bytes,
+                            is_last_part,
+                            data: frame_data,
+                            package_num,
+                        });
                     } else {
                         let mut frame = [0u8; FRAME_LENGTH];
 

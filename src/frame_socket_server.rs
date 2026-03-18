@@ -23,6 +23,7 @@ pub struct FileOffloadInfo {
     pub(crate) frame_bytes: usize,
     pub(crate) is_last_part: bool,
     pub(crate) data: Vec<u8>,
+    pub(crate) package_num: u8,
 }
 
 fn restart_rp2040_if_requested(
@@ -103,6 +104,7 @@ pub fn spawn_frame_socket_server_thread(
             let mut recv_timeout_ms = 10;
             info!("Connecting to frame sockets");
             let mut ms_elapsed = 0;
+            let mut last_package_num = 255u8;
             let address = &get_socket_address(serve_frames_via_wifi);
             loop {
                 restart_rp2040_if_requested(
@@ -148,20 +150,30 @@ pub fn spawn_frame_socket_server_thread(
                         let mut frame_data: Option<&[u8]> = None;
                         let mut frame_bytes = 0;
                         let mut is_last_part = false;
+                        let mut package_num = 0;
                         if let Some(file_info) = file_offload{
                             frame_bytes = file_info.frame_bytes;
                             is_last_part = file_info.is_last_part;
                             frame_data = Some(&file_info.data);
+                            package_num = file_info.package_num;
                         }
                         let is_recording = frame_bytes != FRAME_LENGTH && frame_bytes > 0;
 
                         if frame_i ==0 && is_recording {
                             info!("Reset file download as have new recording");
                             file_download = None;
+                            last_package_num = 255;
                             // was_recording = false;
                         }
                         let mut was_sent = false;
                         if is_recording {
+                            if package_num == last_package_num{
+                                // could happen if rp2040 thinks we didnt receive the last packet
+                                warn!("Received the same package twice ignoring the second one");
+                                continue
+                            }
+
+                            last_package_num = package_num;
                             //get it here so we can re use the data if needed
                             //  frame_data = cptv_frame_dispatch::get_raw_frame();
                              if let Some(chunk) = frame_data {
