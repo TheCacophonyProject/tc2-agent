@@ -289,6 +289,8 @@ impl TryFrom<u16> for LoggerEventKind {
             34 => Ok(SetThermalAlarm(0)),
             35 => Ok(Rp2040GotNewConfig(NewConfigInfo::from_bytes(&[0u8; 8]))),
             36 => Ok(UnrecoverableDataCorruption((u16::MAX, u16::MAX))),
+            37 => Ok(MissedClasification),
+            38 => Ok(CouldNotTransfer),
             _ => Err(()),
         }
     }
