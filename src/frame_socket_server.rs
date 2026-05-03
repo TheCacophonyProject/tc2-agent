@@ -105,6 +105,7 @@ pub fn spawn_frame_socket_server_thread(
             info!("Connecting to frame sockets");
             let mut ms_elapsed = 0;
             let mut last_package_num = 255u8;
+            let mut sent_end = false;
             let address = &get_socket_address(serve_frames_via_wifi);
             loop {
                 restart_rp2040_if_requested(
@@ -163,6 +164,7 @@ pub fn spawn_frame_socket_server_thread(
                             info!("Reset file download as have new recording");
                             file_download = None;
                             last_package_num = 255;
+                            sent_end = false;
                             // was_recording = false;
                         }
                         let mut was_sent = false;
@@ -211,6 +213,9 @@ pub fn spawn_frame_socket_server_thread(
                                     is_last_part,
                                     frame_i == 1,
                                 );
+                                if is_last_part && was_sent{
+                                    sent_end = true;
+                                }
                         }
                         if !was_sent && is_recording {
                             if let Some(chunk) = frame_data {
@@ -234,8 +239,15 @@ pub fn spawn_frame_socket_server_thread(
                             // was_recording = true;
 
                         }else  if !is_recording || is_last_part{
+                            let socket = sockets.iter_mut().find(|(sock_address, _, stream)| {
+                                stream.is_some() && sock_address == address
+                            });
+                            if !is_last_part && !sent_end && frame_i >0 && let Some(sock) = socket{
+                                // send abort
+                                send_abort(sock);
+                            }
+
                             frame_i =0;
-                            //need to ensure end the end message is always sent, it maybe a discarded fp recording
                         }
                     }
                 if !message_sent {
@@ -445,6 +457,18 @@ fn handle_payload_from_frame_acquire_thread(
         }
     }
 }
+
+fn send_abort(socket: &mut (String, bool, Option<SocketStream>)) -> bool {
+    info!("Aborted recording");
+    let (address, use_wifi, og_stream) = socket;
+    let stream = og_stream.as_mut().expect("Never fails, because we filtered already.");
+
+    if stream.write_all(b"abort").is_err() {
+        let _ = stream.shutdown().is_ok();
+        return false;
+    }
+    true
+}
 fn handle_medium_power(
     socket: &mut (String, bool, Option<SocketStream>),
     radiometry_enabled: &bool,
@@ -458,7 +482,6 @@ fn handle_medium_power(
 ) -> bool {
     let (address, use_wifi, og_stream) = socket;
     let stream = og_stream.as_mut().expect("Never fails, because we filtered already.");
-
     if !stream.sent_header {
         info!("Sending header");
         let _ = stream.flush();
