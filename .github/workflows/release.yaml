@@ -77,7 +77,9 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Create Debian package
-        run: cargo deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
+        run: | 
+          export CFLAGS="-U_FORTIFY_SOURCE"
+          cargo deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
 
       - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/')
