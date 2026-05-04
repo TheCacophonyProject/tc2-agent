@@ -391,7 +391,7 @@ pub fn enter_camera_transfer_loop(
                     }
                     continue 'transfer;
                 }
-                if !(CAMERA_CONNECT_INFO..=CAMERA_STARTUP_HANDSHAKE).contains(&transfer_type) {
+                if !(CAMERA_CONNECT_INFO..=CAMERA_RECORDING_TRANSFER).contains(&transfer_type) {
                     LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                     LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                     spi.write(&return_payload_buf).unwrap();
@@ -899,7 +899,6 @@ pub fn enter_camera_transfer_loop(
                         })
                         .unwrap();
 
-
                     let data_crc = crc_check.checksum(&raw_read_buffer[header_length..num_bytes]);
                     //these have been swizzled and need to be re swizzled
                     num_bytes = (num_bytes + 1) & !1;
@@ -926,7 +925,7 @@ pub fn enter_camera_transfer_loop(
                     let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                         camera_handshake_info: Some(CameraHandshakeInfo {
                             radiometry_enabled,
-                            is_recording:true,
+                            is_recording: true,
                             firmware_version,
                             camera_serial: lepton_serial_number.clone(),
                         }),
@@ -935,10 +934,9 @@ pub fn enter_camera_transfer_loop(
                     });
                 } else {
                     // header length is already in num_bytes....?
-                    // let mut aligned_offset: usize = (num_bytes + 3) & !3;
+                    let mut aligned_offset: usize = (num_bytes + 3) & !3;
 
-
-                    spi.read(&mut raw_read_buffer[2066..num_bytes])
+                    spi.read(&mut raw_read_buffer[2066..aligned_offset])
                         .map_err(|e| {
                             error!("SPI read error: {e:?}");
 
