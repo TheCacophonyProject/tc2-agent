@@ -40,6 +40,7 @@ pub const CAMERA_BEGIN_AND_END_FILE_TRANSFER: u8 = 0x6;
 pub const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
 pub const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
 pub const CAMERA_STARTUP_HANDSHAKE: u8 = 0x9;
+pub const CAMERA_RECORDING_TRANSFER: u8 = 0xA;
 
 pub const RAW_FRAME_SIZE: usize = 39060;
 pub struct CameraHandshakeInfo {
@@ -419,7 +420,9 @@ pub fn enter_camera_transfer_loop(
                     continue 'transfer;
                 }
 
-                if transfer_type != CAMERA_RAW_FRAME_TRANSFER {
+                if transfer_type != CAMERA_RAW_FRAME_TRANSFER
+                    && transfer_type != CAMERA_RECORDING_TRANSFER
+                {
                     if transfer_type == CAMERA_BEGIN_FILE_TRANSFER {
                         start = Instant::now();
                     }
@@ -863,13 +866,14 @@ pub fn enter_camera_transfer_loop(
                     } else {
                         warn!("Crc check failed, remote was notified and will re-transmit");
                     }
-                } else {
+                } else if transfer_type == CAMERA_RECORDING_TRANSFER {
                     // header length is already in num_bytes....?
                     let mut aligned_offset: usize = (num_bytes + 3) & !3;
 
                     if aligned_offset < 2066 {
                         aligned_offset = 2068;
                     }
+
                     if !num_bytes_check || !header_crc_check || !transfer_type_check {
                         // force transfer to fail
                         info!("Forcing transfer to fail as header integrity failed");
@@ -895,53 +899,72 @@ pub fn enter_camera_transfer_loop(
                         })
                         .unwrap();
 
+
+                    let data_crc = crc_check.checksum(&raw_read_buffer[header_length..num_bytes]);
+                    //these have been swizzled and need to be re swizzled
+                    num_bytes = (num_bytes + 1) & !1;
+                    let is_last_part = raw_read_buffer[header_length] > 0;
+                    let package_num = raw_read_buffer[header_length + 1];
+
+                    let frame_bytes = num_bytes - header_length - 2;
+                    let mut frame_data = vec![0; frame_bytes];
+                    LittleEndian::write_u16_into(
+                        u8_slice_as_u16_slice(&raw_read_buffer[header_length + 2..num_bytes]),
+                        &mut frame_data[..frame_bytes],
+                    );
+                    if crc_from_remote != data_crc {
+                        error!("Medium mode gz offload crc failed restart rp2040");
+                        rp2040_needs_reset = true;
+                    }
+                    let file_offload = Some(FileOffloadInfo {
+                        frame_bytes,
+                        is_last_part,
+                        data: frame_data,
+                        package_num,
+                    });
+
+                    let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
+                        camera_handshake_info: Some(CameraHandshakeInfo {
+                            radiometry_enabled,
+                            is_recording:true,
+                            firmware_version,
+                            camera_serial: lepton_serial_number.clone(),
+                        }),
+                        camera_file_transfer_in_progress: false,
+                        file_offload,
+                    });
+                } else {
+                    // header length is already in num_bytes....?
+                    // let mut aligned_offset: usize = (num_bytes + 3) & !3;
+
+
+                    spi.read(&mut raw_read_buffer[2066..num_bytes])
+                        .map_err(|e| {
+                            error!("SPI read error: {e:?}");
+
+                            // TODO: Shutdown gracefully?
+
+                            process::exit(1);
+                        })
+                        .unwrap();
+
                     // Frame
                     let is_recording: bool;
 
-                    let mut file_offload = None;
-                    if aligned_offset != RAW_FRAME_SIZE {
-                        let data_crc =
-                            crc_check.checksum(&raw_read_buffer[header_length..num_bytes]);
-                        //these have been swizzled and need to be re swizzled
-                        num_bytes = (num_bytes + 1) & !1;
-                        let is_last_part = raw_read_buffer[header_length] > 0;
-                        let package_num = raw_read_buffer[header_length + 1];
+                    let mut frame = [0u8; FRAME_LENGTH];
 
-                        let frame_bytes = num_bytes - header_length - 2;
-                        let mut frame_data = vec![0; frame_bytes];
-                        LittleEndian::write_u16_into(
-                            u8_slice_as_u16_slice(&raw_read_buffer[header_length + 2..num_bytes]),
-                            &mut frame_data[..frame_bytes],
-                        );
-                        if crc_from_remote != data_crc {
-                            error!("Medium mode gz offload crc failed restart rp2040");
-                            rp2040_needs_reset = true;
-                        }
-                        is_recording = true;
-                        file_offload = Some(FileOffloadInfo {
-                            frame_bytes,
-                            is_last_part,
-                            data: frame_data,
-                            package_num,
-                        });
-                    } else {
-                        let mut frame = [0u8; FRAME_LENGTH];
-
-                        BigEndian::write_u16_into(
-                            u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
-                            &mut frame[..num_bytes - header_length],
-                        );
-                        // frame_bytes = num_bytes - header_length;
-                        // FIXME: Should is_recording bit only be set in high power mode?
-                        // FIXME: Check this out.
-                        is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
-                        recording_state.set_is_recording(is_recording);
-                        let back: std::sync::MutexGuard<
-                            '_,
-                            std::cell::RefCell<Option<[u8; 39040]>>,
-                        > = FRAME_BUFFER.get_back().lock().unwrap();
-                        back.replace(Some(frame));
-                    }
+                    BigEndian::write_u16_into(
+                        u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
+                        &mut frame[..num_bytes - header_length],
+                    );
+                    // frame_bytes = num_bytes - header_length;
+                    // FIXME: Should is_recording bit only be set in high power mode?
+                    // FIXME: Check this out.
+                    is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
+                    recording_state.set_is_recording(is_recording);
+                    let back: std::sync::MutexGuard<'_, std::cell::RefCell<Option<[u8; 39040]>>> =
+                        FRAME_BUFFER.get_back().lock().unwrap();
+                    back.replace(Some(frame));
 
                     if !got_first_frame {
                         got_first_frame = true;
@@ -972,7 +995,7 @@ pub fn enter_camera_transfer_loop(
                                 camera_serial: lepton_serial_number.clone(),
                             }),
                             camera_file_transfer_in_progress: false,
-                            file_offload,
+                            file_offload: None,
                         });
                     }
                 }
