@@ -66,7 +66,9 @@ jobs:
           wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
 
       - name: Build the project
-        run: cargo build --release --target=aarch64-unknown-linux-musl
+        run: | 
+          export CFLAGS="-U_FORTIFY_SOURCE"
+          cargo build --release --target=aarch64-unknown-linux-musl
 
       - name: Run fmt
         run: cargo fmt --all -- --check
