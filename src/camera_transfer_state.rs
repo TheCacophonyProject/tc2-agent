@@ -42,7 +42,6 @@ pub const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
 pub const CAMERA_STARTUP_HANDSHAKE: u8 = 0x9;
 pub const CAMERA_RECORDING_TRANSFER: u8 = 0xA;
 
-pub const RAW_FRAME_SIZE: usize = 39060;
 pub struct CameraHandshakeInfo {
     pub radiometry_enabled: bool,
     pub is_recording: bool,
@@ -934,7 +933,7 @@ pub fn enter_camera_transfer_loop(
                     });
                 } else {
                     // header length is already in num_bytes....?
-                    let mut aligned_offset: usize = (num_bytes + 3) & !3;
+                    let aligned_offset: usize = (num_bytes + 3) & !3;
 
                     spi.read(&mut raw_read_buffer[2066..aligned_offset])
                         .map_err(|e| {
@@ -947,8 +946,6 @@ pub fn enter_camera_transfer_loop(
                         .unwrap();
 
                     // Frame
-                    let is_recording: bool;
-
                     let mut frame = [0u8; FRAME_LENGTH];
 
                     BigEndian::write_u16_into(
@@ -958,7 +955,7 @@ pub fn enter_camera_transfer_loop(
                     // frame_bytes = num_bytes - header_length;
                     // FIXME: Should is_recording bit only be set in high power mode?
                     // FIXME: Check this out.
-                    is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
+                    let is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
                     recording_state.set_is_recording(is_recording);
                     let back: std::sync::MutexGuard<'_, std::cell::RefCell<Option<[u8; 39040]>>> =
                         FRAME_BUFFER.get_back().lock().unwrap();

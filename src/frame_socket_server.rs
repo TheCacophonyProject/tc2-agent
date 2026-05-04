@@ -460,7 +460,7 @@ fn handle_payload_from_frame_acquire_thread(
 
 fn send_abort(socket: &mut (String, bool, Option<SocketStream>)) -> bool {
     info!("Aborted recording");
-    let (address, use_wifi, og_stream) = socket;
+    let (_, _, og_stream) = socket;
     let stream = og_stream.as_mut().expect("Never fails, because we filtered already.");
 
     if stream.write_all(b"abort").is_err() {
