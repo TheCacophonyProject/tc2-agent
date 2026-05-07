@@ -534,6 +534,7 @@ pub fn enter_camera_transfer_loop(
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
                                         file_offload: None,
+                                        frame_message: false,
                                     });
                             }
                             CAMERA_CONNECT_INFO => {
@@ -592,6 +593,7 @@ pub fn enter_camera_transfer_loop(
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
                                         file_offload: None,
+                                        frame_message: false,
                                     });
                             }
                             CAMERA_SEND_LOGGER_EVENT => {
@@ -745,6 +747,7 @@ pub fn enter_camera_transfer_loop(
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: true,
                                         file_offload: None,
+                                        frame_message: false,
                                     });
                             }
                             CAMERA_RESUME_FILE_TRANSFER => {
@@ -769,6 +772,7 @@ pub fn enter_camera_transfer_loop(
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: true,
                                             file_offload: None,
+                                            frame_message: false,
                                         },
                                     );
                                 } else {
@@ -821,6 +825,7 @@ pub fn enter_camera_transfer_loop(
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
                                             file_offload: None,
+                                            frame_message: false,
                                         },
                                     );
                                 } else {
@@ -851,6 +856,7 @@ pub fn enter_camera_transfer_loop(
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
                                         file_offload: None,
+                                        frame_message: false,
                                     });
                             }
                             CAMERA_GET_MOTION_DETECTION_MASK => {
@@ -930,6 +936,7 @@ pub fn enter_camera_transfer_loop(
                         }),
                         camera_file_transfer_in_progress: false,
                         file_offload,
+                        frame_message: true,
                     });
                 } else {
                     // header length is already in num_bytes....?
@@ -991,6 +998,7 @@ pub fn enter_camera_transfer_loop(
                             }),
                             camera_file_transfer_in_progress: false,
                             file_offload: None,
+                            frame_message: true,
                         });
                     }
                 }

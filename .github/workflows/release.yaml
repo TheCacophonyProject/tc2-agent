@@ -46,9 +46,10 @@ jobs:
 
       - name: Configure Cargo for cross-compilation
         run: |
+          cargo install cros-rs
           mkdir -p ~/.cargo
           echo '[target.aarch64-unknown-linux-musl]' > ~/.cargo/config
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config
+          echo 'linker = "aarch64-linux-gnu-musl"' >> ~/.cargo/config
 
       - name: Update version in Cargo.toml if tag exists
         if: startsWith(github.ref, 'refs/tags/')
@@ -67,8 +68,7 @@ jobs:
 
       - name: Build the project
         run: | 
-          export CFLAGS="-U_FORTIFY_SOURCE"
-          cargo build --release --target=aarch64-unknown-linux-musl
+          cross build --release --target=aarch64-unknown-linux-musl
 
       - name: Run fmt
         run: cargo fmt --all -- --check
@@ -78,8 +78,7 @@ jobs:
 
       - name: Create Debian package
         run: | 
-          export CFLAGS="-U_FORTIFY_SOURCE"
-          cargo deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
+          cross deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
 
       - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/')
