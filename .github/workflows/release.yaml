@@ -66,10 +66,6 @@ jobs:
           wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware.sha256
           wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
 
-      - name: Build the project
-        run: | 
-          cross build --release --target=aarch64-unknown-linux-musl
-
       - name: Run fmt
         run: cargo fmt --all -- --check
 
@@ -78,7 +74,8 @@ jobs:
 
       - name: Create Debian package
         run: | 
-          cross deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
+          cross build --release --target=aarch64-unknown-linux-musl
+          cross deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb --no-build
 
       - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/')
