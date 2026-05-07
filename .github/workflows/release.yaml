@@ -46,7 +46,7 @@ jobs:
 
       - name: Configure Cargo for cross-compilation
         run: |
-          cargo install cros-rs
+          cargo install cross-rs
           mkdir -p ~/.cargo
           echo '[target.aarch64-unknown-linux-musl]' > ~/.cargo/config
           echo 'linker = "aarch64-linux-gnu-musl"' >> ~/.cargo/config
