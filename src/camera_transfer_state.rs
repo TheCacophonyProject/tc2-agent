@@ -920,7 +920,10 @@ pub fn enter_camera_transfer_loop(
                         &mut frame_data[..frame_bytes],
                     );
                     if crc_from_remote != data_crc {
-                        error!("Medium mode gz offload crc failed restart rp2040 {} previous was {}",package_num,previous_package);
+                        error!(
+                            "Medium mode gz offload crc failed restart rp2040 {} previous was {}",
+                            package_num, previous_package
+                        );
                         rp2040_needs_reset = true;
                     }
                     let file_offload = Some(FileOffloadInfo {
@@ -930,7 +933,6 @@ pub fn enter_camera_transfer_loop(
                         package_num,
                     });
 
-
                     if !got_first_frame {
                         got_first_frame = true;
                         info!(
@@ -938,7 +940,7 @@ pub fn enter_camera_transfer_loop(
                             rp2040_needs_reset
                         );
                     }
-                    
+
                     previous_package = package_num;
                     let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                         camera_handshake_info: Some(CameraHandshakeInfo {
