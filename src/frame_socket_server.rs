@@ -173,9 +173,10 @@ pub fn spawn_frame_socket_server_thread(
                             }
 
                             last_package_num = package_num;
-                            if frame_i ==0 && frame_data[..10]!= gzip_header{
+                            // first 16 bytes are timestamp, serial and firmware
+                            if frame_i ==0 && frame_data[16..16+10]!= gzip_header{
                             // ensure is a gzip
-                                error!("New file is missing the GZIP header {:?} restart rp2040",&frame_data[..10]);
+                                error!("New file is missing the GZIP header {:?} restart rp2040",&frame_data[..16+10]);
                                 restart_rp2040(&mut run_pin, &mut restart_rp2040_ack);
                                 // what do we do here???
                                 // force rp2040 to offload last file??
@@ -258,7 +259,6 @@ pub fn spawn_frame_socket_server_thread(
                         }
 
                 }
-                // else{
                 if !message_handled {
                     // dont send normal frame messages to medium power socket, we may want to change this and send the message type
                     let mut sub_sockets= sockets.iter_mut().filter(|(sock_address, _, stream)| { stream.is_some() && (!medium_power_mode || sock_address != address) });

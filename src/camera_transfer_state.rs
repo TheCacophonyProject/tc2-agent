@@ -208,6 +208,9 @@ pub fn enter_camera_transfer_loop(
     let mut pending_forced_offload_request = None;
     let mut pending_prioritise_frames_request = None;
 
+    // GP Debug can remove later
+    let mut previous_package = 0;
+
     info!("Waiting for messages from rp2040");
     'transfer: loop {
         check_for_device_config_changes(
@@ -880,9 +883,9 @@ pub fn enter_camera_transfer_loop(
                     }
 
                     if !num_bytes_check || !header_crc_check || !transfer_type_check {
-                        // force transfer to fail
+                        // force transfer to fail rp2040 waits 65 ms so 70 gives us some leeway
                         info!("Forcing transfer to fail as header integrity failed");
-                        sleep(Duration::from_millis(100));
+                        sleep(Duration::from_millis(70));
                         spi.read(&mut raw_read_buffer[2066..aligned_offset])
                             .map_err(|e| {
                                 error!("SPI read error: {e:?}");
@@ -917,7 +920,7 @@ pub fn enter_camera_transfer_loop(
                         &mut frame_data[..frame_bytes],
                     );
                     if crc_from_remote != data_crc {
-                        error!("Medium mode gz offload crc failed restart rp2040");
+                        error!("Medium mode gz offload crc failed restart rp2040 {} previous was {}",package_num,previous_package);
                         rp2040_needs_reset = true;
                     }
                     let file_offload = Some(FileOffloadInfo {
@@ -927,6 +930,16 @@ pub fn enter_camera_transfer_loop(
                         package_num,
                     });
 
+
+                    if !got_first_frame {
+                        got_first_frame = true;
+                        info!(
+                            "Got first frame from rp2040, got startup info {got_startup_info} needs reset {}",
+                            rp2040_needs_reset
+                        );
+                    }
+                    
+                    previous_package = package_num;
                     let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                         camera_handshake_info: Some(CameraHandshakeInfo {
                             radiometry_enabled,
