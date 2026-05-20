@@ -261,10 +261,10 @@ pub fn spawn_frame_socket_server_thread(
                 }
                 if !message_handled {
                     // dont send normal frame messages to medium power socket, we may want to change this and send the message type
-                    let mut sub_sockets= sockets.iter_mut().filter(|(sock_address, _, stream)| { stream.is_some() && (!medium_power_mode || sock_address != address) });
+                    let sub_sockets: Vec<&mut (String, bool, Option<SocketStream>)>= sockets.iter_mut().filter(|(sock_address, _, stream)| { stream.is_some() && (!medium_power_mode || sock_address != address) }).collect();
                     handle_payload_from_frame_acquire_thread(
                         message,
-                        &mut sub_sockets,
+                        sub_sockets,
                         &mut ms_elapsed,
                         &mut reconnects,
                         &mut prev_frame_num,
@@ -277,9 +277,9 @@ pub fn spawn_frame_socket_server_thread(
     );
 }
 
-fn handle_payload_from_frame_acquire_thread<'a>(
+fn handle_payload_from_frame_acquire_thread(
     result: Result<FrameSocketServerMessage, RecvTimeoutError>,
-    sockets: &mut impl Iterator<Item = &'a mut (String, bool, Option<SocketStream>)>,
+    mut sockets: Vec<&mut (String, bool, Option<SocketStream>)>,
     ms_elapsed: &mut u64,
     reconnects: &mut usize,
     prev_frame_num: &mut Option<u32>,
@@ -311,10 +311,11 @@ fn handle_payload_from_frame_acquire_thread<'a>(
                         Firmware: DOC-AI-v0.{firmware_version}\n\
                         CameraSerial: {camera_serial}\n\n",
             );
-            for (_, _, stream) in sockets.filter(|(_, use_wifi, stream)| {
+            for (_, _, stream) in sockets.iter_mut().filter(|(_, use_wifi, stream)| {
                 stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header
             }) {
                 let stream = stream.as_mut().expect("Never fails, because we filtered already.");
+
                 if stream.write_all(header.as_bytes()).is_err() {
                     warn!("Failed sending header info");
                 }
@@ -336,7 +337,8 @@ fn handle_payload_from_frame_acquire_thread<'a>(
             let frame_data = cptv_frame_dispatch::get_frame(is_recording);
             if let Some(fb) = frame_data {
                 telemetry = Some(read_telemetry(&fb));
-                for (address, use_wifi, stream) in sockets.filter(|(_, _, stream)| stream.is_some())
+                for (address, use_wifi, stream) in
+                    sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
                 {
                     let sent =
                         cptv_frame_dispatch::send_frame(&fb, stream.as_mut().expect("Never fails"));
@@ -387,7 +389,7 @@ fn handle_payload_from_frame_acquire_thread<'a>(
                 RecordingMode::Audio => {
                     *recv_timeout_ms = 1000;
                     for (address, use_wifi, stream) in
-                        sockets.filter(|(_, _, stream)| stream.is_some())
+                        sockets.iter_mut().filter(|(_, _, stream)| stream.is_some())
                     {
                         info!(
                             "Shutting down socket '{}'",
