@@ -52,7 +52,7 @@ use sysinfo::Disks;
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 38;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 39;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 
 const SEGMENT_LENGTH: usize = 9760;
