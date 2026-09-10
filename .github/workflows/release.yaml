@@ -15,11 +15,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      RP2040_FIRMWARE_VERSION: 0.6.7
+      RP2040_FIRMWARE_VERSION: 0.6.8
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -45,9 +45,10 @@ jobs:
 
       - name: Configure Cargo for cross-compilation
         run: |
+          cargo install cross
           mkdir -p ~/.cargo
           echo '[target.aarch64-unknown-linux-musl]' > ~/.cargo/config
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config
+          echo 'linker = "aarch64-linux-gnu-musl"' >> ~/.cargo/config
 
       - name: Update version in Cargo.toml if tag exists
         if: startsWith(github.ref, 'refs/tags/')
@@ -66,9 +67,6 @@ jobs:
           wget -O _releases/tc2-firmware-erase-flash.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware-erase-flash.sha256
           wget -O _releases/tc2-firmware-erase-flash https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware-erase-flash
 
-      - name: Build the project
-        run: cargo build --release --target=aarch64-unknown-linux-musl
-
       - name: Run fmt
         run: cargo fmt --all -- --check
 
@@ -76,7 +74,9 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Create Debian package
-        run: cargo deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb
+        run: | 
+          cross build --release --target=aarch64-unknown-linux-musl
+          cross deb --target=aarch64-unknown-linux-musl --output tc2-agent_${GITHUB_REF#refs/tags/v}_arm64.deb --no-build
 
       - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/')

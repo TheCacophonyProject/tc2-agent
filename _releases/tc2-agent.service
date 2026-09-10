@@ -1,7 +1,10 @@
-
 [Unit]
 Description=Cacophony Project TC2 Agent
-After=multi-user.target
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target 
+After=local-fs.target systemd-modules-load.service dbus.socket
+Requires=dbus.socket
 
 [Service]
 Type=simple
