@@ -24,7 +24,7 @@ pub struct FileOffloadInfo {
     pub(crate) frame_bytes: usize,
     pub(crate) is_last_part: bool,
     pub(crate) data: Vec<u8>,
-    pub(crate) package_num: u8,
+    pub(crate) packet_num: u8,
 }
 
 fn restart_rp2040_if_requested(
@@ -52,6 +52,14 @@ fn restart_rp2040(run_pin: &mut OutputPin, restart_rp2040_ack: &mut Arc<AtomicBo
     run_pin.set_high();
 }
 
+/// Handles one frame message from the rp2040 while in medium power mode, where a recording
+/// is streamed off the camera as a gzipped CPTV file in chunks ("packets") rather than all
+/// at once. Each chunk is forwarded to the connected socket (frame-processor) as it arrives;
+/// if no socket is connected yet, chunks are buffered in `file_download` and flushed once a
+/// socket becomes available or the recording ends, so the consumer can still gunzip and
+/// process the whole file. Also detects and recovers from edge cases: a missing GZIP header
+/// on the first chunk, a duplicate/out-of-order packet, a socket dropping mid-transfer, and
+/// a recording that was discarded (aborted) on the rp2040 before it could be fully sent.
 #[allow(clippy::too_many_arguments)]
 fn handle_medium_power_message(
     message: &Result<FrameSocketServerMessage, RecvTimeoutError>,
@@ -69,26 +77,27 @@ fn handle_medium_power_message(
     message_handled: &mut bool,
 ) {
     if let Ok(FrameSocketServerMessage {
-            camera_handshake_info:
-                Some(CameraHandshakeInfo {
-                    radiometry_enabled,
-                    firmware_version,
-                    camera_serial,
-                    is_recording,
-                }),
-            camera_file_transfer_in_progress: false,
-            file_offload,
-            frame_message: true,
-        }) = message.as_ref()
+        camera_handshake_info:
+            Some(CameraHandshakeInfo {
+                radiometry_enabled,
+                firmware_version,
+                camera_serial,
+                is_recording,
+            }),
+        camera_file_transfer_in_progress: false,
+        file_offload,
+        frame_message: true,
+    }) = message.as_ref()
     {
         *message_handled = *is_recording;
         if *is_recording {
-            let file_info = file_offload.as_ref().expect("Data should always be there if recording");
+            let file_info =
+                file_offload.as_ref().expect("Data should always be there if recording");
 
             let frame_bytes = file_info.frame_bytes;
             let is_last_part = file_info.is_last_part;
             let frame_data = &file_info.data;
-            let package_num = file_info.package_num;
+            let packet_num = file_info.packet_num;
             *received_end = is_last_part;
             if *frame_i == 0 {
                 info!("Reset file download as have new recording");
@@ -97,13 +106,13 @@ fn handle_medium_power_message(
                 *sent_end = false;
             }
             let mut was_sent = false;
-            if package_num == *last_packet_num {
+            if packet_num == *last_packet_num {
                 // could happen if rp2040 thinks we didnt receive the last packet
-                warn!("Received the same package twice ignoring the second one");
+                warn!("Received the same packet twice ignoring the second one");
                 return;
             }
 
-            *last_packet_num = package_num;
+            *last_packet_num = packet_num;
             // first 16 bytes are timestamp, serial and firmware
             if *frame_i == 0 && frame_data[16..16 + 10] != *gzip_header {
                 // ensure is a gzip
@@ -209,7 +218,8 @@ pub fn spawn_frame_socket_server_thread(
             info!("Frame socket started");
 
             let mut file_download: Option<Vec<u8>> = None;
-            let gzip_header: [u8; 10] = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff];
+            let gzip_header: [u8; 10] =
+                [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff];
             let mut frame_i = 0;
             // let mut was_recording = false;
             let address = get_socket_address(serve_frames_via_wifi);
@@ -255,7 +265,7 @@ pub fn spawn_frame_socket_server_thread(
                         let stream_connection: Option<SocketStream> =
                             SocketStream::from_address(address, *use_wifi).ok();
                         if stream_connection.is_some() {
-                            println!("Connected to {address}");                            
+                            println!("Connected to {address}");
                         }
                         *stream = stream_connection;
                     }
@@ -267,7 +277,6 @@ pub fn spawn_frame_socket_server_thread(
                         continue;
                     }
                 }
-
 
                 let message = camera_handshake_channel_rx
                     .recv_timeout(Duration::from_millis(recv_timeout_ms));
@@ -290,7 +299,12 @@ pub fn spawn_frame_socket_server_thread(
                 }
                 if !message_handled {
                     // dont send normal frame messages to medium power socket, we may want to change this and send the message type
-                    let sub_sockets: Vec<&mut (String, bool, Option<SocketStream>)>= sockets.iter_mut().filter(|(sock_address, _, stream)| { stream.is_some() && (!medium_power_mode || sock_address != address) }).collect();
+                    let sub_sockets: Vec<&mut (String, bool, Option<SocketStream>)> = sockets
+                        .iter_mut()
+                        .filter(|(sock_address, _, stream)| {
+                            stream.is_some() && (!medium_power_mode || sock_address != address)
+                        })
+                        .collect();
                     handle_payload_from_frame_acquire_thread(
                         message,
                         sub_sockets,

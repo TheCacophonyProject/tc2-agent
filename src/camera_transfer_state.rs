@@ -910,7 +910,7 @@ pub fn enter_camera_transfer_loop(
                     let data_crc = crc_check.checksum(&raw_read_buffer[header_length..num_bytes]);
                     //these have been swizzled and need to be re swizzled
                     num_bytes = (num_bytes + 1) & !1;
-                    let is_last_part = raw_read_buffer[header_length] ==1;
+                    let is_last_part = raw_read_buffer[header_length] == 1;
                     let packet_num = raw_read_buffer[header_length + 1];
 
                     let frame_bytes = num_bytes - header_length - 2;
@@ -930,7 +930,7 @@ pub fn enter_camera_transfer_loop(
                         frame_bytes,
                         is_last_part,
                         data: frame_data,
-                        package_num: packet_num,
+                        packet_num,
                     });
 
                     if !got_first_frame {
@@ -979,8 +979,7 @@ pub fn enter_camera_transfer_loop(
                     // FIXME: Check this out.
                     let is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
                     recording_state.set_is_recording(is_recording);
-                    let back =
-                        FRAME_BUFFER.get_back().lock().unwrap();
+                    let back = FRAME_BUFFER.get_back().lock().unwrap();
                     back.replace(Some(frame));
 
                     if !got_first_frame {

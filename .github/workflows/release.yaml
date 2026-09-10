@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      RP2040_FIRMWARE_VERSION: 0.6.6
+      RP2040_FIRMWARE_VERSION: 0.6.8
 
     steps:
       - name: Checkout repository
