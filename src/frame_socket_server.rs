@@ -37,15 +37,6 @@ fn restart_rp2040_if_requested(
     // Check if we need to reset rp2040 because of a config change
     if restart_rp2040_channel_rx.try_recv().is_ok() {
         restart_rp2040(run_pin, restart_rp2040_ack);
-        // restart_rp2040_ack.store(true, Ordering::Relaxed);
-        // info!("Restarting rp2040");
-        // if !run_pin.is_set_high() {
-        //     run_pin.set_high();
-        //     sleep(Duration::from_millis(1000));
-        // }
-        // run_pin.set_low();
-        // sleep(Duration::from_millis(1000));
-        // run_pin.set_high();
     }
 }
 
@@ -59,6 +50,147 @@ fn restart_rp2040(run_pin: &mut OutputPin, restart_rp2040_ack: &mut Arc<AtomicBo
     run_pin.set_low();
     sleep(Duration::from_millis(1000));
     run_pin.set_high();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_medium_power_message(
+    message: &Result<FrameSocketServerMessage, RecvTimeoutError>,
+    sockets: &mut [(String, bool, Option<SocketStream>); 2],
+    address: &String,
+    gzip_header: &[u8; 10],
+    file_download: &mut Option<Vec<u8>>,
+    frame_i: &mut i32,
+    last_packet_num: &mut u8,
+    sent_end: &mut bool,
+    received_end: &mut bool,
+    ms_elapsed: &mut u64,
+    run_pin: &mut OutputPin,
+    restart_rp2040_ack: &mut Arc<AtomicBool>,
+    message_handled: &mut bool,
+) {
+    if let Ok(FrameSocketServerMessage {
+            camera_handshake_info:
+                Some(CameraHandshakeInfo {
+                    radiometry_enabled,
+                    firmware_version,
+                    camera_serial,
+                    is_recording,
+                }),
+            camera_file_transfer_in_progress: false,
+            file_offload,
+            frame_message: true,
+        }) = message.as_ref()
+    {
+        *message_handled = *is_recording;
+        if *is_recording {
+            let file_info = file_offload.as_ref().expect("Data should always be there if recording");
+
+            let frame_bytes = file_info.frame_bytes;
+            let is_last_part = file_info.is_last_part;
+            let frame_data = &file_info.data;
+            let package_num = file_info.package_num;
+            *received_end = is_last_part;
+            if *frame_i == 0 {
+                info!("Reset file download as have new recording");
+                *file_download = None;
+                *last_packet_num = 255;
+                *sent_end = false;
+            }
+            let mut was_sent = false;
+            if package_num == *last_packet_num {
+                // could happen if rp2040 thinks we didnt receive the last packet
+                warn!("Received the same package twice ignoring the second one");
+                return;
+            }
+
+            *last_packet_num = package_num;
+            // first 16 bytes are timestamp, serial and firmware
+            if *frame_i == 0 && frame_data[16..16 + 10] != *gzip_header {
+                // ensure is a gzip
+                error!(
+                    "New file is missing the GZIP header {:?} restart rp2040",
+                    &frame_data[..16 + 10]
+                );
+                restart_rp2040(run_pin, restart_rp2040_ack);
+                // what do we do here???
+                // force rp2040 to offload last file??
+                // if we could send a message ask for the start again
+                return;
+            }
+            *frame_i += 1;
+
+            let socket = sockets
+                .iter_mut()
+                .find(|(sock_address, _, stream)| stream.is_some() && sock_address == address);
+            if let Some(sock) = socket {
+                was_sent = handle_medium_power(
+                    sock,
+                    radiometry_enabled,
+                    firmware_version,
+                    camera_serial,
+                    file_download,
+                    ms_elapsed,
+                    Some(frame_data),
+                    is_last_part,
+                    *frame_i == 1,
+                );
+                if is_last_part && was_sent {
+                    *sent_end = true;
+                    *frame_i = 0;
+                }
+            }
+            // store file to send later
+            if !was_sent {
+                if let Some(file) = file_download.as_mut() {
+                    info!("Adding bytes {} to memory file", frame_bytes);
+                    file.extend_from_slice(frame_data);
+                } else if *frame_i > 1 {
+                    error!(
+                        "Lost socket connection part way through medium power offload (Something must have gone wrong), Restarting RP2040"
+                    );
+                    // restart rp2040 and offload the file
+                    restart_rp2040(run_pin, restart_rp2040_ack);
+                    *frame_i = 0;
+                } else {
+                    info!("Starting new file");
+                    let mut file: Vec<u8> = Vec::with_capacity(50_000_000);
+                    file.extend_from_slice(frame_data);
+                    *file_download = Some(file);
+                }
+            }
+        } else if !*sent_end && (*frame_i > 0 || file_download.is_some()) {
+            // have a frame message and not recording so need to finish any open recordings, generally this is done as soon as we receive the last packet
+            // but there are some edge cases (abort and socket wasnt connect yet)
+            let socket = sockets
+                .iter_mut()
+                .find(|(sock_address, _, stream)| stream.is_some() && sock_address == address);
+            if let Some(sock) = socket {
+                if *received_end && file_download.is_some() {
+                    // handles edge case that the whole recording was received and is in file_download before anything was sent for processing
+                    // very unlikely as generally the python code is waiting prior to tc2-agent starting
+                    if handle_medium_power(
+                        sock,
+                        &true, //we may not have received the radiometry info since we don't always handshake first, so just say its on always
+                        firmware_version,
+                        camera_serial,
+                        file_download,
+                        ms_elapsed,
+                        None,
+                        true,
+                        true,
+                    ) {
+                        *sent_end = true;
+                    }
+                } else {
+                    // send abort when recording was discarded on rp2040
+                    send_abort(sock);
+                    *file_download = None;
+                    *sent_end = true;
+                }
+            }
+            *frame_i = 0;
+        }
+    }
 }
 
 pub fn spawn_frame_socket_server_thread(
@@ -105,7 +237,7 @@ pub fn spawn_frame_socket_server_thread(
             let mut recv_timeout_ms = 10;
             info!("Connecting to frame sockets");
             let mut ms_elapsed = 0;
-            let mut last_package_num = 255u8;
+            let mut last_packet_num = 255u8;
             let mut sent_end = false;
             let mut message_handled = false;
             let mut received_end = false;
@@ -139,125 +271,22 @@ pub fn spawn_frame_socket_server_thread(
 
                 let message = camera_handshake_channel_rx
                     .recv_timeout(Duration::from_millis(recv_timeout_ms));
-                if medium_power_mode && let Ok(FrameSocketServerMessage {
-                        camera_handshake_info:
-                            Some(CameraHandshakeInfo {radiometry_enabled,firmware_version,
-                                camera_serial,
-                                is_recording,
-                            }),
-                        camera_file_transfer_in_progress: false,
-                        file_offload,
-                        frame_message: true,
-                    }) = message.as_ref()
-                    {
-                        message_handled = *is_recording;
-                        if *is_recording{
-                            let file_info = file_offload.as_ref().expect("Data should always be there if recording");
-
-                            let frame_bytes = file_info.frame_bytes;
-                            let is_last_part = file_info.is_last_part;
-                            let frame_data = &file_info.data;
-                            let package_num = file_info.package_num;
-                            received_end = is_last_part;
-                            if frame_i ==0  {
-                                info!("Reset file download as have new recording");
-                                file_download = None;
-                                last_package_num = 255;
-                                sent_end = false;
-                            }
-                            let mut was_sent = false;
-                            if package_num == last_package_num{
-                                // could happen if rp2040 thinks we didnt receive the last packet
-                                warn!("Received the same package twice ignoring the second one");
-                                continue
-                            }
-
-                            last_package_num = package_num;
-                            // first 16 bytes are timestamp, serial and firmware
-                            if frame_i ==0 && frame_data[16..16+10]!= gzip_header{
-                            // ensure is a gzip
-                                error!("New file is missing the GZIP header {:?} restart rp2040",&frame_data[..16+10]);
-                                restart_rp2040(&mut run_pin, &mut restart_rp2040_ack);
-                                // what do we do here???
-                                // force rp2040 to offload last file??
-                                // if we could send a message ask for the start again
-                                continue;
-                            }
-                            frame_i+=1;
-
-                            let socket = sockets.iter_mut().find(|(sock_address, _, stream)| {
-                                stream.is_some() && sock_address == address
-                            });
-                            if let Some(sock) = socket
-                            {
-                                    was_sent = handle_medium_power(
-                                        sock,
-                                        radiometry_enabled,
-                                        firmware_version,
-                                        camera_serial,
-                                        &mut file_download,
-                                        &mut ms_elapsed,
-                                        Some(frame_data),
-                                        is_last_part,
-                                        frame_i == 1,
-                                    );
-                                    if is_last_part && was_sent{
-                                        sent_end = true;
-                                        frame_i = 0;
-                                    }
-                            }
-                            // store file to send later
-                            if !was_sent {
-                                if let Some(file) = &mut file_download {
-                                    info!("Adding bytes {} to memory file", frame_bytes);
-                                    file.extend_from_slice(frame_data);
-                                } else if frame_i > 1{
-                                        error!("Lost socket connection part way through medium power offload (Something must have gone wrong), Restarting RP2040");
-                                        // restart rp2040 and offload the file
-                                        restart_rp2040(&mut run_pin, &mut restart_rp2040_ack);
-                                        frame_i = 0;
-                                        continue
-
-                                }else{
-                                    info!("Starting new file");
-                                    let mut file: Vec<u8> = Vec::with_capacity(50_000_000);
-                                    file.extend_from_slice(frame_data);
-                                    file_download = Some(file);
-                                }
-                            }
-                        }else if !sent_end && (frame_i >0 || file_download.is_some()) {
-                            // have a frame message and not recording so need to finish any open recordings, generally this is done as soon as we receive the last packet
-                            // but there are some edge cases (abort and socket wasnt connect yet)
-                            let socket = sockets.iter_mut().find(|(sock_address, _, stream)| {
-                                stream.is_some() && sock_address == address
-                            });
-                            if  let Some(sock) = socket{
-                                if received_end && file_download.is_some(){
-                                    // handles edge case that the whole recording was received and is in file_download before anything was sent for processing
-                                    // very unlikely as generally the python code is waiting prior to tc2-agent starting
-                                    if handle_medium_power(
-                                                sock,
-                                                &true, //we may not have received the radiometry info since we don't always handshake first, so just say its on always
-                                                firmware_version,
-                                                camera_serial,
-                                                &mut file_download,
-                                                &mut ms_elapsed,
-                                                None,
-                                                true,
-                                                true,
-                                    ){
-                                        sent_end = true;
-                                    }
-                                }else{
-                                    // send abort when recording was discarded on rp2040
-                                    send_abort(sock);
-                                    file_download = None;
-                                    sent_end = true;
-                                }
-                            }
-                            frame_i =0;
-                        }
-
+                if medium_power_mode {
+                    handle_medium_power_message(
+                        &message,
+                        &mut sockets,
+                        address,
+                        &gzip_header,
+                        &mut file_download,
+                        &mut frame_i,
+                        &mut last_packet_num,
+                        &mut sent_end,
+                        &mut received_end,
+                        &mut ms_elapsed,
+                        &mut run_pin,
+                        &mut restart_rp2040_ack,
+                        &mut message_handled,
+                    );
                 }
                 if !message_handled {
                     // dont send normal frame messages to medium power socket, we may want to change this and send the message type
@@ -473,8 +502,8 @@ fn handle_payload_from_frame_acquire_thread(
 
 fn send_abort(socket: &mut (String, bool, Option<SocketStream>)) -> bool {
     info!("Aborted recording");
-    let (_, _, og_stream) = socket;
-    let stream = og_stream.as_mut().expect("Never fails, because we filtered already.");
+    let (_, _, stream) = socket;
+    let stream = stream.as_mut().expect("Never fails, because we filtered already.");
 
     if stream.write_all(b"abort").is_err() {
         let _ = stream.shutdown().is_ok();
@@ -559,7 +588,6 @@ fn handle_medium_power(
         file_download.take();
         info!("Sent all of file download");
     }
-    // info!("THermal ready? {} was reco {} is_rec {} bytes {}", thermal_ready,was_recording,is_recording,frame_bytes);
 
     if let Some(fb) = frame_data {
         let sent = cptv_frame_dispatch::send_frame(fb, stream);

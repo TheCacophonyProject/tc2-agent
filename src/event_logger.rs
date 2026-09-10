@@ -197,7 +197,7 @@ pub enum LoggerEventKind {
     SetThermalAlarm(i64),
     Rp2040GotNewConfig(NewConfigInfo),
     UnrecoverableDataCorruption((u16, u16)),
-    MissedClasification,
+    MissedClassification,
     CouldNotTransfer,
 }
 
@@ -241,7 +241,7 @@ impl From<LoggerEventKind> for u16 {
             SetThermalAlarm(_) => 34,
             Rp2040GotNewConfig(_) => 35,
             UnrecoverableDataCorruption(_) => 36,
-            MissedClasification => 37,
+            MissedClassification => 37,
             CouldNotTransfer => 38,
         }
     }
@@ -289,7 +289,7 @@ impl TryFrom<u16> for LoggerEventKind {
             34 => Ok(SetThermalAlarm(0)),
             35 => Ok(Rp2040GotNewConfig(NewConfigInfo::from_bytes(&[0u8; 8]))),
             36 => Ok(UnrecoverableDataCorruption((u16::MAX, u16::MAX))),
-            37 => Ok(MissedClasification),
+            37 => Ok(MissedClassification),
             38 => Ok(CouldNotTransfer),
             _ => Err(()),
         }
