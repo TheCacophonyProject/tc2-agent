@@ -12,7 +12,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     env:
       RP2040_FIRMWARE_VERSION: 0.6.6
@@ -22,10 +22,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0
-          override: true
           components: rustfmt, clippy
 
       - name: Display Rust and Cargo version
@@ -65,6 +64,8 @@ jobs:
           mkdir -p _releases
           wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware.sha256
           wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
+          wget -O _releases/tc2-firmware-erase-flash.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware-erase-flash.sha256
+          wget -O _releases/tc2-firmware-erase-flash https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware-erase-flash
 
       - name: Run fmt
         run: cargo fmt --all -- --check

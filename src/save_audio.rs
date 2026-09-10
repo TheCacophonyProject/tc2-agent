@@ -105,7 +105,10 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                 let duration_seconds = audio_bytes[12..].len() as f32 / sample_rate as f32 / 2.0;
                 let duration = format!("duration={duration_seconds}");
                 let sr = format!("originalSampleRate={original_sample_rate}");
-                let is_test_recording = duration_seconds < 3.0;
+                // If it's a short user-requested test recording, or a 5 minute bird count, mark
+                // it in the metadata
+                let is_test_recording = duration_seconds < 11.0;
+                let is_5_minute_bird_count = duration_seconds > 60.0 * 4.0;
                 let mut args = Vec::from([
                     "-i",
                     "pipe:0",
@@ -140,7 +143,7 @@ pub fn save_audio_file_to_disk(mut audio_bytes: Vec<u8>, device_config: DeviceCo
                     "-metadata",
                     &sr,
                 ]);
-                if is_test_recording {
+                if is_test_recording || is_5_minute_bird_count {
                     args.push("-metadata");
                     args.push("testRecording=true");
                 }

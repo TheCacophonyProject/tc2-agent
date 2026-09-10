@@ -45,6 +45,8 @@ assets = [
     ["_releases/tc2-agent.service", "/etc/systemd/system/tc2-agent.service", "664"],
     ["_releases/org.cacophony.TC2Agent.conf", "/etc/dbus-1/system.d/org.cacophony.TC2Agent.conf", "664"],
     ["_releases/tc2-firmware", "/etc/cacophony/rp2040-firmware.elf", "664"],
+    ["_releases/tc2-firmware-erase-flash", "/etc/cacophony/rp2040-firmware-erase-flash.elf", "664"],
+    ["_releases/tc2-firmware-erase-flash.sha256", "/etc/cacophony/rp2040-firmware-erase-flash.sha256", "664"],
 ]
 maintainer-scripts = "_releases/scripts"
 revision = ""

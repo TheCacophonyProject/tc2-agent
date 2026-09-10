@@ -3,3 +3,6 @@ linker = "aarch64-linux-musl-gcc"
 # applies to target-specific builds
 # rPi3
 rustflags = "-C target-cpu=cortex-a53"
+
+[env]
+CFLAGS_aarch64_unknown_linux_musl = "-U_FORTIFY_SOURCE"

@@ -237,7 +237,7 @@ pub fn spawn_frame_socket_server_thread(
                                     // very unlikely as generally the python code is waiting prior to tc2-agent starting
                                     if handle_medium_power(
                                                 sock,
-                                                radiometry_enabled,
+                                                &true, //we may not have received the radiometry info since we don't always handshake first, so just say its on always
                                                 firmware_version,
                                                 camera_serial,
                                                 &mut file_download,
