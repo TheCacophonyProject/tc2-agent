@@ -143,7 +143,7 @@ pub fn enter_camera_transfer_loop(
         Err(e) => {
             error!(
                 "Failed to get pi ping interrupt pin ({e}), \
-    is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
+                is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
             );
             process::exit(1);
         }
@@ -208,8 +208,7 @@ pub fn enter_camera_transfer_loop(
     let mut pending_forced_offload_request = None;
     let mut pending_prioritise_frames_request = None;
 
-    // GP Debug can remove later
-    let mut previous_package = 0;
+    let mut previous_packet = 0;
 
     info!("Waiting for messages from rp2040");
     'transfer: loop {
@@ -877,7 +876,8 @@ pub fn enter_camera_transfer_loop(
                 } else if transfer_type == CAMERA_RECORDING_TRANSFER {
                     // header length is already in num_bytes....?
                     let mut aligned_offset: usize = (num_bytes + 3) & !3;
-
+                    //rp2040 will always send at least 2068 bytes due to the fact that we always read 2066 bytes in tc2-agent
+                    //it is possible that number of data bytes is less than this though
                     if aligned_offset < 2066 {
                         aligned_offset = 2068;
                     }
@@ -910,8 +910,8 @@ pub fn enter_camera_transfer_loop(
                     let data_crc = crc_check.checksum(&raw_read_buffer[header_length..num_bytes]);
                     //these have been swizzled and need to be re swizzled
                     num_bytes = (num_bytes + 1) & !1;
-                    let is_last_part = raw_read_buffer[header_length] > 0;
-                    let package_num = raw_read_buffer[header_length + 1];
+                    let is_last_part = raw_read_buffer[header_length] ==1;
+                    let packet_num = raw_read_buffer[header_length + 1];
 
                     let frame_bytes = num_bytes - header_length - 2;
                     let mut frame_data = vec![0; frame_bytes];
@@ -922,7 +922,7 @@ pub fn enter_camera_transfer_loop(
                     if crc_from_remote != data_crc {
                         error!(
                             "Medium mode gz offload crc failed restart rp2040 {} previous was {}",
-                            package_num, previous_package
+                            packet_num, previous_packet
                         );
                         rp2040_needs_reset = true;
                     }
@@ -930,7 +930,7 @@ pub fn enter_camera_transfer_loop(
                         frame_bytes,
                         is_last_part,
                         data: frame_data,
-                        package_num,
+                        package_num: packet_num,
                     });
 
                     if !got_first_frame {
@@ -941,7 +941,7 @@ pub fn enter_camera_transfer_loop(
                         );
                     }
 
-                    previous_package = package_num;
+                    previous_packet = packet_num;
                     let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                         camera_handshake_info: Some(CameraHandshakeInfo {
                             radiometry_enabled,
@@ -979,7 +979,7 @@ pub fn enter_camera_transfer_loop(
                     // FIXME: Check this out.
                     let is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
                     recording_state.set_is_recording(is_recording);
-                    let back: std::sync::MutexGuard<'_, std::cell::RefCell<Option<[u8; 39040]>>> =
+                    let back =
                         FRAME_BUFFER.get_back().lock().unwrap();
                     back.replace(Some(frame));
 
