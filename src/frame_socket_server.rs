@@ -54,7 +54,7 @@ fn restart_rp2040(run_pin: &mut OutputPin, restart_rp2040_ack: &mut Arc<AtomicBo
 
 /// Handles one frame message from the rp2040 while in medium power mode.
 /// In medium power mode the rp2040 wakes up the PI while recording and attempts to send the gzipped
-/// frames of the current recording to tc2-agent, starting from the first frame to the current  or end of file if the recording is now finished.
+/// CPTV frames of the current recording to tc2-agent, starting from the first frame to the current frame or end of file if the recording is now finished.
 /// Each chunk is then forwarded to the connected socket (thermal-recorder-py) as it arrives;
 /// if no socket is connected yet, chunks are buffered in `file_download` and flushed once a
 /// socket becomes available or the recording ends, so the consumer can still gunzip and
