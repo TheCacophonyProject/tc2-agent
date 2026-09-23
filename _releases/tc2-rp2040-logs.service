@@ -1,0 +1,18 @@
+[Unit]
+Description=RP2040 firmware log capture
+# openocd holds the SWD pins for as long as it runs, and programming the RP2040
+# needs those same pins. tc2-agent stops this service around a programming run
+# rather than systemd doing it via Conflicts=, because the restart timer below
+# makes this unit's start job race the programming job.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tc2-rp2040-logs
+Restart=always
+RestartSec=10
+SyslogIdentifier=rp2040
+# Log lines are prefixed with <N> so the firmware's own levels reach journald.
+SyslogLevelPrefix=yes
+
+[Install]
+WantedBy=multi-user.target

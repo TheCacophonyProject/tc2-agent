@@ -8,6 +8,7 @@ touch /etc/cacophony/program_rp2040
 # Format is "service.name:<none|restart|start>"
 SERVICES_TO_MANAGE=(
     "tc2-agent.service:restart"
+    "tc2-rp2040-logs.service:restart"
 )
 
 # Extract just the service names for the check
