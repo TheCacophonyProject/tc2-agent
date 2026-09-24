@@ -559,7 +559,7 @@ fn handle_medium_power(
     socket: &mut (String, bool, Option<SocketStream>),
     radiometry_enabled: &bool,
     firmware_version: &u32,
-    camera_serial: &String,
+    camera_serial: &str,
     file_download: &mut Option<Vec<u8>>,
     ms_elapsed: &mut u64,
     frame_data: Option<&[u8]>,
