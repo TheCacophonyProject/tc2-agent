@@ -199,6 +199,19 @@ fn handle_medium_power_message(
                 }
             }
             *frame_i = 0;
+        } else {
+            // always want to send the header
+            let socket = sockets.iter_mut().find(|(sock_address, _, stream)| {
+                sock_address == address && stream.as_ref().is_some_and(|s| !s.sent_header)
+            });
+            if let Some((_, _, option_stream)) = socket {
+                let stream =
+                    option_stream.as_mut().expect("Never fails, because we filtered already.");
+                if !send_header(stream, *radiometry_enabled, *firmware_version, camera_serial) {
+                    info!("Shutting down socket");
+                    let _ = option_stream.take().expect("Never fails").shutdown().is_ok();
+                }
+            }
         }
     }
 }
@@ -343,32 +356,11 @@ fn handle_payload_from_frame_acquire_thread(
             file_offload: None,
             frame_message: true,
         }) => {
-            let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
-            let header = format!(
-                "ResX: 160\n\
-                        ResX: 160\n\
-                        ResY: 120\n\
-                        FrameSize: 39040\n\
-                        Model: {model}\n\
-                        Brand: flir\n\
-                        FPS: 9\n\
-                        Firmware: DOC-AI-v0.{firmware_version}\n\
-                        CameraSerial: {camera_serial}\n\n",
-            );
             for (_, _, stream) in sockets.iter_mut().filter(|(_, use_wifi, stream)| {
                 stream.is_some() && !use_wifi && !stream.as_ref().unwrap().sent_header
             }) {
                 let stream = stream.as_mut().expect("Never fails, because we filtered already.");
-
-                if stream.write_all(header.as_bytes()).is_err() {
-                    warn!("Failed sending header info");
-                }
-                // Clear existing
-                if stream.write_all(b"clear").is_err() {
-                    warn!("Failed clearing buffer");
-                }
-                let _ = stream.flush();
-                stream.sent_header = true;
+                send_header(stream, radiometry_enabled, firmware_version, &camera_serial);
             }
 
             if *reconnects > 0 {
@@ -515,6 +507,43 @@ fn handle_payload_from_frame_acquire_thread(
     }
 }
 
+/// Sends the camera header followed by a "clear" to the stream.
+/// Returns false if any write or the flush fails; `sent_header` is only set on success.
+fn send_header(
+    stream: &mut SocketStream,
+    radiometry_enabled: bool,
+    firmware_version: u32,
+    camera_serial: &str,
+) -> bool {
+    info!("Sending header");
+    let model = if radiometry_enabled { "lepton3.5" } else { "lepton3" };
+    let header = format!(
+        "ResX: 160\n\
+            ResY: 120\n\
+            FrameSize: 39040\n\
+            Model: {model}\n\
+            Brand: flir\n\
+            FPS: 9\n\
+            Firmware: DOC-AI-v0.{firmware_version}\n\
+            CameraSerial: {camera_serial}\n\n",
+    );
+
+    if stream.write_all(header.as_bytes()).is_err() {
+        warn!("Failed sending header info");
+        return false;
+    }
+    // Clear existing
+    if stream.write_all(b"clear").is_err() {
+        warn!("Failed clearing buffer");
+        return false;
+    }
+    if stream.flush().is_err() {
+        return false;
+    }
+    stream.sent_header = true;
+    true
+}
+
 fn send_abort(socket: &mut (String, bool, Option<SocketStream>)) -> bool {
     info!("Aborted recording");
     let (_, _, stream) = socket;
@@ -537,38 +566,14 @@ fn handle_medium_power(
     is_last_part: bool,
     first_part: bool,
 ) -> bool {
-    let (address, use_wifi, og_stream) = socket;
-    let stream = og_stream.as_mut().expect("Never fails, because we filtered already.");
-    if !stream.sent_header {
-        info!("Sending header");
-        let _ = stream.flush();
-        let model = if *radiometry_enabled { "lepton3.5" } else { "lepton3" };
-        let header = format!(
-            "ResX: 160\n\
-                ResX: 160\n\
-                ResY: 120\n\
-                FrameSize: 39040\n\
-                Model: {model}\n\
-                Brand: flir\n\
-                FPS: 9\n\
-                Firmware: DOC-AI-v0.{firmware_version}\n\
-                CameraSerial: {camera_serial}\n\n",
-        );
-
-        if stream.write_all(header.as_bytes()).is_err() {
-            warn!("Failed sending header info");
-        }
-        // Clear existing
-        if stream.write_all(b"clear").is_err() {
-            warn!("Failed clearing buffer");
-        }
-        let sent: bool = stream.flush().is_ok();
-        if !sent {
-            info!("Shutting down socket");
-            let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
-            return false;
-        }
-        stream.sent_header = true;
+    let (address, use_wifi, option_stream) = socket;
+    let stream = option_stream.as_mut().expect("Never fails, because we filtered already.");
+    if !stream.sent_header
+        && !send_header(stream, *radiometry_enabled, *firmware_version, camera_serial)
+    {
+        info!("Shutting down socket");
+        let _ = option_stream.take().expect("Never fails").shutdown().is_ok();
+        return false;
     }
     let s = Instant::now();
 
@@ -580,7 +585,7 @@ fn handle_medium_power(
         let sent: bool = stream.flush().is_ok();
         if !sent {
             info!("Shutting down socket");
-            let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
+            let _ = option_stream.take().expect("Never fails").shutdown().is_ok();
             return false;
         }
     }
@@ -595,7 +600,7 @@ fn handle_medium_power(
             let sent = cptv_frame_dispatch::send_frame(chunk, stream);
 
             if !sent {
-                let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
+                let _ = option_stream.take().expect("Never fails").shutdown().is_ok();
                 return false;
             }
         }
@@ -611,7 +616,7 @@ fn handle_medium_power(
                 "Medium Power Send to {} failed",
                 if *use_wifi { "tc2-frames server" } else { address }
             );
-            let _ = og_stream.take().expect("Never fails").shutdown().is_ok();
+            let _ = option_stream.take().expect("Never fails").shutdown().is_ok();
             return false;
         }
     }
