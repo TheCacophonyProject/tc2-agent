@@ -33,7 +33,9 @@ fn default_constant_recorder() -> bool {
 fn default_low_power_mode() -> bool {
     false
 }
-
+fn default_instant_classify() -> bool {
+    false
+}
 fn default_mask_regions() -> DetectionMask {
     DetectionMask::new(None)
 }
@@ -534,6 +536,8 @@ struct ThermalRecordingSettings {
     constant_recorder: bool,
     #[serde(rename = "use-low-power-mode", default = "default_low_power_mode")]
     use_low_power_mode: bool,
+    #[serde(rename = "instant-classify", default = "default_instant_classify")]
+    instant_classify: bool,
     #[serde(rename = "min-disk-space-mb", default = "default_min_disk_space_mb")]
     min_disk_space_mb: u32,
     #[serde(
@@ -551,6 +555,7 @@ impl Default for ThermalRecordingSettings {
             constant_recorder: default_constant_recorder(),
             min_disk_space_mb: default_min_disk_space_mb(),
             use_low_power_mode: default_low_power_mode(),
+            instant_classify: default_instant_classify(),
             mask_regions: default_mask_regions(),
         }
     }
@@ -655,7 +660,9 @@ impl DeviceConfig {
     pub fn use_low_power_mode(&self) -> bool {
         self.recording_settings.use_low_power_mode
     }
-
+    pub fn use_medium_power_mode(&self) -> bool {
+        self.recording_settings.use_low_power_mode && self.recording_settings.instant_classify
+    }
     pub fn use_high_power_mode(&self) -> bool {
         !self.recording_settings.use_low_power_mode
     }
@@ -912,6 +919,7 @@ impl DeviceConfig {
         buf.write_u8(device_name_length as u8).unwrap();
         buf.write_all(&device_name[0..device_name_length]).unwrap();
         buf.write_u32::<LittleEndian>(self.audio_info.audio_seed).unwrap();
+        buf.write_u8(if self.use_medium_power_mode() { 1 } else { 0 }).unwrap();
 
         buf.write_u8(if prefer_not_to_offload_files_now { 5 } else { 0 }).unwrap();
         buf.write_u8(if force_offload_files_now { 1 } else { 0 }).unwrap();
