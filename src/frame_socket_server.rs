@@ -282,10 +282,7 @@ pub fn spawn_frame_socket_server_thread(
                         }
                     }
                     if let Some(file) = file_download.take() {
-                        warn!(
-                            "Discarding unsent medium power recording with {} bytes",
-                            file.len()
-                        );
+                        warn!("Discarding unsent medium power recording with {} bytes", file.len());
                     }
                     medium_power_mode = new_medium_power_mode;
                     frame_i = 0;
