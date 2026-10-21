@@ -218,7 +218,7 @@ pub fn spawn_frame_socket_server_thread(
     mut run_pin: OutputPin,
     mut restart_rp2040_ack: Arc<AtomicBool>,
     recording_state: &RecordingState,
-    medium_power_mode: bool,
+    medium_power_mode_flag: Arc<AtomicBool>,
 ) {
     let recording_state = recording_state.clone();
     let _ = thread::Builder::new().name("frame-socket".to_string()).spawn_with_priority(
@@ -261,12 +261,39 @@ pub fn spawn_frame_socket_server_thread(
             let mut message_handled = false;
             let mut received_end = false;
             let address = &get_socket_address(serve_frames_via_wifi);
+            let mut medium_power_mode = medium_power_mode_flag.load(Ordering::Relaxed);
             loop {
                 restart_rp2040_if_requested(
                     &restart_rp2040_channel_rx,
                     &mut run_pin,
                     &mut restart_rp2040_ack,
                 );
+                let new_medium_power_mode = medium_power_mode_flag.load(Ordering::Relaxed);
+                if new_medium_power_mode != medium_power_mode {
+                    info!("Switching medium power mode to {new_medium_power_mode}");
+                    if !sent_end && frame_i > 0 && file_download.is_none() {
+                        // A recording was part way through being streamed, so tell the
+                        // consumer to discard what it has received so far. If it's still
+                        // buffered in file_download nothing has been sent yet.
+                        if let Some(sock) = sockets.iter_mut().find(|(sock_address, _, stream)| {
+                            stream.is_some() && sock_address == address
+                        }) {
+                            send_abort(sock);
+                        }
+                    }
+                    if let Some(file) = file_download.take() {
+                        warn!(
+                            "Discarding unsent medium power recording with {} bytes",
+                            file.len()
+                        );
+                    }
+                    medium_power_mode = new_medium_power_mode;
+                    frame_i = 0;
+                    last_packet_num = 255;
+                    sent_end = false;
+                    received_end = false;
+                    message_handled = false;
+                }
                 if recording_state.recording_mode() == RecordingMode::Thermal {
                     for (address, use_wifi, stream) in
                         sockets.iter_mut().filter(|(_, _, stream)| stream.is_none())

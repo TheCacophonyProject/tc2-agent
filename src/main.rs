@@ -27,7 +27,7 @@ use std::fs;
 use std::process;
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::channel;
 use std::thread::sleep;
 use std::{thread, time::Duration};
@@ -192,7 +192,9 @@ fn main() {
             // and serves them to various consumers of frames.
             // For mostly historical reasons, it's also the thread that handles actually restarting
             // the rp2040 – but it would perhaps be cleaner to handle this in a separate thread?
-            let medium_power_mode = initial_config.use_medium_power_mode();
+            // Updated by the camera transfer loop when a config change is applied to the rp2040.
+            let medium_power_mode =
+                Arc::new(AtomicBool::new(initial_config.use_medium_power_mode()));
 
             spawn_frame_socket_server_thread(
                 restart_rp2040_channel_rx,
@@ -201,13 +203,13 @@ fn main() {
                 run_pin,
                 restart_rp2040_ack.clone(),
                 &recording_state,
-                medium_power_mode,
+                medium_power_mode.clone(),
             );
             info!("Set ready");
 
             recording_state.set_ready(&mut dbus_conn);
             if (initial_config.use_high_power_mode() || !recording_state.is_recording())
-                && !medium_power_mode
+                && !medium_power_mode.load(Ordering::Relaxed)
             {
                 // NOTE: Always reset rp2040 on startup if it's safe to do so.
                 info!("Sending initial reboot");
@@ -225,6 +227,7 @@ fn main() {
                 camera_handshake_channel_tx,
                 restart_rp2040_ack,
                 recording_state,
+                medium_power_mode,
             );
             info!("Exiting gracefully");
             Ok::<(), Error>(())

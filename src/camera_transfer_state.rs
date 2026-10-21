@@ -94,8 +94,8 @@ pub fn enter_camera_transfer_loop(
     camera_handshake_channel_tx: Sender<FrameSocketServerMessage>,
     restart_rp2040_ack: Arc<AtomicBool>,
     mut recording_state: RecordingState,
+    medium_power_mode: Arc<AtomicBool>,
 ) {
-    let medium_power_mode = initial_config.use_medium_power_mode();
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
     let mut spi;
@@ -268,18 +268,23 @@ pub fn enter_camera_transfer_loop(
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
             is_thermal_device = device_config.is_thermal_device();
+            // The rp2040 picks up the new mode from the config sent in its startup handshake.
+            medium_power_mode.store(device_config.use_medium_power_mode(), Ordering::Relaxed);
 
             if !sent_reset_request {
                 sent_reset_request = true;
+                // Clear any ack left over from a restart we didn't request.
+                restart_rp2040_ack.store(false, Ordering::Relaxed);
                 let _ = restart_rp2040_channel_tx.send(true);
             }
+        }
 
-            if restart_rp2040_ack.load(Ordering::Relaxed) {
-                // Reset this atomic bool if the reset has been processed by the frame server thread.
-                sent_reset_request = false;
-                rp2040_reset_in_progress = true;
-                restart_rp2040_ack.store(false, Ordering::Relaxed);
-            }
+        // Checked every loop, since rp2040_needs_reset is cleared as soon as the request is sent.
+        if sent_reset_request && restart_rp2040_ack.load(Ordering::Relaxed) {
+            // The frame socket thread has restarted the rp2040 for our request.
+            sent_reset_request = false;
+            rp2040_reset_in_progress = true;
+            restart_rp2040_ack.store(false, Ordering::Relaxed);
         }
 
         let poll_result = pin.poll_interrupt(false, Some(Duration::from_millis(2000)));
@@ -989,7 +994,7 @@ pub fn enter_camera_transfer_loop(
                         );
                     }
 
-                    if !got_startup_info && !medium_power_mode {
+                    if !got_startup_info && !medium_power_mode.load(Ordering::Relaxed) {
                         warn!("Requesting reset of rp2040 to force handshake");
                         rp2040_needs_reset = true;
                     } else if !rp2040_needs_reset {
