@@ -79,12 +79,7 @@ fn handle_medium_power_message(
 ) {
     if let Ok(FrameSocketServerMessage {
         camera_handshake_info:
-            Some(CameraHandshakeInfo {
-                firmware_version,
-                camera_serial,
-                is_recording,
-                ..
-            }),
+            Some(CameraHandshakeInfo { firmware_version, camera_serial, is_recording, .. }),
         camera_file_transfer_in_progress: false,
         file_offload,
         frame_message: true,

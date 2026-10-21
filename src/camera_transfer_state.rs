@@ -176,7 +176,6 @@ pub fn enter_camera_transfer_loop(
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
-    let mut started_thermal_recorder = false;
     let mut file_download: Option<Vec<u8>> = None;
     let header_length = 18;
     let mut return_payload_buf = [0u8; 32 + 104];
@@ -994,13 +993,6 @@ pub fn enter_camera_transfer_loop(
                         warn!("Requesting reset of rp2040 to force handshake");
                         rp2040_needs_reset = true;
                     } else if !rp2040_needs_reset {
-                        // ideally we should only do this in high power mode
-                        // but this would require changes to sidekick / management interface so can be done later.
-                        if !started_thermal_recorder && !medium_power_mode {
-                            info!("starting thermal recorder");
-                            let _ = start_thermal_recorder_py();
-                            started_thermal_recorder = true;
-                        }
                         FRAME_BUFFER.swap();
 
                         let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
@@ -1173,17 +1165,5 @@ pub fn free_gpio7() -> io::Result<()> {
     }
 
     info!("freed gpio7");
-    Ok(())
-}
-
-pub fn start_thermal_recorder_py() -> io::Result<()> {
-    let result =
-        Command::new("sudo").arg("systemctl").arg("start").arg("thermal-recorder-py").spawn();
-    if let Err(err) = result {
-        error!("Couldn't start thermal recorder {} ", err);
-        return Err(err);
-    }
-
-    info!("Started thermal recorder py");
     Ok(())
 }
