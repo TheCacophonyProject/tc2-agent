@@ -80,10 +80,10 @@ fn handle_medium_power_message(
     if let Ok(FrameSocketServerMessage {
         camera_handshake_info:
             Some(CameraHandshakeInfo {
-                radiometry_enabled,
                 firmware_version,
                 camera_serial,
                 is_recording,
+                ..
             }),
         camera_file_transfer_in_progress: false,
         file_offload,
@@ -135,7 +135,7 @@ fn handle_medium_power_message(
             if let Some(sock) = socket {
                 was_sent = handle_medium_power(
                     sock,
-                    radiometry_enabled,
+                    &true,
                     firmware_version,
                     camera_serial,
                     file_download,
@@ -207,7 +207,7 @@ fn handle_medium_power_message(
             if let Some((_, _, option_stream)) = socket {
                 let stream =
                     option_stream.as_mut().expect("Never fails, because we filtered already.");
-                if !send_header(stream, *radiometry_enabled, *firmware_version, camera_serial) {
+                if !send_header(stream, true, *firmware_version, camera_serial) {
                     info!("Shutting down socket");
                     let _ = option_stream.take().expect("Never fails").shutdown().is_ok();
                 }
