@@ -8,7 +8,7 @@ use crate::event_logger::{
     DiscardedRecordingInfo, FileType, LoggerEvent, LoggerEventKind, NewConfigInfo, WakeReason,
 };
 use crate::frame_socket_server::{FileOffloadInfo, FrameSocketServerMessage};
-use crate::program_rp2040::program_rp2040;
+use crate::program_rp2040::{erase_rp2040_flash_and_exit, offload_erase_requested, program_rp2040};
 use crate::recording_state::RecordingMode;
 use crate::save_audio::save_audio_file_to_disk;
 use crate::save_cptv::save_cptv_file_to_disk;
@@ -205,9 +205,15 @@ pub fn enter_camera_transfer_loop(
 
     let mut last_unknown_transfer_warning = None;
     let mut pending_forced_offload_request = None;
+    let mut last_handshake_forced_offload = false;
     let mut pending_prioritise_frames_request = None;
 
     let mut previous_packet = 0;
+
+    if offload_erase_requested() {
+        info!("offload_erase requested, forcing offload before erasing rp2040 flash");
+        recording_state.request_forced_file_offload();
+    }
 
     info!("Waiting for messages from rp2040");
     'transfer: loop {
@@ -443,6 +449,7 @@ pub fn enter_camera_transfer_loop(
                         // Write all the info we need about the device:
                         let force_offload_files_now =
                             pending_forced_offload_request.take().is_some();
+                        last_handshake_forced_offload = force_offload_files_now;
                         let prefer_not_to_offload_files_now =
                             pending_prioritise_frames_request.take().is_some();
 
@@ -479,6 +486,11 @@ pub fn enter_camera_transfer_loop(
                             recording_state.update_offload_progress(transfer_block);
                         } else if !is_file_transfer_message && recording_state.is_offloading() {
                             recording_state.end_offload();
+                            if offload_erase_requested() {
+                                // Restart to get a fresh file count in the next handshake.
+                                info!("Offload finished, checking for remaining files to erase");
+                                recording_state.request_forced_file_offload();
+                            }
                         }
 
                         match transfer_type {
@@ -513,6 +525,20 @@ pub fn enter_camera_transfer_loop(
                                     "Got startup handshake: \
                                         firmware version: {firmware_version}"
                                 );
+                                if offload_erase_requested() {
+                                    if num_files_to_offload == 0 {
+                                        exit_cleanly(&mut dbus_conn);
+                                        erase_rp2040_flash_and_exit();
+                                    } else if last_handshake_forced_offload {
+                                        info!(
+                                            "Offloading {num_files_to_offload} file(s) \
+                                            before erasing rp2040 flash"
+                                        );
+                                    } else {
+                                        // Not asked to offload this boot, so restart and force it.
+                                        recording_state.request_forced_file_offload();
+                                    }
+                                }
                                 let estimated_offload_mb =
                                     num_blocks_to_offload as f32 * 128.0 / 1024.0;
                                 let estimated_offload_time_seconds =

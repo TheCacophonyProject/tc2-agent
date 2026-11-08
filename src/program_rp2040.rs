@@ -6,6 +6,10 @@ use std::{fs, io, process};
 
 const RP2040_LOG_SERVICE: &str = "tc2-rp2040-logs.service";
 
+/// If this file exists, keep forcing offloads until the rp2040 has no files left,
+/// then erase its flash.
+const OFFLOAD_ERASE_FILE: &str = "/etc/cacophony/offload_erase";
+
 /// Stops the RP2040 log capture for as long as this is alive, so that the
 /// programmer has the SWD pins to itself.
 struct SuspendedRp2040Logging {
@@ -69,6 +73,40 @@ pub fn program_rp2040() -> io::Result<()> {
 
     info!("Updated RP2040 firmware.");
     Ok(())
+}
+
+pub fn offload_erase_requested() -> bool {
+    Path::new(OFFLOAD_ERASE_FILE).exists()
+}
+
+/// Erases the rp2040 flash, removes the offload_erase file and exits.
+/// `tc2-hat-rp2040 --erase-flash` creates /etc/cacophony/program_rp2040, so the normal
+/// firmware is programmed back on when tc2-agent restarts.
+pub fn erase_rp2040_flash_and_exit() -> ! {
+    info!("All files offloaded, erasing rp2040 flash");
+    let result = {
+        // Same as programming, the erase needs the SWD pins to itself.
+        let _logging = SuspendedRp2040Logging::suspend();
+        Command::new("tc2-hat-rp2040").arg("--erase-flash").status()
+    };
+    match result {
+        Ok(status) if status.success() => {
+            if let Err(e) = fs::remove_file(OFFLOAD_ERASE_FILE) {
+                error!("Failed to remove '{OFFLOAD_ERASE_FILE}' after erasing flash: {e}");
+                process::exit(1);
+            }
+            info!("Erased rp2040 flash");
+            process::exit(0);
+        }
+        Ok(status) => {
+            error!("Failed to erase rp2040 flash: {status}");
+            process::exit(1);
+        }
+        Err(e) => {
+            error!("Failed to run tc2-hat-rp2040 --erase-flash: {e}");
+            process::exit(1);
+        }
+    }
 }
 
 pub fn check_if_rp2040_needs_programming() {
