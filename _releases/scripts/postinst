@@ -2,6 +2,7 @@
 set -e
 
 touch /etc/cacophony/program_rp2040
+touch /etc/cacophony/offload_erase
 
 # --- Configuration ---
 # Define all services and what systemd action should be taken.
