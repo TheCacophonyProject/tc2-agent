@@ -79,11 +79,11 @@ pub fn offload_erase_requested() -> bool {
     Path::new(OFFLOAD_ERASE_FILE).exists()
 }
 
-/// Erases the rp2040 2GB SPI flash, removes the offload_erase file and exits.
+/// Erases the rp2040 2Gb SPI flash, removes the offload_erase file and exits.
 /// `tc2-hat-rp2040 --erase-flash` creates /etc/cacophony/program_rp2040, so the normal
 /// firmware is programmed back on when tc2-agent restarts.
 pub fn erase_rp2040_flash_and_exit() -> ! {
-    info!("All files offloaded, erasing rp2040 2GB SPI flash");
+    info!("All files offloaded, erasing rp2040 2Gb SPI flash");
     let result = {
         // Same as programming, the erase needs the SWD pins to itself.
         let _logging = SuspendedRp2040Logging::suspend();
@@ -95,11 +95,11 @@ pub fn erase_rp2040_flash_and_exit() -> ! {
                 error!("Failed to remove '{OFFLOAD_ERASE_FILE}' after erasing flash: {e}");
                 process::exit(1);
             }
-            info!("Erased rp2040 2GB SPI flash");
+            info!("Erased rp2040 2Gb SPI flash");
             process::exit(0);
         }
         Ok(status) => {
-            error!("Failed to erase rp2040 2GB SPI flash: {status}");
+            error!("Failed to erase rp2040 2Gb SPI flash: {status}");
             process::exit(1);
         }
         Err(e) => {
