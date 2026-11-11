@@ -992,11 +992,7 @@ pub fn check_for_device_config_changes(
     is_audio_device: &mut bool,
     is_thermal_device: &mut bool,
     rp2040_needs_reset: &mut bool,
-    rp2040_reset_in_progress: bool,
 ) {
-    if rp2040_reset_in_progress {
-        return;
-    }
     let mut channel_empty = false;
     // Check once per frame to see if the config file may have been changed
     // NOTE: We wait till the channel is empty since there could be multiple
@@ -1023,5 +1019,217 @@ pub fn check_for_device_config_changes(
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rp2040_reset::{RP2040_RESET_TIMEOUT, Rp2040ResetRequest};
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    fn config(use_low_power_mode: bool, instant_classify: bool) -> DeviceConfig {
+        toml::from_str(&format!(
+            r#"
+            [device]
+            id = 14891
+            group = "test-group"
+            name = "test-device"
+
+            [location]
+            latitude = -45.854
+            longitude = 170.5068
+            altitude = 53.2
+
+            [thermal-recorder]
+            use-low-power-mode = {use_low_power_mode}
+            instant-classify = {instant_classify}
+            "#
+        ))
+        .expect("test config parses")
+    }
+
+    /// The device config bytes sent to the rp2040 in the startup handshake response.
+    fn handshake_payload(config: &DeviceConfig) -> Vec<u8> {
+        let mut buf = [0u8; 136 - 14];
+        let len = config.write_to_slice(&mut buf, false, false);
+        buf[..usize::from(len)].to_vec()
+    }
+
+    /// Everything the camera transfer loop tracks for config changes and resets.
+    struct CameraTransferLoop {
+        config_rx: Receiver<DeviceConfig>,
+        device_config: DeviceConfig,
+        is_audio_device: bool,
+        is_thermal_device: bool,
+        rp2040_needs_reset: bool,
+        reset_request: Rp2040ResetRequest,
+        restarts_requested: u32,
+    }
+
+    impl CameraTransferLoop {
+        fn new(initial: DeviceConfig) -> (Self, Sender<DeviceConfig>) {
+            let (tx, rx) = channel();
+            let l = CameraTransferLoop {
+                config_rx: rx,
+                is_audio_device: initial.is_audio_device(),
+                is_thermal_device: initial.is_thermal_device(),
+                device_config: initial,
+                rp2040_needs_reset: false,
+                reset_request: Rp2040ResetRequest::new(RP2040_RESET_TIMEOUT),
+                restarts_requested: 0,
+            };
+            (l, tx)
+        }
+
+        /// Mirrors the top of the `'transfer` loop in camera_transfer_state.rs.
+        fn top_of_loop(&mut self, is_recording: bool, now: Instant) {
+            check_for_device_config_changes(
+                &self.config_rx,
+                &mut self.device_config,
+                &mut self.is_audio_device,
+                &mut self.is_thermal_device,
+                &mut self.rp2040_needs_reset,
+            );
+            if !is_recording && self.rp2040_needs_reset {
+                self.rp2040_needs_reset = false;
+                if self.reset_request.should_send_request(now) {
+                    self.restarts_requested += 1;
+                }
+            }
+        }
+
+        /// Mirrors the CAMERA_STARTUP_HANDSHAKE handling: returns the config sent to the rp2040.
+        fn handshake(&mut self) -> Vec<u8> {
+            self.reset_request.handshake_received();
+            handshake_payload(&self.device_config)
+        }
+    }
+
+    #[test]
+    fn instant_classify_toggles_medium_power_mode() {
+        assert!(config(true, true).use_medium_power_mode());
+        assert!(!config(true, false).use_medium_power_mode());
+        // instant-classify only matters in low power mode.
+        assert!(!config(false, true).use_medium_power_mode());
+        assert!(config(false, true).use_high_power_mode());
+    }
+
+    #[test]
+    fn instant_classify_change_changes_handshake_payload() {
+        // The rp2040 only learns about medium power mode through the handshake payload,
+        // and the config CRC check relies on the payload differing.
+        assert_ne!(handshake_payload(&config(true, false)), handshake_payload(&config(true, true)));
+    }
+
+    #[test]
+    fn config_change_is_applied_and_requests_reset() {
+        let (mut l, tx) = CameraTransferLoop::new(config(true, false));
+        tx.send(config(true, true)).unwrap();
+        check_for_device_config_changes(
+            &l.config_rx,
+            &mut l.device_config,
+            &mut l.is_audio_device,
+            &mut l.is_thermal_device,
+            &mut l.rp2040_needs_reset,
+        );
+        assert!(l.rp2040_needs_reset);
+        assert_eq!(l.device_config, config(true, true));
+    }
+
+    #[test]
+    fn queued_config_changes_apply_the_last_one() {
+        let (mut l, tx) = CameraTransferLoop::new(config(true, false));
+        tx.send(config(true, true)).unwrap();
+        tx.send(config(true, false)).unwrap();
+        tx.send(config(true, true)).unwrap();
+        l.top_of_loop(false, Instant::now());
+        assert_eq!(l.device_config, config(true, true));
+        assert_eq!(l.restarts_requested, 1);
+    }
+
+    #[test]
+    fn reset_sends_new_config_in_handshake() {
+        let (mut l, tx) = CameraTransferLoop::new(config(true, false));
+        tx.send(config(true, true)).unwrap();
+        l.top_of_loop(false, Instant::now());
+        assert_eq!(l.restarts_requested, 1);
+        assert_eq!(l.handshake(), handshake_payload(&config(true, true)));
+    }
+
+    #[test]
+    fn config_changes_still_apply_after_handshake_races_reset() {
+        // Reproduces the bug seen on a medium power device: a reset was requested, and the
+        // rp2040 restarted and handshook before the transfer loop saw the restart ack. The
+        // loop then marked a reset as in progress with no handshake coming to clear it, so
+        // every later instant-classify toggle was ignored.
+        let (mut l, tx) = CameraTransferLoop::new(config(true, false));
+        let start = Instant::now();
+        l.rp2040_needs_reset = true;
+        l.top_of_loop(false, start);
+        assert_eq!(l.restarts_requested, 1);
+        // The handshake arrives (in the same poll_interrupt wait as the restart).
+        l.handshake();
+
+        // Toggle instant-classify on and off; each change must reach the rp2040.
+        for (i, instant_classify) in [true, false, true].into_iter().enumerate() {
+            let now = start + Duration::from_secs(60 * (i as u64 + 1));
+            tx.send(config(true, instant_classify)).unwrap();
+            l.top_of_loop(false, now);
+            assert_eq!(l.restarts_requested, i as u32 + 2, "change {i} requested a reset");
+            assert_eq!(l.device_config.use_medium_power_mode(), instant_classify);
+            assert_eq!(l.handshake(), handshake_payload(&config(true, instant_classify)));
+        }
+    }
+
+    #[test]
+    fn config_change_during_pending_reset_rides_along_with_it() {
+        let (mut l, tx) = CameraTransferLoop::new(config(true, false));
+        let start = Instant::now();
+        l.rp2040_needs_reset = true;
+        l.top_of_loop(false, start);
+        assert_eq!(l.restarts_requested, 1);
+
+        // Config changes before the rp2040 has handshook.
+        tx.send(config(true, true)).unwrap();
+        l.top_of_loop(false, start + Duration::from_secs(1));
+        // It's applied straight away, but doesn't cause a second reset...
+        assert_eq!(l.device_config, config(true, true));
+        assert_eq!(l.restarts_requested, 1);
+        // ...because the pending reset's handshake carries it.
+        assert_eq!(l.handshake(), handshake_payload(&config(true, true)));
+
+        // Nothing left over to cause another reset.
+        l.top_of_loop(false, start + Duration::from_secs(2));
+        assert_eq!(l.restarts_requested, 1);
+    }
+
+    #[test]
+    fn reset_is_deferred_while_recording() {
+        let (mut l, tx) = CameraTransferLoop::new(config(false, false));
+        let start = Instant::now();
+        tx.send(config(false, true)).unwrap();
+        l.top_of_loop(true, start);
+        l.top_of_loop(true, start + Duration::from_secs(1));
+        assert_eq!(l.restarts_requested, 0);
+        assert!(l.rp2040_needs_reset);
+        l.top_of_loop(false, start + Duration::from_secs(2));
+        assert_eq!(l.restarts_requested, 1);
+    }
+
+    #[test]
+    fn reset_is_retried_if_rp2040_never_handshakes() {
+        let (mut l, _tx) = CameraTransferLoop::new(config(true, false));
+        let start = Instant::now();
+        l.rp2040_needs_reset = true;
+        l.top_of_loop(false, start);
+        // Something keeps asking for a reset, but no handshake arrives.
+        l.rp2040_needs_reset = true;
+        l.top_of_loop(false, start + Duration::from_secs(5));
+        assert_eq!(l.restarts_requested, 1);
+        l.rp2040_needs_reset = true;
+        l.top_of_loop(false, start + RP2040_RESET_TIMEOUT);
+        assert_eq!(l.restarts_requested, 2);
     }
 }

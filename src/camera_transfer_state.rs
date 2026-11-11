@@ -8,8 +8,12 @@ use crate::event_logger::{
     DiscardedRecordingInfo, FileType, LoggerEvent, LoggerEventKind, NewConfigInfo, WakeReason,
 };
 use crate::frame_socket_server::{FileOffloadInfo, FrameSocketServerMessage};
-use crate::program_rp2040::{erase_rp2040_flash_and_exit, offload_erase_requested, program_rp2040};
+use crate::program_rp2040::{
+    MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS, OffloadEraseTracker, erase_rp2040_flash_and_exit,
+    offload_erase_requested, program_rp2040,
+};
 use crate::recording_state::RecordingMode;
+use crate::rp2040_reset::{RP2040_RESET_TIMEOUT, Rp2040ResetRequest};
 use crate::save_audio::save_audio_file_to_disk;
 use crate::save_cptv::save_cptv_file_to_disk;
 use crate::utils::u8_slice_as_u16_slice;
@@ -92,7 +96,6 @@ pub fn enter_camera_transfer_loop(
     restart_rp2040_channel_tx: Sender<bool>,
     sig_term: Arc<AtomicBool>,
     camera_handshake_channel_tx: Sender<FrameSocketServerMessage>,
-    restart_rp2040_ack: Arc<AtomicBool>,
     mut recording_state: RecordingState,
     medium_power_mode: Arc<AtomicBool>,
 ) {
@@ -190,8 +193,7 @@ pub fn enter_camera_transfer_loop(
     let mut device_config: DeviceConfig = initial_config;
 
     let mut rp2040_needs_reset = false;
-    let mut sent_reset_request = false;
-    let mut rp2040_reset_in_progress = false;
+    let mut reset_request = Rp2040ResetRequest::new(RP2040_RESET_TIMEOUT);
     let mut header_integrity_check_has_failed = false;
     let mut got_startup_info = false;
     let mut radiometry_enabled = false;
@@ -209,6 +211,7 @@ pub fn enter_camera_transfer_loop(
     let mut pending_prioritise_frames_request = None;
 
     let mut previous_packet = 0;
+    let mut offload_erase_tracker = OffloadEraseTracker::new();
 
     if offload_erase_requested() {
         info!("offload_erase requested, forcing offload before erasing rp2040 flash");
@@ -223,7 +226,6 @@ pub fn enter_camera_transfer_loop(
             &mut is_audio_device,
             &mut is_thermal_device,
             &mut rp2040_needs_reset,
-            rp2040_reset_in_progress,
         );
 
         // Check if we need to force offload
@@ -277,20 +279,10 @@ pub fn enter_camera_transfer_loop(
             // The rp2040 picks up the new mode from the config sent in its startup handshake.
             medium_power_mode.store(device_config.use_medium_power_mode(), Ordering::Relaxed);
 
-            if !sent_reset_request {
-                sent_reset_request = true;
-                // Clear any ack left over from a restart we didn't request.
-                restart_rp2040_ack.store(false, Ordering::Relaxed);
+            // If a reset is already pending, its handshake will send the current config.
+            if reset_request.should_send_request(Instant::now()) {
                 let _ = restart_rp2040_channel_tx.send(true);
             }
-        }
-
-        // Checked every loop, since rp2040_needs_reset is cleared as soon as the request is sent.
-        if sent_reset_request && restart_rp2040_ack.load(Ordering::Relaxed) {
-            // The frame socket thread has restarted the rp2040 for our request.
-            sent_reset_request = false;
-            rp2040_reset_in_progress = true;
-            restart_rp2040_ack.store(false, Ordering::Relaxed);
         }
 
         let poll_result = pin.poll_interrupt(false, Some(Duration::from_millis(2000)));
@@ -444,7 +436,9 @@ pub fn enter_camera_transfer_loop(
                     LittleEndian::write_u16(&mut return_payload_buf[6..8], crc);
 
                     if transfer_type == CAMERA_STARTUP_HANDSHAKE {
-                        rp2040_reset_in_progress = false;
+                        // The rp2040 has booted since any reset we requested, and this handshake
+                        // sends it the current config, so treat the request as complete.
+                        reset_request.handshake_received();
                         info!("Got camera startup handshake {chunk:?}");
                         // Write all the info we need about the device:
                         let force_offload_files_now =
@@ -530,9 +524,25 @@ pub fn enter_camera_transfer_loop(
                                         exit_cleanly(&mut dbus_conn);
                                         erase_rp2040_flash_and_exit();
                                     } else if last_handshake_forced_offload {
+                                        if offload_erase_tracker.forced_offload_handshake(
+                                            num_files_to_offload,
+                                            num_blocks_to_offload,
+                                        ) {
+                                            warn!(
+                                                "rp2040 still reports {num_files_to_offload} \
+                                                file(s) ({num_blocks_to_offload} blocks) after \
+                                                {MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS} forced \
+                                                offloads with no progress, erasing rp2040 \
+                                                flash without offloading them"
+                                            );
+                                            exit_cleanly(&mut dbus_conn);
+                                            erase_rp2040_flash_and_exit();
+                                        }
                                         info!(
                                             "Offloading {num_files_to_offload} file(s) \
-                                            before erasing rp2040 flash"
+                                            before erasing rp2040 flash (attempts with no \
+                                            progress: {}/{MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS})",
+                                            offload_erase_tracker.stalled_attempts()
                                         );
                                     } else {
                                         // Not asked to offload this boot, so restart and force it.
@@ -842,6 +852,7 @@ pub fn enter_camera_transfer_loop(
                                     needs_to_offload_test_recording = false;
                                     file.extend_from_slice(chunk);
                                     recording_state.completed_file_offload();
+                                    offload_erase_tracker.file_received();
                                     let shebang = LittleEndian::read_u16(&file[0..2]);
                                     if shebang == AUDIO_SHEBANG {
                                         save_audio_file_to_disk(file, device_config.clone());
@@ -871,6 +882,7 @@ pub fn enter_camera_transfer_loop(
                                 // Open and end new file transfer
                                 part_count = 0;
                                 needs_to_offload_test_recording = false;
+                                offload_erase_tracker.file_received();
                                 let mut file = Vec::new();
                                 file.extend_from_slice(chunk);
                                 let shebang = LittleEndian::read_u16(&file[0..2]);
@@ -955,6 +967,11 @@ pub fn enter_camera_transfer_loop(
                             packet_num, previous_packet
                         );
                         rp2040_needs_reset = true;
+                    } else if is_last_part {
+                        // Test recordings are currently offloaded via the normal file transfer
+                        // path, but if one ever comes through medium power streaming, make sure
+                        // we don't block future test recording requests.
+                        needs_to_offload_test_recording = false;
                     }
                     let file_offload = Some(FileOffloadInfo {
                         frame_bytes,

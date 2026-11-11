@@ -30,18 +30,16 @@ pub struct FileOffloadInfo {
 fn restart_rp2040_if_requested(
     restart_rp2040_channel_rx: &Receiver<bool>,
     run_pin: &mut OutputPin,
-    restart_rp2040_ack: &mut Arc<AtomicBool>,
 ) {
     // FIXME: Check if the rp2040 recording flag is set before restarting.
 
     // Check if we need to reset rp2040 because of a config change
     if restart_rp2040_channel_rx.try_recv().is_ok() {
-        restart_rp2040(run_pin, restart_rp2040_ack);
+        restart_rp2040(run_pin);
     }
 }
 
-fn restart_rp2040(run_pin: &mut OutputPin, restart_rp2040_ack: &mut Arc<AtomicBool>) {
-    restart_rp2040_ack.store(true, Ordering::Relaxed);
+fn restart_rp2040(run_pin: &mut OutputPin) {
     info!("Restarting rp2040");
     if !run_pin.is_set_high() {
         run_pin.set_high();
@@ -74,7 +72,6 @@ fn handle_medium_power_message(
     received_end: &mut bool,
     ms_elapsed: &mut u64,
     run_pin: &mut OutputPin,
-    restart_rp2040_ack: &mut Arc<AtomicBool>,
     message_handled: &mut bool,
 ) {
     if let Ok(FrameSocketServerMessage {
@@ -116,7 +113,7 @@ fn handle_medium_power_message(
                     "New file is missing the GZIP header {:?} restart rp2040",
                     &frame_data[..16 + 10]
                 );
-                restart_rp2040(run_pin, restart_rp2040_ack);
+                restart_rp2040(run_pin);
                 // what do we do here???
                 // force rp2040 to offload last file??
                 // if we could send a message ask for the start again
@@ -154,7 +151,7 @@ fn handle_medium_power_message(
                         "Lost socket connection part way through medium power offload (Something must have gone wrong), Restarting RP2040"
                     );
                     // restart rp2040 and offload the file
-                    restart_rp2040(run_pin, restart_rp2040_ack);
+                    restart_rp2040(run_pin);
                     *frame_i = 0;
                 } else {
                     info!("Starting new file");
@@ -216,7 +213,6 @@ pub fn spawn_frame_socket_server_thread(
     camera_handshake_channel_rx: Receiver<FrameSocketServerMessage>,
     serve_frames_via_wifi: bool,
     mut run_pin: OutputPin,
-    mut restart_rp2040_ack: Arc<AtomicBool>,
     recording_state: &RecordingState,
     medium_power_mode_flag: Arc<AtomicBool>,
 ) {
@@ -248,11 +244,7 @@ pub fn spawn_frame_socket_server_thread(
             let mut sockets: [(String, bool, Option<SocketStream>); 2] =
                 [(address, serve_frames_via_wifi, None), (management_address, false, None)];
 
-            restart_rp2040_if_requested(
-                &restart_rp2040_channel_rx,
-                &mut run_pin,
-                &mut restart_rp2040_ack,
-            );
+            restart_rp2040_if_requested(&restart_rp2040_channel_rx, &mut run_pin);
             let mut recv_timeout_ms = 10;
             info!("Connecting to frame sockets");
             let mut ms_elapsed = 0;
@@ -263,11 +255,7 @@ pub fn spawn_frame_socket_server_thread(
             let address = &get_socket_address(serve_frames_via_wifi);
             let mut medium_power_mode = medium_power_mode_flag.load(Ordering::Relaxed);
             loop {
-                restart_rp2040_if_requested(
-                    &restart_rp2040_channel_rx,
-                    &mut run_pin,
-                    &mut restart_rp2040_ack,
-                );
+                restart_rp2040_if_requested(&restart_rp2040_channel_rx, &mut run_pin);
                 let new_medium_power_mode = medium_power_mode_flag.load(Ordering::Relaxed);
                 if new_medium_power_mode != medium_power_mode {
                     info!("Switching medium power mode to {new_medium_power_mode}");
@@ -326,7 +314,6 @@ pub fn spawn_frame_socket_server_thread(
                         &mut received_end,
                         &mut ms_elapsed,
                         &mut run_pin,
-                        &mut restart_rp2040_ack,
                         &mut message_handled,
                     );
                 }

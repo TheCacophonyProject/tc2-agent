@@ -14,6 +14,7 @@ mod frame_socket_server;
 mod mode_config;
 mod program_rp2040;
 mod recording_state;
+mod rp2040_reset;
 mod save_audio;
 mod save_cptv;
 mod socket_stream;
@@ -184,10 +185,6 @@ fn main() {
             let (camera_handshake_channel_tx, camera_handshake_channel_rx) = channel();
             let (restart_rp2040_channel_tx, restart_rp2040_channel_rx) = channel();
 
-            // Used to indicate that a reset request was received and processed by the
-            // frame-socket thread.
-            let restart_rp2040_ack = Arc::new(AtomicBool::new(false));
-
             // The frame socket server takes frames from the main camera transfer loop,
             // and serves them to various consumers of frames.
             // For mostly historical reasons, it's also the thread that handles actually restarting
@@ -201,7 +198,6 @@ fn main() {
                 camera_handshake_channel_rx,
                 serve_frames_via_wifi,
                 run_pin,
-                restart_rp2040_ack.clone(),
                 &recording_state,
                 medium_power_mode.clone(),
             );
@@ -225,7 +221,6 @@ fn main() {
                 restart_rp2040_channel_tx,
                 sig_term_clone,
                 camera_handshake_channel_tx,
-                restart_rp2040_ack,
                 recording_state,
                 medium_power_mode,
             );
