@@ -7,9 +7,13 @@ use crate::device_config::{DeviceConfig, check_for_device_config_changes};
 use crate::event_logger::{
     DiscardedRecordingInfo, FileType, LoggerEvent, LoggerEventKind, NewConfigInfo, WakeReason,
 };
-use crate::frame_socket_server::FrameSocketServerMessage;
-use crate::program_rp2040::program_rp2040;
+use crate::frame_socket_server::{FileOffloadInfo, FrameSocketServerMessage};
+use crate::program_rp2040::{
+    MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS, OffloadEraseTracker, erase_rp2040_flash_and_exit,
+    offload_erase_requested, program_rp2040,
+};
 use crate::recording_state::RecordingMode;
+use crate::rp2040_reset::{RP2040_RESET_TIMEOUT, Rp2040ResetRequest};
 use crate::save_audio::save_audio_file_to_disk;
 use crate::save_cptv::save_cptv_file_to_disk;
 use crate::utils::u8_slice_as_u16_slice;
@@ -40,6 +44,7 @@ pub const CAMERA_BEGIN_AND_END_FILE_TRANSFER: u8 = 0x6;
 pub const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
 pub const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
 pub const CAMERA_STARTUP_HANDSHAKE: u8 = 0x9;
+pub const CAMERA_RECORDING_TRANSFER: u8 = 0xA;
 
 pub struct CameraHandshakeInfo {
     pub radiometry_enabled: bool,
@@ -91,19 +96,32 @@ pub fn enter_camera_transfer_loop(
     restart_rp2040_channel_tx: Sender<bool>,
     sig_term: Arc<AtomicBool>,
     camera_handshake_channel_tx: Sender<FrameSocketServerMessage>,
-    restart_rp2040_ack: Arc<AtomicBool>,
     mut recording_state: RecordingState,
+    medium_power_mode: Arc<AtomicBool>,
 ) {
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
-    info!("Initialising SPI at {spi_speed_mhz}Mhz");
-    let mut spi = match Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3) {
-        Ok(spi) => spi,
-        Err(e) => {
-            error!("Failed to get SPI0: {e}");
-            process::exit(1);
-        }
-    };
+    let mut spi;
+    let attempts = 10;
+    let mut attempt = 0;
+    loop {
+        info!("Initialising SPI at {spi_speed_mhz}Mhz");
+
+        spi = match Spi::new(Bus::Spi0, SlaveSelect::Ss0, spi_speed, Mode::Mode3) {
+            Ok(spi) => spi,
+            Err(e) => {
+                if attempt == attempts - 1 {
+                    error!("Failed to get SPI0: {e}");
+                    process::exit(1);
+                }
+                error!("Failed to get SPI0: {e} trying again in 100ms");
+                sleep(Duration::from_millis(100));
+                attempt += 1;
+                continue;
+            }
+        };
+        break;
+    }
     if spi.set_bits_per_word(8).is_err() {
         error!("Failed to set SPI bits per word");
         process::exit(1);
@@ -128,7 +146,7 @@ pub fn enter_camera_transfer_loop(
         Err(e) => {
             error!(
                 "Failed to get pi ping interrupt pin ({e}), \
-        is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
+                is 'dtoverlay=spi0-1cs,cs0_pin=8' set in your config.txt?"
             );
             process::exit(1);
         }
@@ -140,17 +158,27 @@ pub fn enter_camera_transfer_loop(
         })
         .unwrap();
 
-    // NOTE: `rppal` now has a `debounce` option here which may be worth exploring.
-    pin.set_interrupt(Trigger::RisingEdge, None)
-        .map_err(|e| {
-            error!("Unable to set pi ping interrupt: {e}");
-            process::exit(1);
-        })
-        .unwrap();
+    let attempts = 10;
+    attempt = 0;
+    loop {
+        let res = pin.set_interrupt(Trigger::RisingEdge, None);
+        match res {
+            Ok(()) => break,
+            Err(e) => {
+                if attempt == attempts - 1 {
+                    error!("Failed to set Pin interrupts: {e}");
+                    process::exit(1);
+                }
+                let _ = free_gpio7();
+                info!("Pin interrupts failed, trying again {e} in 100ms");
+                sleep(Duration::from_millis(100));
+                attempt += 1;
+            }
+        }
+    }
     // 65K buffer that we won't fully use at the moment.
     let mut raw_read_buffer = [0u8; 65535];
     let mut got_first_frame = false;
-    let mut started_thermal_recorder = false;
     let mut file_download: Option<Vec<u8>> = None;
     let header_length = 18;
     let mut return_payload_buf = [0u8; 32 + 104];
@@ -165,8 +193,7 @@ pub fn enter_camera_transfer_loop(
     let mut device_config: DeviceConfig = initial_config;
 
     let mut rp2040_needs_reset = false;
-    let mut sent_reset_request = false;
-    let mut rp2040_reset_in_progress = false;
+    let mut reset_request = Rp2040ResetRequest::new(RP2040_RESET_TIMEOUT);
     let mut header_integrity_check_has_failed = false;
     let mut got_startup_info = false;
     let mut radiometry_enabled = false;
@@ -180,7 +207,16 @@ pub fn enter_camera_transfer_loop(
 
     let mut last_unknown_transfer_warning = None;
     let mut pending_forced_offload_request = None;
+    let mut last_handshake_forced_offload = false;
     let mut pending_prioritise_frames_request = None;
+
+    let mut previous_packet = 0;
+    let mut offload_erase_tracker = OffloadEraseTracker::new();
+
+    if offload_erase_requested() {
+        info!("offload_erase requested, forcing offload before erasing rp2040 flash");
+        recording_state.request_forced_file_offload();
+    }
 
     info!("Waiting for messages from rp2040");
     'transfer: loop {
@@ -190,7 +226,6 @@ pub fn enter_camera_transfer_loop(
             &mut is_audio_device,
             &mut is_thermal_device,
             &mut rp2040_needs_reset,
-            rp2040_reset_in_progress,
         );
 
         // Check if we need to force offload
@@ -241,19 +276,15 @@ pub fn enter_camera_transfer_loop(
             got_startup_info = false;
             is_audio_device = device_config.is_audio_device();
             is_thermal_device = device_config.is_thermal_device();
+            // The rp2040 picks up the new mode from the config sent in its startup handshake.
+            medium_power_mode.store(device_config.use_medium_power_mode(), Ordering::Relaxed);
 
-            if !sent_reset_request {
-                sent_reset_request = true;
+            // If a reset is already pending, its handshake will send the current config.
+            if reset_request.should_send_request(Instant::now()) {
                 let _ = restart_rp2040_channel_tx.send(true);
             }
-
-            if restart_rp2040_ack.load(Ordering::Relaxed) {
-                // Reset this atomic bool if the reset has been processed by the frame server thread.
-                sent_reset_request = false;
-                rp2040_reset_in_progress = true;
-                restart_rp2040_ack.store(false, Ordering::Relaxed);
-            }
         }
+
         let poll_result = pin.poll_interrupt(false, Some(Duration::from_millis(2000)));
         if let Ok(_pin_level) = poll_result
             && _pin_level.is_some()
@@ -306,7 +337,6 @@ pub fn enter_camera_transfer_loop(
                     }
                 }
             }
-
             spi.read(&mut raw_read_buffer[..2066]).unwrap();
             {
                 let header_slice = &raw_read_buffer[..header_length];
@@ -364,7 +394,7 @@ pub fn enter_camera_transfer_loop(
                     }
                     continue 'transfer;
                 }
-                if !(CAMERA_CONNECT_INFO..=CAMERA_STARTUP_HANDSHAKE).contains(&transfer_type) {
+                if !(CAMERA_CONNECT_INFO..=CAMERA_RECORDING_TRANSFER).contains(&transfer_type) {
                     LittleEndian::write_u16(&mut return_payload_buf[4..6], 0);
                     LittleEndian::write_u16(&mut return_payload_buf[6..8], 0);
                     spi.write(&return_payload_buf).unwrap();
@@ -393,7 +423,9 @@ pub fn enter_camera_transfer_loop(
                     continue 'transfer;
                 }
 
-                if transfer_type != CAMERA_RAW_FRAME_TRANSFER {
+                if transfer_type != CAMERA_RAW_FRAME_TRANSFER
+                    && transfer_type != CAMERA_RECORDING_TRANSFER
+                {
                     if transfer_type == CAMERA_BEGIN_FILE_TRANSFER {
                         start = Instant::now();
                     }
@@ -404,11 +436,14 @@ pub fn enter_camera_transfer_loop(
                     LittleEndian::write_u16(&mut return_payload_buf[6..8], crc);
 
                     if transfer_type == CAMERA_STARTUP_HANDSHAKE {
-                        rp2040_reset_in_progress = false;
+                        // The rp2040 has booted since any reset we requested, and this handshake
+                        // sends it the current config, so treat the request as complete.
+                        reset_request.handshake_received();
                         info!("Got camera startup handshake {chunk:?}");
                         // Write all the info we need about the device:
                         let force_offload_files_now =
                             pending_forced_offload_request.take().is_some();
+                        last_handshake_forced_offload = force_offload_files_now;
                         let prefer_not_to_offload_files_now =
                             pending_prioritise_frames_request.take().is_some();
 
@@ -445,6 +480,11 @@ pub fn enter_camera_transfer_loop(
                             recording_state.update_offload_progress(transfer_block);
                         } else if !is_file_transfer_message && recording_state.is_offloading() {
                             recording_state.end_offload();
+                            if offload_erase_requested() {
+                                // Restart to get a fresh file count in the next handshake.
+                                info!("Offload finished, checking for remaining files to erase");
+                                recording_state.request_forced_file_offload();
+                            }
                         }
 
                         match transfer_type {
@@ -479,6 +519,36 @@ pub fn enter_camera_transfer_loop(
                                     "Got startup handshake: \
                                         firmware version: {firmware_version}"
                                 );
+                                if offload_erase_requested() {
+                                    if num_files_to_offload == 0 {
+                                        exit_cleanly(&mut dbus_conn);
+                                        erase_rp2040_flash_and_exit();
+                                    } else if last_handshake_forced_offload {
+                                        if offload_erase_tracker.forced_offload_handshake(
+                                            num_files_to_offload,
+                                            num_blocks_to_offload,
+                                        ) {
+                                            warn!(
+                                                "rp2040 still reports {num_files_to_offload} \
+                                                file(s) ({num_blocks_to_offload} blocks) after \
+                                                {MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS} forced \
+                                                offloads with no progress, erasing rp2040 \
+                                                flash without offloading them"
+                                            );
+                                            exit_cleanly(&mut dbus_conn);
+                                            erase_rp2040_flash_and_exit();
+                                        }
+                                        info!(
+                                            "Offloading {num_files_to_offload} file(s) \
+                                            before erasing rp2040 flash (attempts with no \
+                                            progress: {}/{MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS})",
+                                            offload_erase_tracker.stalled_attempts()
+                                        );
+                                    } else {
+                                        // Not asked to offload this boot, so restart and force it.
+                                        recording_state.request_forced_file_offload();
+                                    }
+                                }
                                 let estimated_offload_mb =
                                     num_blocks_to_offload as f32 * 128.0 / 1024.0;
                                 let estimated_offload_time_seconds =
@@ -505,6 +575,8 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
+                                        file_offload: None,
+                                        frame_message: false,
                                     });
                             }
                             CAMERA_CONNECT_INFO => {
@@ -562,6 +634,8 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
+                                        file_offload: None,
+                                        frame_message: false,
                                     });
                             }
                             CAMERA_SEND_LOGGER_EVENT => {
@@ -714,6 +788,8 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: true,
+                                        file_offload: None,
+                                        frame_message: false,
                                     });
                             }
                             CAMERA_RESUME_FILE_TRANSFER => {
@@ -737,6 +813,8 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: true,
+                                            file_offload: None,
+                                            frame_message: false,
                                         },
                                     );
                                 } else {
@@ -774,6 +852,7 @@ pub fn enter_camera_transfer_loop(
                                     needs_to_offload_test_recording = false;
                                     file.extend_from_slice(chunk);
                                     recording_state.completed_file_offload();
+                                    offload_erase_tracker.file_received();
                                     let shebang = LittleEndian::read_u16(&file[0..2]);
                                     if shebang == AUDIO_SHEBANG {
                                         save_audio_file_to_disk(file, device_config.clone());
@@ -788,6 +867,8 @@ pub fn enter_camera_transfer_loop(
                                         FrameSocketServerMessage {
                                             camera_handshake_info: None,
                                             camera_file_transfer_in_progress: false,
+                                            file_offload: None,
+                                            frame_message: false,
                                         },
                                     );
                                 } else {
@@ -801,6 +882,7 @@ pub fn enter_camera_transfer_loop(
                                 // Open and end new file transfer
                                 part_count = 0;
                                 needs_to_offload_test_recording = false;
+                                offload_erase_tracker.file_received();
                                 let mut file = Vec::new();
                                 file.extend_from_slice(chunk);
                                 let shebang = LittleEndian::read_u16(&file[0..2]);
@@ -817,6 +899,8 @@ pub fn enter_camera_transfer_loop(
                                     camera_handshake_channel_tx.send(FrameSocketServerMessage {
                                         camera_handshake_info: None,
                                         camera_file_transfer_in_progress: false,
+                                        file_offload: None,
+                                        frame_message: false,
                                     });
                             }
                             CAMERA_GET_MOTION_DETECTION_MASK => {
@@ -831,8 +915,31 @@ pub fn enter_camera_transfer_loop(
                     } else {
                         warn!("Crc check failed, remote was notified and will re-transmit");
                     }
-                } else {
-                    spi.read(&mut raw_read_buffer[2066..num_bytes + header_length])
+                } else if transfer_type == CAMERA_RECORDING_TRANSFER {
+                    // header length is already in num_bytes....?
+                    let mut aligned_offset: usize = (num_bytes + 3) & !3;
+                    //rp2040 will always send at least 2068 bytes due to the fact that we always read 2066 bytes in tc2-agent
+                    //it is possible that number of data bytes is less than this though
+                    if aligned_offset < 2066 {
+                        aligned_offset = 2068;
+                    }
+
+                    if !num_bytes_check || !header_crc_check || !transfer_type_check {
+                        // force transfer to fail rp2040 waits 65 ms so 70 gives us some leeway
+                        info!("Forcing transfer to fail as header integrity failed");
+                        sleep(Duration::from_millis(70));
+                        spi.read(&mut raw_read_buffer[2066..aligned_offset])
+                            .map_err(|e| {
+                                error!("SPI read error: {e:?}");
+
+                                // TODO: Shutdown gracefully?
+
+                                process::exit(1);
+                            })
+                            .unwrap();
+                        continue;
+                    }
+                    spi.read(&mut raw_read_buffer[2066..aligned_offset])
                         .map_err(|e| {
                             error!("SPI read error: {e:?}");
 
@@ -841,44 +948,111 @@ pub fn enter_camera_transfer_loop(
                             process::exit(1);
                         })
                         .unwrap();
-                    // Frame
-                    let mut frame = [0u8; FRAME_LENGTH];
-                    BigEndian::write_u16_into(
-                        u8_slice_as_u16_slice(
-                            &raw_read_buffer[header_length..header_length + FRAME_LENGTH],
-                        ),
-                        &mut frame,
+
+                    let data_crc = crc_check.checksum(&raw_read_buffer[header_length..num_bytes]);
+                    //these have been swizzled and need to be re swizzled
+                    num_bytes = (num_bytes + 1) & !1;
+                    let is_last_part = raw_read_buffer[header_length] == 1;
+                    let packet_num = raw_read_buffer[header_length + 1];
+
+                    let frame_bytes = num_bytes - header_length - 2;
+                    let mut frame_data = vec![0; frame_bytes];
+                    LittleEndian::write_u16_into(
+                        u8_slice_as_u16_slice(&raw_read_buffer[header_length + 2..num_bytes]),
+                        &mut frame_data[..frame_bytes],
                     );
-                    let back = FRAME_BUFFER.get_back().lock().unwrap();
-                    back.replace(Some(frame));
+                    if crc_from_remote != data_crc {
+                        error!(
+                            "Medium mode gz offload crc failed restart rp2040 {} previous was {}",
+                            packet_num, previous_packet
+                        );
+                        rp2040_needs_reset = true;
+                    } else if is_last_part {
+                        // Test recordings are currently offloaded via the normal file transfer
+                        // path, but if one ever comes through medium power streaming, make sure
+                        // we don't block future test recording requests.
+                        needs_to_offload_test_recording = false;
+                    }
+                    let file_offload = Some(FileOffloadInfo {
+                        frame_bytes,
+                        is_last_part,
+                        data: frame_data,
+                        packet_num,
+                    });
+
                     if !got_first_frame {
                         got_first_frame = true;
-                        info!("Got first frame from rp2040, got startup info {got_startup_info}");
+                        info!(
+                            "Got first frame from rp2040, got startup info {got_startup_info} needs reset {}",
+                            rp2040_needs_reset
+                        );
                     }
+
+                    previous_packet = packet_num;
+                    let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
+                        camera_handshake_info: Some(CameraHandshakeInfo {
+                            radiometry_enabled,
+                            is_recording: true,
+                            firmware_version,
+                            camera_serial: lepton_serial_number.clone(),
+                        }),
+                        camera_file_transfer_in_progress: false,
+                        file_offload,
+                        frame_message: true,
+                    });
+                } else {
+                    // header length is already in num_bytes....?
+                    let aligned_offset: usize = (num_bytes + 3) & !3;
+
+                    spi.read(&mut raw_read_buffer[2066..aligned_offset])
+                        .map_err(|e| {
+                            error!("SPI read error: {e:?}");
+
+                            // TODO: Shutdown gracefully?
+
+                            process::exit(1);
+                        })
+                        .unwrap();
+
+                    // Frame
+                    let mut frame = [0u8; FRAME_LENGTH];
+
+                    BigEndian::write_u16_into(
+                        u8_slice_as_u16_slice(&raw_read_buffer[header_length..num_bytes]),
+                        &mut frame[..num_bytes - header_length],
+                    );
+                    // frame_bytes = num_bytes - header_length;
                     // FIXME: Should is_recording bit only be set in high power mode?
                     // FIXME: Check this out.
                     let is_recording = crc_from_remote == 1 && device_config.use_high_power_mode();
                     recording_state.set_is_recording(is_recording);
-                    if !got_startup_info {
+                    let back = FRAME_BUFFER.get_back().lock().unwrap();
+                    back.replace(Some(frame));
+
+                    if !got_first_frame {
+                        got_first_frame = true;
+                        info!(
+                            "Got first frame from rp2040, got startup info {got_startup_info} needs reset {}",
+                            rp2040_needs_reset
+                        );
+                    }
+
+                    if !got_startup_info && !medium_power_mode.load(Ordering::Relaxed) {
                         warn!("Requesting reset of rp2040 to force handshake");
                         rp2040_needs_reset = true;
                     } else if !rp2040_needs_reset {
                         FRAME_BUFFER.swap();
-                        // ideally we should only do this in high power mode
-                        // but this would require changes to sidekick / management interface so can be done later.
-                        if !started_thermal_recorder {
-                            info!("starting thermal recorder");
-                            let _ = start_thermal_recorder_py();
-                        }
-                        started_thermal_recorder = true;
+
                         let _ = camera_handshake_channel_tx.send(FrameSocketServerMessage {
                             camera_handshake_info: Some(CameraHandshakeInfo {
                                 radiometry_enabled,
-                                is_recording: recording_state.is_recording(),
+                                is_recording,
                                 firmware_version,
                                 camera_serial: lepton_serial_number.clone(),
                             }),
                             camera_file_transfer_in_progress: false,
+                            file_offload: None,
+                            frame_message: true,
                         });
                     }
                 }
@@ -1031,14 +1205,13 @@ fn maybe_cancel_in_progress_file_offload_session(
     recording_state.cancel_offload_session(dbus_conn);
 }
 
-pub fn start_thermal_recorder_py() -> io::Result<()> {
-    let result =
-        Command::new("sudo").arg("systemctl").arg("start").arg("thermal-recorder-py").spawn();
+pub fn free_gpio7() -> io::Result<()> {
+    let result = Command::new("/bin/sh").arg("-c").arg("echo 7 > /sys/class/gpio/unexport").spawn();
     if let Err(err) = result {
-        error!("Couldn't start thermal recorder {} ", err);
+        error!("Couldn't free gpio 7 {} ", err);
         return Err(err);
     }
 
-    info!("Started thermal recorder py");
+    info!("freed gpio7");
     Ok(())
 }

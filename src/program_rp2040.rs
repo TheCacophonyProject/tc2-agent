@@ -6,6 +6,10 @@ use std::{fs, io, process};
 
 const RP2040_LOG_SERVICE: &str = "tc2-rp2040-logs.service";
 
+/// If this file exists, keep forcing offloads until the rp2040 has no files left,
+/// then erase its flash.
+const OFFLOAD_ERASE_FILE: &str = "/etc/cacophony/offload_erase";
+
 /// Stops the RP2040 log capture for as long as this is alive, so that the
 /// programmer has the SWD pins to itself.
 struct SuspendedRp2040Logging {
@@ -71,6 +75,89 @@ pub fn program_rp2040() -> io::Result<()> {
     Ok(())
 }
 
+/// How many forced offload boots in a row may make no progress before we give up on
+/// offloading and erase the flash anyway.
+pub const MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS: u32 = 5;
+
+/// Decides when to give up on offloading before an offload_erase.
+///
+/// If the rp2040 flash is corrupt, the rp2040 can report files to offload but never manage
+/// to send them (e.g. it gets reset by its watchdog while searching for the start of a file).
+/// Without a limit we'd keep forcing offloads forever and never erase the flash.
+#[derive(Debug, Default)]
+pub struct OffloadEraseTracker {
+    last_totals: Option<(u16, u16)>,
+    file_received: bool,
+    stalled_attempts: u32,
+}
+
+impl OffloadEraseTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Call when a file has been received from the rp2040.
+    pub fn file_received(&mut self) {
+        self.file_received = true;
+    }
+
+    /// Call on each startup handshake that was told to force an offload, with the totals it
+    /// reported. Returns true if offloading has stalled and the flash should be erased anyway.
+    pub fn forced_offload_handshake(&mut self, num_files: u16, num_blocks: u16) -> bool {
+        let totals = (num_files, num_blocks);
+        let made_progress = self.file_received
+            || self
+                .last_totals
+                .is_none_or(|(files, blocks)| num_files < files || num_blocks < blocks);
+        if made_progress {
+            self.stalled_attempts = 0;
+        } else {
+            self.stalled_attempts += 1;
+        }
+        self.last_totals = Some(totals);
+        self.file_received = false;
+        self.stalled_attempts >= MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS
+    }
+
+    pub fn stalled_attempts(&self) -> u32 {
+        self.stalled_attempts
+    }
+}
+
+pub fn offload_erase_requested() -> bool {
+    Path::new(OFFLOAD_ERASE_FILE).exists()
+}
+
+/// Erases the rp2040 2Gb SPI flash, removes the offload_erase file and exits.
+/// `tc2-hat-rp2040 --erase-flash` creates /etc/cacophony/program_rp2040, so the normal
+/// firmware is programmed back on when tc2-agent restarts.
+pub fn erase_rp2040_flash_and_exit() -> ! {
+    info!("All files offloaded, erasing rp2040 2Gb SPI flash");
+    let result = {
+        // Same as programming, the erase needs the SWD pins to itself.
+        let _logging = SuspendedRp2040Logging::suspend();
+        Command::new("tc2-hat-rp2040").arg("--erase-flash").status()
+    };
+    match result {
+        Ok(status) if status.success() => {
+            if let Err(e) = fs::remove_file(OFFLOAD_ERASE_FILE) {
+                error!("Failed to remove '{OFFLOAD_ERASE_FILE}' after erasing flash: {e}");
+                process::exit(1);
+            }
+            info!("Erased rp2040 2Gb SPI flash");
+            process::exit(0);
+        }
+        Ok(status) => {
+            error!("Failed to erase rp2040 2Gb SPI flash: {status}");
+            process::exit(1);
+        }
+        Err(e) => {
+            error!("Failed to run tc2-hat-rp2040 --erase-flash: {e}");
+            process::exit(1);
+        }
+    }
+}
+
 pub fn check_if_rp2040_needs_programming() {
     // Check if the file indicating that the RP2040 needs to be programmed.
     // This is used to save time when setting up cameras
@@ -94,5 +181,52 @@ pub fn check_if_rp2040_needs_programming() {
                 process::exit(1);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod offload_erase_tests {
+    use super::*;
+
+    #[test]
+    fn gives_up_when_rp2040_never_sends_files() {
+        let mut tracker = OffloadEraseTracker::new();
+        // The first attempt is never counted as stalled.
+        assert!(!tracker.forced_offload_handshake(2, 1230));
+        for _ in 1..MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS {
+            assert!(!tracker.forced_offload_handshake(2, 1230));
+        }
+        assert!(tracker.forced_offload_handshake(2, 1230));
+    }
+
+    #[test]
+    fn received_file_resets_stall_count() {
+        let mut tracker = OffloadEraseTracker::new();
+        for _ in 0..MAX_STALLED_OFFLOAD_ERASE_ATTEMPTS {
+            assert!(!tracker.forced_offload_handshake(2, 1230));
+        }
+        tracker.file_received();
+        assert!(!tracker.forced_offload_handshake(2, 1230));
+        assert_eq!(tracker.stalled_attempts(), 0);
+    }
+
+    #[test]
+    fn fewer_files_or_blocks_counts_as_progress() {
+        let mut tracker = OffloadEraseTracker::new();
+        assert!(!tracker.forced_offload_handshake(10, 500));
+        assert!(!tracker.forced_offload_handshake(10, 500));
+        assert_eq!(tracker.stalled_attempts(), 1);
+        assert!(!tracker.forced_offload_handshake(9, 450));
+        assert_eq!(tracker.stalled_attempts(), 0);
+        assert!(!tracker.forced_offload_handshake(9, 440));
+        assert_eq!(tracker.stalled_attempts(), 0);
+    }
+
+    #[test]
+    fn more_files_is_not_progress() {
+        let mut tracker = OffloadEraseTracker::new();
+        assert!(!tracker.forced_offload_handshake(2, 100));
+        assert!(!tracker.forced_offload_handshake(3, 120));
+        assert_eq!(tracker.stalled_attempts(), 1);
     }
 }

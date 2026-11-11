@@ -43,16 +43,16 @@ done
 if [ "$BUILD_FIRMWARE" = true ]; then
   echo "Building firmware..."
   cd ../tc2-firmware
-  cargo build --release
+  cross build --release
   cd -
   cp ../tc2-firmware/target/thumbv6m-none-eabi/release/tc2-firmware ./_releases/tc2-firmware
   sha256sum ./_releases/tc2-firmware | cut -d ' ' -f 1 > ./_releases/tc2-firmware.sha256
 fi
 
-cargo build --release --target=${TARGET_ARCH}
+cross build --release --target=${TARGET_ARCH}
 
 if [ "$DEB_OPTION" = true ]; then
-  cargo deb --target=${TARGET_ARCH}
+  cargo deb --target=${TARGET_ARCH} --no-build
   deb=$(cd ${DEB_SOURCE_DIR} && ls *.deb)
   echo $deb
   scp ${DEB_SOURCE_DIR}${deb} ${TARGET_HOST}:
