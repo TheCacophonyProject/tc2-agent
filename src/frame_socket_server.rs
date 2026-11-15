@@ -154,7 +154,7 @@ fn poll_medium_power_client(
                 } else if let Some(recording) =
                     streamed_recording.as_mut().filter(|r| r.timestamp == timestamp)
                 {
-                    warn!("Client failed the recording being streamed {timestamp}");
+                    warn!("Client failed the live recording being streamed {timestamp}");
                     recording.intact = false;
                     keep_streaming = false;
                 } else {
