@@ -11,6 +11,7 @@ mod device_config;
 mod double_buffer;
 mod event_logger;
 mod frame_socket_server;
+mod medium_power_offloads;
 mod mode_config;
 mod program_rp2040;
 mod recording_state;
@@ -53,7 +54,7 @@ use sysinfo::Disks;
 const AUDIO_SHEBANG: u16 = 1;
 
 const EXPECTED_RP2040_FIRMWARE_HASH: &str = include_str!("../_releases/tc2-firmware.sha256");
-const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 41;
+const EXPECTED_RP2040_FIRMWARE_VERSION: u32 = 42;
 const EXPECTED_ATTINY_FIRMWARE_VERSION: u8 = 1;
 
 const SEGMENT_LENGTH: usize = 9760;
@@ -118,11 +119,11 @@ fn main() {
     check_for_sufficient_free_disk_space();
     check_if_rp2040_needs_programming();
 
-    let (serve_frames_via_wifi, spi_speed_mhz) = {
+    let (serve_frames_via_wifi, spi_speed_mhz, offload_medium_power_duplicates) = {
         let startup_mode_config: ModeConfig = argh::from_env();
         let serve_frames_via_wifi = startup_mode_config.use_wifi;
         let spi_speed = startup_mode_config.spi_speed_mhz;
-        (serve_frames_via_wifi, spi_speed)
+        (serve_frames_via_wifi, spi_speed, startup_mode_config.offload_medium_power_duplicates)
     };
 
     let device_config = DeviceConfig::load_from_fs();
@@ -223,6 +224,7 @@ fn main() {
                 camera_handshake_channel_tx,
                 recording_state,
                 medium_power_mode,
+                offload_medium_power_duplicates,
             );
             info!("Exiting gracefully");
             Ok::<(), Error>(())

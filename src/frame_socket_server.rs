@@ -1,11 +1,14 @@
 use crate::camera_transfer_state::CameraHandshakeInfo;
+use crate::medium_power_offloads;
 use crate::program_rp2040::program_rp2040;
 use crate::recording_state::{RecordingMode, RecordingState};
-use crate::socket_stream::{SocketStream, get_socket_address};
+use crate::socket_stream::{ClientMsg, SocketStream, get_socket_address};
 use crate::telemetry::{Telemetry, read_telemetry};
 use crate::{FRAME_LENGTH, cptv_frame_dispatch};
+use byteorder::{ByteOrder, LittleEndian};
 use log::{debug, error, info, warn};
 use rppal::gpio::OutputPin;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -13,6 +16,13 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, process, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
+
+/// How many medium power packets to send between checks for status messages from the client.
+const CLIENT_POLL_INTERVAL: i32 = 10;
+
+/// Bytes at the start of the first packet of a medium power file, before the gzipped file data:
+/// timestamp (i64), lepton serial (u32), firmware version (u32), file start block (u16).
+const FIRST_PACKET_HEADER_LENGTH: usize = 8 + 4 + 4 + 2;
 
 pub struct FrameSocketServerMessage {
     pub(crate) camera_handshake_info: Option<CameraHandshakeInfo>,
@@ -25,6 +35,137 @@ pub struct FileOffloadInfo {
     pub(crate) is_last_part: bool,
     pub(crate) data: Vec<u8>,
     pub(crate) packet_num: u8,
+    // Whether this packet's data matched the crc the rp2040 sent with it.
+    pub(crate) crc_ok: bool,
+}
+
+/// A recording being received by medium power streaming.
+struct StreamedRecording {
+    // When the recording started, from the first packet. The same as the CPTV header timestamp.
+    timestamp: u64,
+    // Whether every packet so far passed its crc check.
+    intact: bool,
+}
+
+/// Most streamed recordings to keep waiting for the client to finish. The client should answer
+/// each one, so this only stops the list growing if it doesn't.
+const MAX_AWAITING_DONE: usize = 100;
+
+/// Called once a streamed recording has been passed on in full. If it was intact, it waits for
+/// the client to say it finished the file ("DON" + timestamp), and is then remembered so we can
+/// tell the rp2040 to erase it rather than offload it again.
+fn streamed_recording_sent(
+    streamed_recording: &mut Option<StreamedRecording>,
+    awaiting_done: &mut VecDeque<u64>,
+) {
+    match streamed_recording.take() {
+        Some(StreamedRecording { timestamp, intact: true }) => {
+            awaiting_done.push_back(timestamp);
+            info!(
+                "Streamed recording {timestamp} sent in full, waiting for the client to finish \
+                it. Waiting for {awaiting_done:?}"
+            );
+            if awaiting_done.len() > MAX_AWAITING_DONE
+                && let Some(oldest) = awaiting_done.pop_front()
+            {
+                warn!(
+                    "Client never finished streamed recording {oldest}, it will be offloaded \
+                    again from the rp2040 during normal offloading"
+                );
+            }
+        }
+        Some(StreamedRecording { timestamp, intact: false }) => {
+            warn!(
+                "Streamed recording {timestamp} had crc errors, it will be offloaded again \
+                from the rp2040 during normal offloading"
+            );
+        }
+        None => warn!("Finished sending a recording, but no streamed recording was being tracked"),
+    }
+}
+
+/// Streamed recordings waiting for the client to finish them are forgotten, so they'll be
+/// offloaded again from the rp2040.
+fn forget_awaiting_done(awaiting_done: &mut VecDeque<u64>, reason: &str) {
+    if !awaiting_done.is_empty() {
+        warn!(
+            "{reason}, {} streamed recordings the client hadn't finished will be offloaded again \
+            from the rp2040 during normal offloading",
+            awaiting_done.len()
+        );
+        awaiting_done.clear();
+    }
+}
+
+/// Removes `timestamp` from the recordings waiting for the client, returning whether it was there.
+/// The client answers recordings in the order they were streamed, so any sent before it that
+/// haven't been answered never will be, and are removed too.
+fn take_awaiting_done(awaiting_done: &mut VecDeque<u64>, timestamp: u64) -> bool {
+    let Some(index) = awaiting_done.iter().position(|t| *t == timestamp) else {
+        warn!("Recording {timestamp} isn't waiting for the client, waiting for {awaiting_done:?}");
+        return false;
+    };
+    for unanswered in awaiting_done.drain(..=index).take(index) {
+        warn!(
+            "Client never answered for streamed recording {unanswered}, it will be offloaded \
+            again from the rp2040 during normal offloading"
+        );
+    }
+    true
+}
+
+/// Handles status messages from the medium power client. Returns false if the connection is
+/// broken, or the client failed the recording currently being streamed, in which case the socket
+/// should be shut down.
+fn poll_medium_power_client(
+    stream: &mut SocketStream,
+    streamed_recording: &mut Option<StreamedRecording>,
+    awaiting_done: &mut VecDeque<u64>,
+) -> bool {
+    let msgs = match stream.poll_client() {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            warn!("Client connection lost: {e}");
+            forget_awaiting_done(awaiting_done, "Client connection lost");
+            return false;
+        }
+    };
+    let mut keep_streaming = true;
+    for msg in msgs {
+        info!("Got {msg:?} from client");
+        match msg {
+            ClientMsg::Done(timestamp) => {
+                if take_awaiting_done(awaiting_done, timestamp) {
+                    info!("Client finished streamed recording {timestamp}");
+                    medium_power_offloads::record(timestamp);
+                } else {
+                    warn!(
+                        "Client finished recording {timestamp}, but it wasn't waiting to be \
+                        finished"
+                    );
+                }
+            }
+            ClientMsg::Fail(timestamp) => {
+                if take_awaiting_done(awaiting_done, timestamp) {
+                    warn!(
+                        "Client failed streamed recording {timestamp}, it will be offloaded \
+                        again from the rp2040 during normal offloading"
+                    );
+                } else if let Some(recording) =
+                    streamed_recording.as_mut().filter(|r| r.timestamp == timestamp)
+                {
+                    warn!("Client failed the recording being streamed {timestamp}");
+                    recording.intact = false;
+                    keep_streaming = false;
+                } else {
+                    warn!("Client failed recording {timestamp}, but it isn't one we know of");
+                }
+            }
+            ClientMsg::Ack => {}
+            ClientMsg::Unknown(bytes) => warn!("Unknown message from client {bytes:?}"),
+        }
+    }
+    keep_streaming
 }
 
 fn restart_rp2040_if_requested(
@@ -73,6 +214,8 @@ fn handle_medium_power_message(
     ms_elapsed: &mut u64,
     run_pin: &mut OutputPin,
     message_handled: &mut bool,
+    streamed_recording: &mut Option<StreamedRecording>,
+    awaiting_done: &mut VecDeque<u64>,
 ) {
     if let Ok(FrameSocketServerMessage {
         camera_handshake_info:
@@ -106,18 +249,47 @@ fn handle_medium_power_message(
             }
 
             *last_packet_num = packet_num;
-            // first 16 bytes are timestamp, serial and firmware
-            if *frame_i == 0 && frame_data[16..16 + 10] != *gzip_header {
+            // The first packet starts with the timestamp, serial, firmware and file start block
+            if *frame_i == 0
+                && frame_data[FIRST_PACKET_HEADER_LENGTH..FIRST_PACKET_HEADER_LENGTH + 10]
+                    != *gzip_header
+            {
                 // ensure is a gzip
                 error!(
                     "New file is missing the GZIP header {:?} restart rp2040",
-                    &frame_data[..16 + 10]
+                    &frame_data[..FIRST_PACKET_HEADER_LENGTH + 10]
                 );
                 restart_rp2040(run_pin);
                 // what do we do here???
                 // force rp2040 to offload last file??
                 // if we could send a message ask for the start again
                 return;
+            }
+            if *frame_i == 0 {
+                let timestamp = LittleEndian::read_u64(&frame_data[0..8]);
+                info!(
+                    "Started streaming recording {timestamp}, first packet crc ok {}",
+                    file_info.crc_ok
+                );
+                if let Some(previous) = streamed_recording.as_ref() {
+                    warn!(
+                        "Streamed recording {} never finished sending, it will be offloaded \
+                        again from the rp2040 during normal offloading",
+                        previous.timestamp
+                    );
+                }
+                *streamed_recording =
+                    Some(StreamedRecording { timestamp, intact: file_info.crc_ok });
+            } else if let Some(recording) = streamed_recording.as_mut() {
+                if !file_info.crc_ok {
+                    warn!(
+                        "Streamed recording {} packet {packet_num} failed its crc check",
+                        recording.timestamp
+                    );
+                }
+                recording.intact &= file_info.crc_ok;
+            } else {
+                warn!("Got packet {packet_num} of a recording that isn't being tracked");
             }
             *frame_i += 1;
 
@@ -135,11 +307,19 @@ fn handle_medium_power_message(
                     Some(frame_data),
                     is_last_part,
                     *frame_i == 1,
+                    is_last_part || *frame_i % CLIENT_POLL_INTERVAL == 0,
+                    streamed_recording,
+                    awaiting_done,
                 );
                 if is_last_part && was_sent {
                     *sent_end = true;
                     *frame_i = 0;
+                    streamed_recording_sent(streamed_recording, awaiting_done);
+                } else if is_last_part {
+                    info!("Failed to send the last packet of a streamed recording");
                 }
+            } else if is_last_part {
+                info!("Got the last packet of a streamed recording, but no client is connected");
             }
             // store file to send later
             if !was_sent {
@@ -148,10 +328,9 @@ fn handle_medium_power_message(
                     file.extend_from_slice(frame_data);
                 } else if *frame_i > 1 {
                     error!(
-                        "Lost socket connection part way through medium power offload (Something must have gone wrong), Restarting RP2040"
+                        "Lost socket connection part way through medium power offload (Something must have gone wrong)"
                     );
-                    // restart rp2040 and offload the file
-                    restart_rp2040(run_pin);
+                    // restart_rp2040(run_pin);
                     *frame_i = 0;
                 } else {
                     info!("Starting new file");
@@ -180,14 +359,25 @@ fn handle_medium_power_message(
                         None,
                         true,
                         true,
+                        true,
+                        streamed_recording,
+                        awaiting_done,
                     ) {
                         *sent_end = true;
+                        streamed_recording_sent(streamed_recording, awaiting_done);
                     }
                 } else {
                     // send abort when recording was discarded on rp2040
+                    if let Some(recording) = streamed_recording.as_ref() {
+                        info!(
+                            "Streamed recording {} was discarded on the rp2040, sending abort",
+                            recording.timestamp
+                        );
+                    }
                     send_abort(sock);
                     *file_download = None;
                     *sent_end = true;
+                    *streamed_recording = None;
                 }
             }
             *frame_i = 0;
@@ -252,6 +442,10 @@ pub fn spawn_frame_socket_server_thread(
             let mut sent_end = false;
             let mut message_handled = false;
             let mut received_end = false;
+            let mut streamed_recording: Option<StreamedRecording> = None;
+            // Timestamps of intact streamed recordings, oldest first, that the client hasn't yet
+            // said it finished.
+            let mut awaiting_done: VecDeque<u64> = VecDeque::new();
             let address = &get_socket_address(serve_frames_via_wifi);
             let mut medium_power_mode = medium_power_mode_flag.load(Ordering::Relaxed);
             loop {
@@ -272,6 +466,7 @@ pub fn spawn_frame_socket_server_thread(
                     if let Some(file) = file_download.take() {
                         warn!("Discarding unsent medium power recording with {} bytes", file.len());
                     }
+                    forget_awaiting_done(&mut awaiting_done, "Medium power mode changed");
                     medium_power_mode = new_medium_power_mode;
                     frame_i = 0;
                     last_packet_num = 255;
@@ -315,7 +510,32 @@ pub fn spawn_frame_socket_server_thread(
                         &mut ms_elapsed,
                         &mut run_pin,
                         &mut message_handled,
+                        &mut streamed_recording,
+                        &mut awaiting_done,
                     );
+                    // Keep listening for the client to finish files after the last one is sent.
+                    if !awaiting_done.is_empty()
+                        && let Some((_, _, option_stream)) =
+                            sockets.iter_mut().find(|(sock_address, _, _)| sock_address == address)
+                    {
+                        match option_stream {
+                            Some(stream) => {
+                                if !poll_medium_power_client(
+                                    stream,
+                                    &mut streamed_recording,
+                                    &mut awaiting_done,
+                                ) {
+                                    info!("Shutting down socket");
+                                    let _ = option_stream
+                                        .take()
+                                        .expect("Never fails")
+                                        .shutdown()
+                                        .is_ok();
+                                }
+                            }
+                            None => forget_awaiting_done(&mut awaiting_done, "Client disconnected"),
+                        }
+                    }
                 }
                 if !message_handled {
                     // dont send normal frame messages to medium power socket, we may want to change this and send the message type
@@ -571,6 +791,9 @@ fn handle_medium_power(
     frame_data: Option<&[u8]>,
     is_last_part: bool,
     first_part: bool,
+    poll_client: bool,
+    streamed_recording: &mut Option<StreamedRecording>,
+    awaiting_done: &mut VecDeque<u64>,
 ) -> bool {
     let (address, use_wifi, option_stream) = socket;
     let stream = option_stream.as_mut().expect("Never fails, because we filtered already.");
@@ -582,6 +805,12 @@ fn handle_medium_power(
         return false;
     }
     let s = Instant::now();
+
+    if poll_client && !poll_medium_power_client(stream, streamed_recording, awaiting_done) {
+        info!("Shutting down socket");
+        let _ = option_stream.take().expect("Never fails").shutdown().is_ok();
+        return false;
+    }
 
     if first_part || file_download.is_some() {
         info!("Sending start");
@@ -639,4 +868,23 @@ fn handle_medium_power(
     }
     *ms_elapsed = 0;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taking_a_recording_drops_the_unanswered_ones_before_it() {
+        let mut awaiting_done = VecDeque::from([1, 2, 3, 4]);
+        assert!(take_awaiting_done(&mut awaiting_done, 3));
+        assert_eq!(awaiting_done, [4]);
+    }
+
+    #[test]
+    fn taking_an_unknown_recording_changes_nothing() {
+        let mut awaiting_done = VecDeque::from([1, 2]);
+        assert!(!take_awaiting_done(&mut awaiting_done, 5));
+        assert_eq!(awaiting_done, [1, 2]);
+    }
 }

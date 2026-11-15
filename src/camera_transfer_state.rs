@@ -1,5 +1,7 @@
 use crate::cptv_frame_dispatch::FRAME_BUFFER;
+use crate::cptv_header::{CptvHeader, decode_cptv_header_streaming};
 use crate::dbus_attiny_i2c::{exit_cleanly, process_interrupted};
+use crate::medium_power_offloads::MediumPowerOffloads;
 use std::io;
 use std::process::Command;
 
@@ -45,6 +47,27 @@ pub const CAMERA_GET_MOTION_DETECTION_MASK: u8 = 0x7;
 pub const CAMERA_SEND_LOGGER_EVENT: u8 = 0x8;
 pub const CAMERA_STARTUP_HANDSHAKE: u8 = 0x9;
 pub const CAMERA_RECORDING_TRANSFER: u8 = 0xA;
+
+/// Sent back to the rp2040 in reply to the first part of a file, followed by its inverse, when we
+/// already have the file from medium power streaming, so it erases the file without sending the
+/// rest. Must match `PI_ALREADY_HAS_FILE` in tc2-firmware.
+const PI_ALREADY_HAS_FILE: u8 = 0xa5;
+
+/// When a CPTV recording started, from the first part of its file, which is its header as its
+/// own gzip member. None for audio recordings, which are never streamed.
+fn cptv_start_timestamp(first_part: &[u8]) -> Option<u64> {
+    if first_part.len() < 2 || LittleEndian::read_u16(&first_part[0..2]) == AUDIO_SHEBANG {
+        return None;
+    }
+    match decode_cptv_header_streaming(first_part) {
+        Ok(CptvHeader::V2(header)) => Some(header.timestamp),
+        Ok(_) => None,
+        Err(e) => {
+            warn!("Couldn't read CPTV header from the first part of a file: {e}");
+            None
+        }
+    }
+}
 
 pub struct CameraHandshakeInfo {
     pub radiometry_enabled: bool,
@@ -98,7 +121,11 @@ pub fn enter_camera_transfer_loop(
     camera_handshake_channel_tx: Sender<FrameSocketServerMessage>,
     mut recording_state: RecordingState,
     medium_power_mode: Arc<AtomicBool>,
+    offload_medium_power_duplicates: bool,
 ) {
+    if offload_medium_power_duplicates {
+        info!("Letting the rp2040 offload recordings already received by medium power streaming");
+    }
     let spi_speed = spi_speed_mhz * 1_000_000;
     // rPi3 can handle 12Mhz (@600Mhz), may need to back it off a little to have some slack.
     let mut spi;
@@ -212,6 +239,7 @@ pub fn enter_camera_transfer_loop(
 
     let mut previous_packet = 0;
     let mut offload_erase_tracker = OffloadEraseTracker::new();
+    let mut medium_power_offloads = MediumPowerOffloads::new();
 
     if offload_erase_requested() {
         info!("offload_erase requested, forcing offload before erasing rp2040 flash");
@@ -473,6 +501,21 @@ pub fn enter_camera_transfer_loop(
                         return_payload_buf[10..10 + piece.len() + 1]
                             .copy_from_slice(&piece_with_length);
                     }
+                    // Tell the rp2040 to erase recordings we already got by medium power
+                    // streaming, rather than send them again. This has to be decided on the first
+                    // part of the file, as it's in the reply to it.
+                    let is_file_start = transfer_type == CAMERA_BEGIN_FILE_TRANSFER
+                        || transfer_type == CAMERA_BEGIN_AND_END_FILE_TRANSFER;
+                    let pi_already_has_file = !offload_medium_power_duplicates
+                        && is_file_start
+                        && crc == crc_from_remote
+                        && cptv_start_timestamp(chunk)
+                            .is_some_and(|timestamp| medium_power_offloads.take(timestamp));
+                    if is_file_start {
+                        let flag = if pi_already_has_file { PI_ALREADY_HAS_FILE } else { 0 };
+                        return_payload_buf[8] = flag;
+                        return_payload_buf[9] = !flag;
+                    }
                     // Always write the return buffer
                     spi.write(&return_payload_buf).unwrap();
                     if crc == crc_from_remote {
@@ -501,6 +544,9 @@ pub fn enter_camera_transfer_loop(
                                     num_blocks_to_offload,
                                     num_events_to_offload,
                                 );
+                                if num_files_to_offload == 0 {
+                                    medium_power_offloads.no_recordings_left();
+                                }
 
                                 if firmware_version != EXPECTED_RP2040_FIRMWARE_VERSION {
                                     exit_cleanly(&mut dbus_conn);
@@ -771,6 +817,16 @@ pub fn enter_camera_transfer_loop(
                                     warn!("Unknown logger event kind {event_kind}");
                                 }
                             }
+                            CAMERA_BEGIN_FILE_TRANSFER | CAMERA_BEGIN_AND_END_FILE_TRANSFER
+                                if pi_already_has_file =>
+                            {
+                                info!(
+                                    "Already have this recording from medium power streaming, \
+                                    telling the rp2040 to erase it"
+                                );
+                                recording_state.completed_file_offload();
+                                offload_erase_tracker.file_received();
+                            }
                             CAMERA_BEGIN_FILE_TRANSFER => {
                                 if file_download.is_some() {
                                     warn!("Trying to begin file without ending current");
@@ -882,6 +938,7 @@ pub fn enter_camera_transfer_loop(
                                 // Open and end new file transfer
                                 part_count = 0;
                                 needs_to_offload_test_recording = false;
+                                recording_state.completed_file_offload();
                                 offload_erase_tracker.file_received();
                                 let mut file = Vec::new();
                                 file.extend_from_slice(chunk);
@@ -916,6 +973,7 @@ pub fn enter_camera_transfer_loop(
                         warn!("Crc check failed, remote was notified and will re-transmit");
                     }
                 } else if transfer_type == CAMERA_RECORDING_TRANSFER {
+                    medium_power_offloads.medium_power_recording_started();
                     // header length is already in num_bytes....?
                     let mut aligned_offset: usize = (num_bytes + 3) & !3;
                     //rp2040 will always send at least 2068 bytes due to the fact that we always read 2066 bytes in tc2-agent
@@ -978,6 +1036,7 @@ pub fn enter_camera_transfer_loop(
                         is_last_part,
                         data: frame_data,
                         packet_num,
+                        crc_ok: crc_from_remote == data_crc,
                     });
 
                     if !got_first_frame {

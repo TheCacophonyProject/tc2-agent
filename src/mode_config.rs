@@ -15,4 +15,9 @@ pub struct ModeConfig {
     /// raspberry pi SPI speed in Mhz, defaults to 12
     #[argh(option, default = "default_spi_speed_mhz()")]
     pub(crate) spi_speed_mhz: u32,
+
+    /// let the rp2040 offload recordings again even if they were already received in full by
+    /// medium power streaming, rather than telling it to erase them
+    #[argh(switch)]
+    pub(crate) offload_medium_power_duplicates: bool,
 }
