@@ -84,9 +84,9 @@ fn streamed_recording_sent(
     }
 }
 
-/// Streamed recordings waiting for the client to finish them are forgotten, so they'll be
-/// offloaded again from the rp2040.
-fn forget_awaiting_done(awaiting_done: &mut VecDeque<u64>, reason: &str) {
+/// Clears the streamed recordings waiting for the client to finish them, logging `reason`. They
+/// won't be saved as streamed, so they'll be offloaded again from the rp2040.
+fn clear_awaiting_done(awaiting_done: &mut VecDeque<u64>, reason: &str) {
     if !awaiting_done.is_empty() {
         warn!(
             "{reason}, {} streamed recordings the client hadn't finished will be offloaded again \
@@ -126,7 +126,7 @@ fn poll_medium_power_client(
         Ok(msgs) => msgs,
         Err(e) => {
             warn!("Client connection lost: {e}");
-            forget_awaiting_done(awaiting_done, "Client connection lost");
+            clear_awaiting_done(awaiting_done, "Client connection lost");
             return false;
         }
     };
@@ -466,7 +466,7 @@ pub fn spawn_frame_socket_server_thread(
                     if let Some(file) = file_download.take() {
                         warn!("Discarding unsent medium power recording with {} bytes", file.len());
                     }
-                    forget_awaiting_done(&mut awaiting_done, "Medium power mode changed");
+                    clear_awaiting_done(&mut awaiting_done, "Medium power mode changed");
                     medium_power_mode = new_medium_power_mode;
                     frame_i = 0;
                     last_packet_num = 255;
@@ -533,7 +533,7 @@ pub fn spawn_frame_socket_server_thread(
                                         .is_ok();
                                 }
                             }
-                            None => forget_awaiting_done(&mut awaiting_done, "Client disconnected"),
+                            None => clear_awaiting_done(&mut awaiting_done, "Client disconnected"),
                         }
                     }
                 }
