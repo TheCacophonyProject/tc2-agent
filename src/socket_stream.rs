@@ -21,28 +21,64 @@ pub enum ClientMsg {
 const CLIENT_CMD_LEN: usize = 3;
 const CLIENT_TIMESTAMP_LEN: usize = 8;
 
+/// The 3-byte command at the start of each client message.
+enum ClientCmd {
+    Ack,
+    Done,
+    Fail,
+}
+
+impl ClientCmd {
+    /// Bytes after the command.
+    fn args_len(&self) -> usize {
+        match self {
+            ClientCmd::Ack => 0,
+            ClientCmd::Done | ClientCmd::Fail => CLIENT_TIMESTAMP_LEN,
+        }
+    }
+}
+
+impl TryFrom<&[u8; CLIENT_CMD_LEN]> for ClientCmd {
+    // The bytes, if they aren't a command we know.
+    type Error = [u8; CLIENT_CMD_LEN];
+
+    fn try_from(bytes: &[u8; CLIENT_CMD_LEN]) -> Result<Self, Self::Error> {
+        match bytes {
+            b"ACK" => Ok(ClientCmd::Ack),
+            b"DON" => Ok(ClientCmd::Done),
+            b"FAI" => Ok(ClientCmd::Fail),
+            other => Err(*other),
+        }
+    }
+}
+
 /// Takes every complete message from the start of `rx_buf`, leaving any partial one there until
 /// the rest arrives.
 fn parse_client_msgs(rx_buf: &mut Vec<u8>) -> Vec<ClientMsg> {
     let mut msgs = Vec::new();
     let mut offset = 0;
     while rx_buf.len() - offset >= CLIENT_CMD_LEN {
-        let cmd = &rx_buf[offset..offset + CLIENT_CMD_LEN];
-        let len = match cmd {
-            b"DON" | b"FAI" => CLIENT_CMD_LEN + CLIENT_TIMESTAMP_LEN,
-            _ => CLIENT_CMD_LEN,
+        let cmd_bytes: &[u8; CLIENT_CMD_LEN] =
+            rx_buf[offset..offset + CLIENT_CMD_LEN].try_into().unwrap();
+        let cmd = match ClientCmd::try_from(cmd_bytes) {
+            Ok(cmd) => cmd,
+            Err(bytes) => {
+                msgs.push(ClientMsg::Unknown(bytes));
+                offset += CLIENT_CMD_LEN;
+                continue;
+            }
         };
-        if rx_buf.len() - offset < len {
+        let end = offset + CLIENT_CMD_LEN + cmd.args_len();
+        if rx_buf.len() < end {
             break;
         }
-        let args = &rx_buf[offset + CLIENT_CMD_LEN..offset + len];
+        let args = &rx_buf[offset + CLIENT_CMD_LEN..end];
         msgs.push(match cmd {
-            b"ACK" => ClientMsg::Ack,
-            b"DON" => ClientMsg::Done(LittleEndian::read_u64(args)),
-            b"FAI" => ClientMsg::Fail(LittleEndian::read_u64(args)),
-            other => ClientMsg::Unknown([other[0], other[1], other[2]]),
+            ClientCmd::Ack => ClientMsg::Ack,
+            ClientCmd::Done => ClientMsg::Done(LittleEndian::read_u64(args)),
+            ClientCmd::Fail => ClientMsg::Fail(LittleEndian::read_u64(args)),
         });
-        offset += len;
+        offset = end;
     }
     rx_buf.drain(..offset);
     msgs
