@@ -17,6 +17,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{fs, process, thread};
 use thread_priority::{ThreadBuilderExt, ThreadPriority};
 
+/// After restarting the rp2040 because a recording didn't start properly, how long to drop
+/// medium power packets while waiting for it to start sending a new recording, before allowing
+/// another restart.
+const RESTART_WAIT: Duration = Duration::from_secs(30);
+
 /// How many medium power packets to send between checks for status messages from the client.
 const CLIENT_POLL_INTERVAL: i32 = 10;
 
@@ -216,6 +221,7 @@ fn handle_medium_power_message(
     message_handled: &mut bool,
     streamed_recording: &mut Option<StreamedRecording>,
     awaiting_done: &mut VecDeque<u64>,
+    waiting_for_restart: &mut Option<Instant>,
 ) {
     if let Ok(FrameSocketServerMessage {
         camera_handshake_info:
@@ -234,9 +240,33 @@ fn handle_medium_power_message(
             let is_last_part = file_info.is_last_part;
             let frame_data = &file_info.data;
             let packet_num = file_info.packet_num;
+            // The first packet of a recording is numbered 0, and has the gzip header straight
+            // after the timestamp, serial, firmware and file start block.
+            let is_first_packet = packet_num == 0
+                && frame_data.get(FIRST_PACKET_HEADER_LENGTH..FIRST_PACKET_HEADER_LENGTH + 10)
+                    == Some(gzip_header.as_slice());
+            // Packets queued before the restart, or sent if it didn't work, would each look like
+            // a recording missing its gzip header, so drop them until a recording starts.
+            if let Some(restarted_at) = *waiting_for_restart {
+                if is_first_packet {
+                    info!("rp2040 started sending a new recording after being restarted");
+                    *waiting_for_restart = None;
+                } else if restarted_at.elapsed() < RESTART_WAIT {
+                    debug!("Dropping packet {packet_num} while waiting for the rp2040 to restart");
+                    return;
+                } else {
+                    warn!(
+                        "rp2040 hasn't started a new recording {}s after being restarted",
+                        RESTART_WAIT.as_secs()
+                    );
+                    *waiting_for_restart = None;
+                }
+            }
             *received_end = is_last_part;
             if *frame_i == 0 {
-                info!("Reset file download as have new recording");
+                if file_download.is_some() || *last_packet_num != 255 || *sent_end {
+                    info!("Reset file download as have new recording");
+                }
                 *file_download = None;
                 *last_packet_num = 255;
                 *sent_end = false;
@@ -250,16 +280,14 @@ fn handle_medium_power_message(
 
             *last_packet_num = packet_num;
             // The first packet starts with the timestamp, serial, firmware and file start block
-            if *frame_i == 0
-                && frame_data[FIRST_PACKET_HEADER_LENGTH..FIRST_PACKET_HEADER_LENGTH + 10]
-                    != *gzip_header
-            {
+            if *frame_i == 0 && !is_first_packet {
                 // ensure is a gzip
                 error!(
-                    "New file is missing the GZIP header {:?} restart rp2040",
-                    &frame_data[..FIRST_PACKET_HEADER_LENGTH + 10]
+                    "New file packet {packet_num} is missing the GZIP header {:?} restart rp2040",
+                    &frame_data[..frame_data.len().min(FIRST_PACKET_HEADER_LENGTH + 10)]
                 );
                 restart_rp2040(run_pin);
+                *waiting_for_restart = Some(Instant::now());
                 // what do we do here???
                 // force rp2040 to offload last file??
                 // if we could send a message ask for the start again
@@ -446,6 +474,9 @@ pub fn spawn_frame_socket_server_thread(
             // Timestamps of intact streamed recordings, oldest first, that the client hasn't yet
             // said it finished.
             let mut awaiting_done: VecDeque<u64> = VecDeque::new();
+            // When the rp2040 was restarted because a recording didn't start properly, until it
+            // starts sending a new one.
+            let mut waiting_for_restart: Option<Instant> = None;
             let address = &get_socket_address(serve_frames_via_wifi);
             let mut medium_power_mode = medium_power_mode_flag.load(Ordering::Relaxed);
             loop {
@@ -468,6 +499,7 @@ pub fn spawn_frame_socket_server_thread(
                     }
                     clear_awaiting_done(&mut awaiting_done, "Medium power mode changed");
                     medium_power_mode = new_medium_power_mode;
+                    waiting_for_restart = None;
                     frame_i = 0;
                     last_packet_num = 255;
                     sent_end = false;
@@ -512,6 +544,7 @@ pub fn spawn_frame_socket_server_thread(
                         &mut message_handled,
                         &mut streamed_recording,
                         &mut awaiting_done,
+                        &mut waiting_for_restart,
                     );
                     // Keep listening for the client to finish files after the last one is sent.
                     if !awaiting_done.is_empty()
