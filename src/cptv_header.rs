@@ -216,7 +216,7 @@ pub fn decode_cptv2_header(i: &[u8]) -> nom::IResult<&[u8], CptvHeader> {
                 meta.loc_timestamp = Some(le_u64(val)?.1);
             }
             FieldType::Altitude => {
-                meta.altitude = Some(le_f32(i)?.1);
+                meta.altitude = Some(le_f32(val)?.1);
             }
             FieldType::Accuracy => {
                 meta.accuracy = Some(le_f32(val)?.1);
@@ -270,6 +270,9 @@ pub fn decode_cptv_header_streaming(cptv_bytes: &[u8]) -> Result<CptvHeader, Box
             Err(e) => match e {
                 nom::Err::Incomplete(_) => {
                     let read = decoder.read(&mut buffer)?;
+                    if read == 0 {
+                        Err("Reached the end of the data before the end of the CPTV header")?;
+                    }
                     unzipped.extend_from_slice(&buffer[0..read]);
                 }
                 nom::Err::Failure(e) | nom::Err::Error(e) => {
@@ -279,4 +282,42 @@ pub fn decode_cptv_header_streaming(cptv_bytes: &[u8]) -> Result<CptvHeader, Box
         }
     }
     Ok(cptv_header)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    // A CPTV header as the rp2040 writes it into the first page of a recording, on its own
+    // without any frames after it.
+    const HEADER: [u8; 131] = [
+        67, 80, 84, 86, 2, 72, 17, 2, 81, 91, 109, 2, 75, 217, 111, 2, 74, 75, 0, 8, 84, 16, 243,
+        0, 169, 113, 63, 6, 0, 4, 88, 160, 0, 0, 0, 4, 89, 120, 0, 0, 0, 1, 67, 1, 1, 90, 9, 19,
+        68, 67, 73, 45, 102, 97, 107, 101, 45, 116, 101, 115, 116, 45, 100, 101, 118, 105, 99, 101,
+        4, 66, 102, 108, 105, 114, 9, 69, 108, 101, 112, 116, 111, 110, 51, 46, 53, 4, 73, 123, 0,
+        0, 0, 4, 78, 135, 214, 18, 0, 14, 86, 49, 46, 50, 46, 51, 58, 52, 46, 53, 46, 54, 58, 52,
+        50, 4, 76, 0, 0, 46, 194, 4, 79, 215, 163, 44, 67, 4, 65, 0, 0, 0, 0,
+    ];
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn decodes_a_header_with_nothing_after_it() {
+        match decode_cptv_header_streaming(&gzip(&HEADER)).unwrap() {
+            CptvHeader::V2(header) => assert_eq!(1758607259530000, header.timestamp),
+            other => panic!("Expected a V2 header, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncated_header_is_an_error() {
+        assert!(decode_cptv_header_streaming(&gzip(&HEADER[..100])).is_err());
+    }
 }

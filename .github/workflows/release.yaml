@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     env:
-      RP2040_FIRMWARE_VERSION: 0.8.2
+      RP2040_FIRMWARE_VERSION: 0.8.3
 
     steps:
       - name: Checkout repository
@@ -31,6 +31,20 @@ jobs:
         run: |
           rustc --version
           cargo --version
+
+      - name: Run fmt
+        run: cargo fmt --all -- --check
+
+      - name: Download firmware files
+        run: |
+          mkdir -p _releases
+          wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware.sha256
+          wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
+          wget -O _releases/tc2-firmware-erase-flash.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware-erase-flash.sha256
+          wget -O _releases/tc2-firmware-erase-flash https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware-erase-flash
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Install dependencies
         run: |
@@ -58,20 +72,6 @@ jobs:
 
       - name: Install cargo-deb
         run: cargo install cargo-deb --version 2.3.0
-
-      - name: Download firmware files
-        run: |
-          mkdir -p _releases
-          wget -O _releases/tc2-firmware.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware.sha256
-          wget -O _releases/tc2-firmware https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware
-          wget -O _releases/tc2-firmware-erase-flash.sha256 https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware-erase-flash.sha256
-          wget -O _releases/tc2-firmware-erase-flash https://github.com/TheCacophonyProject/tc2-firmware/releases/download/v${RP2040_FIRMWARE_VERSION}/tc2-firmware-erase-flash
-
-      - name: Run fmt
-        run: cargo fmt --all -- --check
-
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Create Debian package
         run: | 
