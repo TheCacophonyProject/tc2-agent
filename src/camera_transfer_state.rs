@@ -271,7 +271,12 @@ pub fn enter_camera_transfer_loop(
         if !needs_to_offload_test_recording {
             if is_thermal_device {
                 // Check if we need to prioritise frame serving
-                if recording_state.prioritise_frames_requested()
+                if recording_state.prioritise_frames_requested() && offload_erase_requested() {
+                    // Frame priority stops the rp2040 offloading files, which would stall the
+                    // offload before erasing the flash, so drop the request until that's done.
+                    recording_state.prioritise_frames_request_sent();
+                    info!("Ignoring frame serve priority request until offload erase completes");
+                } else if recording_state.prioritise_frames_requested()
                     && !recording_state.is_recording()
                     && pending_prioritise_frames_request.is_none()
                 {
@@ -472,8 +477,11 @@ pub fn enter_camera_transfer_loop(
                         let force_offload_files_now =
                             pending_forced_offload_request.take().is_some();
                         last_handshake_forced_offload = force_offload_files_now;
+                        // Never send frame priority during offload erase, even if it was requested
+                        // before the offload erase file appeared.
                         let prefer_not_to_offload_files_now =
-                            pending_prioritise_frames_request.take().is_some();
+                            pending_prioritise_frames_request.take().is_some()
+                                && !offload_erase_requested();
 
                         let config_length = device_config.write_to_slice(
                             &mut return_payload_buf[14..],
